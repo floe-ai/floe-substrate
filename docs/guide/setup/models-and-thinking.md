@@ -1,42 +1,57 @@
 # Models and thinking level
 
-**A runtime binding is the triple of auth profile, model, and thinking level an [[Actor]] uses to run.**
+**A runtime binding selects a versioned RuntimeProfile for an [[Actor]] without changing the Actor's identity.**
 
-Every actor needs three things resolved before it can take a turn: which auth profile to authenticate with (see [[Providers and auth]]), which model to call, and how much reasoning effort to spend. Floe calls this triple a runtime binding, and it is one instance of the general [[Binding]] concept.
+A RuntimeProfile may describe provider, model, reasoning effort, tool policy,
+and other runtime configuration. Provider credential material is not part of
+the profile. The profile refers to SecretRef metadata that a trusted broker may
+resolve only under current grants and a matching purpose.
 
-## Model registry
+## Model catalogue
 
-Model catalogues come from the packaged Pi runtime that will execute the work. Each provider contributes its current built-in catalogue, and providers such as GitHub Copilot can narrow it after authentication to the models available to that account. Floe does not maintain a separate provider-specific model list. A model is usable only when its provider connection and account entitlement allow it (see [[Providers and auth]]).
+Model catalogues come from the runtime provider adapter that will execute the
+work. A provider may narrow its catalogue after authentication to the models
+available to that account. Floe does not maintain a second provider-specific
+model list in the app.
 
-## Models are constrained to the profile's provider
+A model is usable only when the current profile revision, provider entitlement,
+SecretRef resolution, and policy allow it. Missing credentials remain a visible
+unresolved binding.
 
-A profile is bound to exactly one provider. When you pick a profile for an actor, the model list narrows to that provider's models only — you cannot pick an OpenAI model while bound to an Anthropic profile. There is no profile-specific restriction beyond this; "constrained to the profile" means "constrained to the profile's provider".
+## Reasoning effort
 
-## Thinking level
+Reasoning effort is constrained by the selected model's declared support. The
+current Pi adapter may expose values such as `off`, `minimal`, `low`, `medium`,
+`high`, and `xhigh`; other runtime adapters project their supported contract
+without changing Floe's Actor or execution semantics.
 
-Thinking level (also called reasoning effort) is one of: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. It only applies to models that support reasoning — the UI disables the control when the selected model doesn't.
+## Binding and history
 
-## Resolution order
+An Actor runtime binding is separately replaceable from the ActorDefinition.
+Workspace or host defaults may participate in runtime resolution, but every
+ExecutionAttempt records the exact ActorDefinitionRevision,
+RuntimeProfileRevision, and binding it actually used.
 
-A binding resolves through three layers, most specific wins:
+A NodePlacement may add revision-specific runtime policy for one Scope design.
+Publishing the ScopeCompositionRevision freezes that semantic configuration.
+Changing a current Actor or Workspace default cannot rewrite an existing
+execution's recorded configuration.
 
-1. **Endpoint** — set directly on this actor
-2. **Workspace** — the workspace-wide default
-3. **Global** — the machine-wide default
+## Operations
 
-If an actor has no endpoint-level binding, it falls back to the workspace default; if the workspace has none, it falls back to global. Clearing an actor's binding removes only that layer — it does not touch workspace or global.
-
-A per-node [[Binding]] on a node overrides all of this, but only for that node's work — it never changes the actor's identity or its bindings elsewhere.
+RuntimeProfile creation, draft replacement, publication, rollback, retirement,
+reactivation, and Actor runtime-binding changes use Bus-owned semantic
+operations. The app and Actors consume the same definitions. Legacy
+`/v1/runtime/bindings` routes are compatibility/internal adapters.
 
 See [[Glossary]] for term definitions.
 
 ## Implementation
 
-- `floe-app/src/actors/modelsForProfile.ts` — `providerForProfile`, `modelsForProfile`, `withSelectedModelOption` (profile → provider → model constraint)
-- `floe-app/src/actors/ActorInspector.tsx` — profile/model/effort binding form and the three-layer resolution display
-- `floe-bridge/src/bus-client.ts` — `resolveRuntimeBinding` (`RuntimeBindingResolution` type with `endpoint_*`, `workspace_*`, `global_*` fields)
-- `GET /v1/runtime/bindings/resolve` — resolve endpoint/workspace/global binding (`floe-bus/src/server.ts:852`)
-- `GET /v1/runtime/bindings` — list bindings (`floe-bus/src/server.ts:795`)
-- `POST /v1/runtime/bindings` — set a binding (`floe-bus/src/server.ts:800`)
-- `POST /v1/runtime/bindings/clear` — clear a binding at a scope (`floe-bus/src/server.ts:831`)
-- `floe-bus/src/store.ts` — `runtime_bindings` table, `ThinkingLevelSchema` enum
+- `floe-bus/src/runtime-profiles.ts` — profiles, immutable revisions, and Actor
+  bindings
+- `floe-bus/src/runtime-profile-operations.ts` — canonical lifecycle and
+  binding operations
+- `floe-app/src/actors/modelsForProfile.ts` — provider model projection
+- `floe-bridge/src/bus-client.ts` — effective runtime resolution for execution
+- `floe-bus/src/credential-broker.ts` — SecretRef resolution boundary

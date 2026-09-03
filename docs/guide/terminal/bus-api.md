@@ -1,288 +1,339 @@
 # Bus API
 
-**The bus is a plain HTTP + WebSocket server on port 5377, and its routes are the substrate's complete, real contract.**
+**The Bus exposes authenticated projections and one canonical semantic operation contract over HTTP, plus a resumable push stream over WebSocket.**
 
-Everything below is read straight from `floe-bus/src/server.ts`. This page is grouped by area. See [[Working without floe-app]] for a worked end-to-end example, and [[CLI reference]] for the `floe` binary.
+Raw HTTP routes are transport and compatibility details. They are not a second
+product contract. The Bus-owned operation definitions are authoritative for
+state-changing intent, validation, authority, refusal, execution, and receipts.
 
-## Health and local config
+The packaged desktop app brokers credentials in its native shell. Bearer and
+provider credentials never enter URLs, logs, local storage, or the webview.
+Direct API use is an authenticated developer or integration path.
 
-| Method | Path | What it does |
+## Transport authority
+
+Floe uses non-interchangeable bearer audiences:
+
+| Audience | Boundary | Used by |
 |---|---|---|
-| GET | `/health` | Liveness check. Returns `{ ok, service, time }`. |
-| GET | `/v1/local-config/status` | Returns the active config path and `home`/`bus`/`app`/`bridge` config sections. |
-| GET | `/v1/runtime/status` | Whether a bridge is currently connected (socket-presence liveness) and its reported `runtime_adapter`. |
+| `host_control` | One trusted host | Native host lifecycle and host semantic operations |
+| `workspace_operation` | One Workspace and current CapabilityGrants | Operator, Actor, CLI, SDK, API, or MCP semantic operations and projections |
+| `bridge_service` | One Bridge service on one host | Delivery/runtime transport |
 
-## WebSocket stream
+Send HTTP credentials only as:
 
-`GET /v1/events/stream` (`{ websocket: true }`). On connect the bus sends `{ type: "hello", payload: { service: "floe-bus" } }`. The bridge sends `{ type: "bridge_hello", bridge_id }` as its first message to register socket-based liveness. Every state change is broadcast to all connected sockets as `{ type, payload, at }`.
-
-Broadcast message types observed in the bus source:
-
-`workspace_registered`, `workspace_selected`, `workspace_deleted`, `workspace_attachment_requested`, `workspace_attachment_result`, `scope_created`, `scope_updated`, `scope_deleted`, `scope_graph_created`, `scope_graph_deleted`, `scope_projection.layout.upserted`, `context_created`, `context_deleted`, `context_scope_assigned`, `context_compacted`, `context_history_cleared`, `participant_added`, `participant_removed`, `runtime_binding_updated`, `runtime_binding_cleared`, `bridge_registered`, `bridge_connected`, `bridge_disconnected`, `endpoint_registered`, `endpoint_retired`, `endpoint_deleted`, `status_changed`, `event_submitted`, `destination_selector_resolved`, `delivery_created`, `delivery_bundle_available`, `delivery_reserved`, `delivery_delivered_to_bridge`, `delivery_deferred`, `turn_end_observed`, `runtime_telemetry`, `saved_config_created`, `config_snapshot_requested`, `config_snapshot_imported`, `config_apply_requested`, `pulse_created`, `pulse_fired`, `pulse_subscriber_changed`, `extensions_updated`.
-
-There is no route to replay past broadcasts — the stream is live-only. Use `GET /v1/events` for history.
-
-## Workspaces
-
-| Method | Path | Body | Notes |
-|---|---|---|---|
-| GET | `/v1/workspaces` | — | List all registered workspaces. |
-| POST | `/v1/workspaces/register` | `{ locator, name?, init_authorized?, create_directory? }` | Registers a folder as a workspace. 400 `directory_not_found` if the locator doesn't exist and `create_directory` isn't set. |
-| POST | `/v1/workspaces/:workspace_id/select` | — | Marks a workspace as selected/active. |
-| POST | `/v1/workspaces/:workspace_id/delete` | `{ delete_locator? }` | Deletes a workspace; optionally deletes its files too. |
-| GET | `/v1/workspaces/:workspace_id/config-status` | — | Returns the workspace record. |
-| POST | `/v1/workspaces/:workspace_id/config-snapshot` | — | Requests the bridge to snapshot `.floe/` config. |
-| POST | `/v1/workspaces/:workspace_id/import-config` | raw JSON snapshot | Imports a config snapshot. |
-| POST | `/v1/workspaces/:workspace_id/apply-config` | `{ config_id? }` | Requests the bridge apply a saved config. |
-| POST | `/v1/workspaces/:workspace_id/attachment-result` | `{ bridge_id, status, config_hash?, error_code?, validation? }` | Bridge reports the result of attaching a workspace. |
-
-```bash
-curl -X POST http://localhost:5377/v1/workspaces/register \
-  -H "content-type: application/json" \
-  -d '{"locator": "C:/path/to/repo", "name": "My Project"}'
+```http
+Authorization: Bearer <opaque credential>
 ```
 
-## Workspace filesystem surface
+A request body cannot claim its own principal, Workspace, host, Bridge, Actor,
+Endpoint, grants, or interaction mode.
 
-Gated on `bridge.workspace_access.local_paths` in config; returns 403 `fs_disabled` otherwise. Exists so a console not co-located with the workspace files (e.g. a browser tunneled into a remote bus) can still read/write inside the workspace root.
+`GET /health` is public. Other routes require the authority selected by the
+route. A missing, expired, revoked, wrong-audience, or wrong-Workspace
+credential is refused rather than treated as anonymous.
 
-| Method | Path | Body | Notes |
-|---|---|---|---|
-| GET | `/v1/fs/capability` | — | `{ local_paths: boolean }` — cheap probe. |
-| GET | `/v1/fs/browse?path=` | — | Directory listing. |
-| GET | `/v1/workspaces/:workspace_id/fs/agents` | — | Lists agent files under the workspace. |
-| GET | `/v1/workspaces/:workspace_id/fs/file?path=` | — | Reads a file (path must resolve within the workspace root). |
-| GET | `/v1/workspaces/:workspace_id/fs/media?path=` | — | Streams a workspace-contained PNG, JPEG, WebP, or GIF for safe client preview; 20 MB limit and no caching. |
-| PUT | `/v1/workspaces/:workspace_id/fs/file` | `{ path, contents }` | Writes a file, creating parent dirs. |
+## Workspace operation session
 
-## Scopes
+The trusted host adapter requests a short-lived Workspace session:
 
-A [[Scope]] is the canvas nodes are placed on and connected within.
-
-| Method | Path | Body | Notes |
-|---|---|---|---|
-| GET | `/v1/workspaces/:workspace_id/scopes` | — | List scopes in a workspace. |
-| POST | `/v1/workspaces/:workspace_id/scopes` | `{ scope_id?, title, description? }` | 409 `scope_already_exists`, 400 `scope_id_reserved`. |
-| PATCH | `/v1/workspaces/:workspace_id/scopes/:scope_id` | `{ title?, description? }` | At least one field required. |
-| DELETE | `/v1/workspaces/:workspace_id/scopes/:scope_id` | — | 409 `scope_not_empty` (with `context_count`/`pulse_count`) if the scope still holds contexts or pulses. |
-| GET | `/v1/workspaces/:workspace_id/scopes/:scope_id/projection` | — | The rendered projection of the scope for a UI. |
-| GET | `/v1/workspaces/:workspace_id/scopes/:scope_id/projection/layout/:renderer` | — | Saved layout for a renderer (only `floe-app` supported). |
-| PUT | `/v1/workspaces/:workspace_id/scopes/:scope_id/projection/layout/:renderer` | raw layout JSON | Upserts the saved layout. |
-
-```bash
-curl -X POST http://localhost:5377/v1/workspaces/$WORKSPACE_ID/scopes \
-  -H "content-type: application/json" \
-  -d '{"title": "Billing"}'
+```text
+POST /v1/local/workspaces/:workspace_id/operation-sessions
+Authorization: Bearer <host_control>
 ```
 
-## Scope node composition (stored routes retain legacy graph vocabulary)
+Optional body:
 
-The substrate stores current Scope nodes under a stable internal `graph_id` routing handle. In the product model, a Scope is the organisation and the graph is only its picture; actors use the Scope id and do not create or name graph versions. These lower-level routes remain for bridge and developer use:
-
-| Method | Path | Body | Notes |
-|---|---|---|---|
-| GET | `/v1/workspaces/:workspace_id/scopes/:scope_id/graphs` | — | List graphs stored under a scope. |
-| POST | `/v1/workspaces/:workspace_id/scopes/:scope_id/graphs` | `{ nodes: [...], created_by_endpoint_id? }` | Creates the current composition or replaces its nodes/subscriptions in place. Each node is `trigger` (event source), `actor`, or `command`, per the zod union in `server.ts`. |
-| GET | `/v1/workspaces/:workspace_id/graphs` | — | List the current composition for each active Scope (used by the Bridge). |
-| GET | `/v1/workspaces/:workspace_id/graphs/:graph_id` | — | Get one graph. |
-| POST | `/v1/workspaces/:workspace_id/graphs/:graph_id/nodes/:node_id/fire` | `{ content?, correlation_id? }` | Fires a `trigger`-kind node, creating events. 400 `scope_graph_node_not_a_trigger` if the node isn't a trigger. |
-
-## Actor-safe capabilities
-
-The Bus exposes a bounded semantic surface for runtime actors. It is not raw access to every route:
-
-| Method | Path | Body | Notes |
-|---|---|---|---|
-| GET | `/v1/workspaces/:workspace_id/capabilities?query=&category=&limit=` | — | Discovers matching actor-safe operations, including their authoritative description, effect, and input JSON Schema. |
-| POST | `/v1/workspaces/:workspace_id/capabilities/:capability_id/invoke` | `{ input, caller_endpoint_id? }` | Invokes an allow-listed capability. The exact schema returned by discovery validates `input`. |
-
-Runtime actors use the stable `discover_capabilities` and `use_capability` tools over this surface. The
-Bridge does not carry capability-specific descriptions or schemas. Context inspection and guarded
-unscoped-conversation deletion, Scope inspection, composition, manual Event activation, in-place
-correction, safe removal of unused organisation, and history-preserving Scope retirement are registered operations; their live contracts come from discovery,
-not from this guide. See ADR-0009.
-
-## Endpoints (actors)
-
-An [[Endpoint]] is the substrate's addressable identity for an [[Actor]].
-
-| Method | Path | Body | Notes |
-|---|---|---|---|
-| GET | `/v1/endpoints?workspace_id=` | — | List endpoints, optionally filtered by workspace. |
-| GET | `/v1/workspaces/:workspace_id/endpoints` | — | List endpoints in a workspace. |
-| GET | `/v1/workspaces/:workspace_id/resolve-endpoint?ref=` | — | Resolves a subscriber ref string to an endpoint id. |
-| POST | `/v1/endpoints/register` | `{ endpoint_id, workspace_id, name, agent_id?, bridge_id?, status?, metadata? }` | Registers an endpoint. |
-| DELETE | `/v1/endpoints/:endpoint_id` | — | 404 if not found. |
-| POST | `/v1/endpoints/:endpoint_id/retire` | — | Makes an idle endpoint non-routable while preserving its historical identity. 409 if it is still working. |
-| POST | `/v1/endpoints/:endpoint_id/status` | `{ status }` | Updates endpoint status. |
-| POST | `/v1/endpoints/:endpoint_id/turn-end` | — | Bridge reports a turn ended. |
-| GET | `/v1/workspaces/:workspace_id/endpoints/:endpoint_id/watermark` | — | Reads the endpoint's event cursor (its watermark). |
-| PUT | `/v1/workspaces/:workspace_id/endpoints/:endpoint_id/watermark` | `{ cursor }` | Advances the endpoint's watermark. 400 `invalid_event_cursor` on a bad cursor. |
-
-## Contexts
-
-A [[Context]] is a bounded event stream with participants — where work happens and outcomes appear. `scope_id` is optional; a context with no scope must be created with at least one participant.
-
-| Method | Path | Body | Notes |
-|---|---|---|---|
-| GET | `/v1/workspaces/:workspace_id/contexts?scope=&scope_id=&limit=` | — | List contexts for a workspace, optionally scope-filtered. |
-| GET | `/v1/contexts?participant=&workspace_id=&scope_id=` | — | List contexts a given endpoint participates in. |
-| GET | `/v1/contexts/:id` | — | Get one context (includes participants, title, first-message preview). |
-| GET | `/v1/contexts/:id/events?limit=` | — | List the context's events. |
-| POST | `/v1/workspaces/:workspace_id/contexts` | `{ participants?, scope_id?, context_id?, created_by_endpoint_id?, title?, parent_context_id? }` | Requires non-empty `participants` OR a `scope_id`. Guards against self-referencing or cyclic `parent_context_id`. |
-| POST | `/v1/workspaces/:workspace_id/contexts/:context_id/assign-scope` | `{ scope_id, assigned_by?, reason? }` | Assigns a context into a scope. 409 `context_scope_assignment_invalid` on conflict. |
-| DELETE | `/v1/contexts/:id` | — | Deletes a context and its history. |
-| POST | `/v1/contexts/:id/participants` | `{ endpoint_id }` | Idempotently adds a participant. |
-| DELETE | `/v1/contexts/:id/participants/:endpoint_id` | — | Idempotently removes a participant. |
-| GET | `/v1/contexts/:id/children` | — | Lists child contexts (via `parent_context_id`). |
-| POST | `/v1/contexts/:id/subscriptions` | `{ endpoint_id, event_types? }` (default `["*"]`) | Subscribes an endpoint to specific event types in this context. |
-| DELETE | `/v1/contexts/:id/subscriptions/:endpoint_id` | — | Unsubscribes. |
-| GET | `/v1/contexts/:id/subscriptions` | — | Lists subscriptions for a context. |
-| POST | `/v1/contexts/:id/subscriptions:batch` | `{ entries: [{endpoint_id, event_types}], participants_only? }` | Atomically applies participants + subscriptions. |
-| POST | `/v1/contexts/:id/compact` | `{ summary, before_event_id? }` | Truncates history to a watermark and inserts a synthetic summary event. 409 if a delivery is active. |
-| POST | `/v1/contexts/:id/clear-history` | — | Deletes all events, keeps the context/participants/pulse subscribers. 409 if a delivery is active. |
-
-```bash
-curl -X POST http://localhost:5377/v1/workspaces/$WORKSPACE_ID/contexts \
-  -H "content-type: application/json" \
-  -d '{"participants": ["'"$ENDPOINT_ID"'"], "title": "Investigate invoice #4471"}'
-
-curl "http://localhost:5377/v1/contexts/$CONTEXT_ID/events"
+```json
+{
+  "interaction_session_id": "desktop-window-1",
+  "expires_in_seconds": 3600
+}
 ```
 
-## Events
+The Bus derives the principal and current grants from authenticated host policy
+and registered operations. The client cannot submit grant or operation lists.
+The returned Workspace bearer is one-time session material and belongs in
+trusted process memory only.
 
-An [[Event]] is not a citizen — something that lands, with a source.
+## Discover semantic operations
 
-| Method | Path | Body | Notes |
-|---|---|---|---|
-| POST | `/v1/events/emit` | See `EventCommandSchema` below | Submits an event. Returns 202 with `event_id`, `deliveries_created`, full `event`. |
-| GET | `/v1/events?workspace_id=&thread_id=&context_id=&scope_id=&type=&since=&before=&direction=&limit=` | — | Lists Events chronologically. Forward reads use `since` and return `next_cursor`. `direction=backward` starts at the newest bounded page, accepts `before`, and returns `previous_cursor` for earlier history. |
-| GET | `/v1/events/:event_id/trace` | — | Full delivery trace for one event. 404 `event_not_found`. |
+Workspace-bound discovery:
 
-`EventCommandSchema` fields: `type`, `workspace_id`, `source_endpoint_id`, `destination` (one of `{kind:"endpoint", endpoint_id}`, `{kind:"broadcast", scope:"workspace", target, exclude_source?}`, `{kind:"context", context_id}`), `thread_id?`, `context_id?`, `current_delivery_context_id?`, `scope_id?`, `correlation_id?`, `content` (object), `response?` (`{expected, mode?, correlation_id?, timeout_at?}`), `metadata?`, `idempotency_key?`.
-
-`destination:{kind:"context"}` is the single context-delivery path: it records the event in the context log AND delivers to actors whose subscription in that context matches the event type. Zero subscriptions = zero deliveries (a natural record-only outcome).
-
-```bash
-curl -X POST http://localhost:5377/v1/events/emit \
-  -H "content-type: application/json" \
-  -d '{
-    "type": "message",
-    "workspace_id": "'"$WORKSPACE_ID"'",
-    "source_endpoint_id": "'"$ENDPOINT_ID"'",
-    "destination": {"kind": "context", "context_id": "'"$CONTEXT_ID"'"},
-    "context_id": "'"$CONTEXT_ID"'",
-    "content": {"text": "Check invoice #4471"}
-  }'
+```text
+GET /v1/workspaces/:workspace_id/operations
+  ?query=
+  &category=
+  &target_kind=
+  &target_id=
 ```
 
-## Deliveries
+Host-bound discovery:
 
-| Method | Path | Query | Notes |
-|---|---|---|---|
-| GET | `/v1/delivery/claim` | `bridge_id`, `limit?` | A bridge claims up to `limit` (default 10, max 100) pending deliveries. |
-| GET | `/v1/delivery` | `workspace_id?`, `limit?` | Lists delivery records. |
-| POST | `/v1/delivery/:delivery_id/status` | `{ bridge_id, state, error? }` | `state` is one of `injected_to_runtime`, `acknowledged`, `failed`, `dead_lettered`, `deferred`. |
-| GET | `/v1/pending-responses` | `workspace_id?`, `limit?` | Lists events awaiting a correlated response. |
-
-Delivery in normal operation rides the WebSocket (`delivery_bundle_available` broadcast), not `GET /v1/delivery/claim` — the claim route exists for bridges reconnecting or the multi-bridge fallback case.
-
-## Pulses
-
-A [[Event|Pulse]] is a schedule (once or cron) that fires an event.
-
-| Method | Path | Body | Notes |
-|---|---|---|---|
-| POST | `/v1/pulses` | `{ pulse_id, workspace_id, persistence?, scope_id?, current_context_id?, trigger: {type: "once"\|"cron", at?, schedule?, timezone?}, event?: {type: "pulse.fired", content?}, content?, subscribers: [...], created_by? }` | `subscribers` entries are `{kind:"context", context_id}` or `{kind?:"endpoint", endpoint_ref, context_id?}`. |
-| GET | `/v1/pulses?workspace_id=&status=&scope_id=` | — | Lists pulses. |
-| POST | `/v1/pulses/:pulse_id/pause` | — | Pauses; removes from the fire queue. |
-| POST | `/v1/pulses/:pulse_id/resume` | — | Resumes; recalculates next fire time for cron pulses. |
-| POST | `/v1/pulses/:pulse_id/cancel` | — | Cancels; removes from the fire queue. |
-| POST | `/v1/pulses/:pulse_id/subscribe` | subscriber object | Adds a subscriber to an existing pulse. |
-| POST | `/v1/pulses/:pulse_id/unsubscribe` | — | Removes a subscriber. |
-
-```bash
-curl -X POST http://localhost:5377/v1/pulses \
-  -H "content-type: application/json" \
-  -d '{
-    "pulse_id": "billing-followup-1",
-    "workspace_id": "'"$WORKSPACE_ID"'",
-    "trigger": {"type": "once", "at": "2026-08-19T00:00:00.000Z"},
-    "subscribers": [{"kind": "context", "context_id": "'"$CONTEXT_ID"'"}]
-  }'
+```text
+GET /v1/local/operations
+  ?query=
+  &category=
+  &target_kind=
+  &target_id=
 ```
 
-## Extensions
+Each response returns the caller-appropriate projections of the same registered
+operation definitions:
 
-An [[Extension]] contributes tools, pulses, views, HTTP handlers and bundled agents. It is registered in memory by the bridge, never persisted.
+```json
+{
+  "operations": []
+}
+```
 
-| Method | Path | Body | Notes |
-|---|---|---|---|
-| POST | `/v1/extensions/report` | `{ workspace_id, extensions: [{name, views?, errors?, relay_url?}] }` | Bridge reports loaded extensions after each workspace attach. Writable, not independently readable beyond the summary below. |
-| GET | `/v1/extensions?workspace_id=` | — | Lists registered extensions (name, views, errors, relay_url). |
-| GET | `/v1/extensions/:name/*` | — | Proxies to the extension's HTTP relay. 503 `extension_relay_not_available` if none registered. |
-| POST | `/v1/extensions/:name/*` | any JSON | Same proxy, POST. |
+Definitions supply stable ID, version, input/result schema versions, effect,
+availability, preconditions, grants, interaction constraints, confirmation or
+approval, expected-revision rules, and result shape. Clients render or wrap
+these definitions; they do not copy their rules.
 
-Extension hooks themselves (`SessionStart`, `BeforeTurn`, `Pulse`, `WebhookReceived`, etc.) fire inside the bridge process and have **no HTTP surface at all** — writable only in the sense that the bridge invokes them; there is nothing to call or list here.
+## Invoke a semantic operation
 
-## Webhooks
+Workspace-bound invocation:
 
-| Method | Path | Body | Notes |
-|---|---|---|---|
-| POST | `/v1/webhooks/:workspace_id/:route_id` | any JSON | Ingests an inbound webhook as an event source. 400 `scope_required` if the route needs a scope and none is configured. |
+```text
+POST /v1/workspaces/:workspace_id/operations/invoke
+```
 
-Webhook routes are **write-only** — there is no `GET` to list configured webhook routes or replay past webhook calls; use `GET /v1/events` filtered by workspace to see what they produced.
+Host-bound invocation:
 
-## Folder watchers
+```text
+POST /v1/local/operations/invoke
+```
 
-Folder ingress is represented as `source: { kind: "folder", path: "..." }` on an Event node in a
-stored scope graph. It is created through the Bus-discovered organisation capability and is visible
-through the existing graph read routes. Legacy top-level workspace watcher config remains readable but
-has no standalone HTTP resource.
+Request content is intent only:
 
-## Runtime bindings
+```json
+{
+  "operation_id": "context.archive",
+  "operation_version": "1",
+  "input_schema_version": "1",
+  "target": {
+    "kind": "context",
+    "id": "context_123"
+  },
+  "expected_resource_revision": "4",
+  "idempotency_key": "archive-context-123-once",
+  "input": {}
+}
+```
 
-A [[Binding]] attaches an auth profile/model/thinking level to an actor or workspace default.
+`target` and `expected_resource_revision` may be omitted only when the
+discovered definition permits that. Reusing an idempotency key with different
+intent is refused.
 
-| Method | Path | Body | Notes |
-|---|---|---|---|
-| GET | `/v1/runtime/bindings?workspace_id=` | — | Lists bindings. |
-| POST | `/v1/runtime/bindings` | `{ scope: "agent"\|"workspace_default"\|"global_default", workspace_id?, endpoint_id?, auth_profile, model?, thinking_level? }` | Upserts a binding. |
-| POST | `/v1/runtime/bindings/clear` | `{ scope, workspace_id?, endpoint_id? }` | Clears a binding. |
-| GET | `/v1/runtime/bindings/resolve?workspace_id=&endpoint_id=` | — | Resolves the effective binding for an endpoint (agent → workspace default → global default). |
+Every consequential invocation returns a stable receipt. Query it after timeout
+or reconnection rather than guessing whether the operation committed:
 
-## Runtime telemetry and status
+```text
+GET /v1/workspaces/:workspace_id/operation-receipts/:receipt_id
+GET /v1/local/operation-receipts/:receipt_id
+```
 
-| Method | Path | Body | Notes |
-|---|---|---|---|
-| GET | `/v1/runtime/status` | — | See Health section above. |
-| POST | `/v1/runtime/telemetry` | `{ workspace_id, endpoint_id, delivery_id?, kind, payload }` | Bridge appends a telemetry record. |
-| GET | `/v1/runtime/telemetry?workspace_id=&delivery_id=&limit=` | — | Lists telemetry records. |
-| POST | `/v1/bridges/register` | `{ bridge_id, capabilities? }` | Registers a bridge process. |
-| POST | `/v1/bridges/:bridge_id/liveness` | — | Reports bridge liveness (also handled implicitly via the WS `bridge_hello`). |
+A caller can read its own receipt. Reading another principal's receipt requires
+the explicit `operation.receipt.read.all` grant.
 
-## Auth
+## Canonical Scope operations
 
-Auth **write** happens only via the `floe` CLI or desktop shell (`floe login`), never over HTTP.
+The live definitions come from discovery. Current operation families include:
 
-| Method | Path | Notes |
-|---|---|---|
-| GET | `/v1/auth/profiles` | Lists configured auth profiles and the default profile id. Read-only. |
-| GET | `/v1/auth/models?provider=` | Lists available models, optionally filtered by provider. Read-only. |
+- creating and replacing a draft ScopeCompositionRevision;
+- publishing a revision;
+- inspecting the published plan;
+- starting, inspecting, and stopping a ScopeExecution; and
+- publishing a NodeExecution output to a named Port.
 
-## Saved configs
+A published revision owns NodePlacements, Ports, and Edges. Existing executions
+remain pinned to their starting revision. Only Port publication and enabled Edge
+traversal advance canonical Scope work.
 
-| Method | Path | Body | Notes |
-|---|---|---|---|
-| GET | `/v1/configs` | — | Lists saved configs. |
-| POST | `/v1/configs` | `{ name, config }` | Creates a saved config. |
+Read-only Scope projections include:
 
-See [[Glossary]] for term definitions.
+```text
+GET /v1/workspaces/:workspace_id/scopes
+GET /v1/workspaces/:workspace_id/scopes/:scope_id/projection
+GET /v1/workspaces/:workspace_id/scopes/:scope_id/compositions
+GET /v1/workspaces/:workspace_id/compositions/:revision_id
+GET /v1/workspaces/:workspace_id/scopes/:scope_id/executions
+GET /v1/workspaces/:workspace_id/scope-executions/:execution_id
+GET /v1/workspaces/:workspace_id/contexts/:context_id/scope-executions
+```
+
+Saved canvas layout is presentation state. It may arrange canonical IDs but
+cannot edit topology:
+
+```text
+GET /v1/workspaces/:workspace_id/scopes/:scope_id/projection/layout/:renderer
+PUT /v1/workspaces/:workspace_id/scopes/:scope_id/projection/layout/:renderer
+```
+
+The layout write is a host-local presentation adapter, not a semantic
+composition operation.
+
+## Canonical Context operations
+
+Current semantic operation IDs are:
+
+- `context.list`, `context.get`, and `context.inspect`;
+- `context.create`, `context.archive`, and `context.restore`;
+- `context.participant.set_access` and `context.participant.remove`;
+- `context.communication.emit`; and
+- `context.destroy_permanently`.
+
+Archive is reversible. Permanent destruction is separately named, requires
+explicit confirmation, and refuses when retained execution, Artefact, Delivery,
+decision, approval, audit, child-Context, or other canonical evidence still
+references the Context.
+
+Context participation is collaboration and access. Context subscriptions are
+ordinary non-graph pub/sub or identified legacy routing. Neither advances a
+canonical ScopeExecution.
+
+Read-only Context and history projections include:
+
+```text
+GET /v1/workspaces/:workspace_id/contexts
+GET /v1/contexts/:id
+GET /v1/contexts/:id/tree
+GET /v1/contexts/:id/events
+```
+
+## Canonical Artefact operations
+
+Current operation IDs include:
+
+- `artefact.create`;
+- `artefact.version.publish`; and
+- `artefact.inspect`; and
+- `artefact.search`.
+
+An Event may refer to exact ArtefactVersions. A workspace file path is a
+ContentRef resolver hint, never the Artefact's identity. `artefact.search`
+returns a bounded, filterable page of logical Artefacts and their exact branch
+heads; it never labels one branch as universally current. `artefact.inspect`
+returns exact lineage, collection membership, associations, annotations, and
+optional retained version history.
+
+Canonical content preview resolves one exact version rather than accepting a
+path from the client:
+
+```text
+GET /v1/workspaces/:workspace_id/artefact-versions/:artefact_version_id/content
+```
+
+For workspace-relative content, the Bus verifies the current bytes against the
+recorded SHA-256 digest and optional size before returning them. Changed bytes
+are refused rather than shown as the retained version. Content-addressed and
+external revisions remain explicitly unresolved until their exact resolver is
+available. The desktop native broker fetches bytes with the Workspace session
+and gives the webview only the verified content. It never returns the host
+locator or puts the bearer in a media URL.
+
+## Event and Delivery projections
+
+Events and Deliveries remain canonical transport/history records:
+
+```text
+GET /v1/events?workspace_id=&context_id=&scope_id=&type=&since=&before=&direction=&limit=
+GET /v1/events/:event_id/trace
+GET /v1/delivery?workspace_id=&limit=
+GET /v1/pending-responses?workspace_id=&limit=
+```
+
+Forward Event reads return `next_cursor`. Backward reads return
+`previous_cursor` for earlier history. A Delivery transports an Event and exact
+ArtefactVersion references; it does not replace NodeExecution.
+
+Direct `emit` and Actor `request` remain valid non-graph communication. A
+natural runtime completion is recorded in the origin Context and does not
+advance a ScopeExecution.
+
+## Resumable WebSocket stream
+
+Connect to:
+
+```text
+GET /v1/events/stream
+```
+
+The server sends no state before authentication. The first client frame must be:
+
+```json
+{
+  "type": "authenticate",
+  "bearer_token": "<opaque credential>",
+  "workspace_id": "workspace_123",
+  "after_cursor": "<opaque cursor or null>"
+}
+```
+
+`workspace_id` is required for a Workspace session and omitted for privileged
+Bridge or host connections. Success begins with:
+
+```json
+{
+  "type": "authenticated",
+  "payload": {
+    "audience": "workspace_operation",
+    "workspace_id": "workspace_123",
+    "cursor": "<opaque cursor>"
+  },
+  "at": "<ISO timestamp>"
+}
+```
+
+Replay and live frames use:
+
+```json
+{
+  "type": "event_submitted",
+  "payload": {},
+  "at": "<ISO timestamp>",
+  "cursor": "<opaque cursor>"
+}
+```
+
+After replay the Bus sends
+`{ "type": "caught_up", "payload": { "cursor": "..." }, "at": "..." }`.
+Reconnect with the latest cursor. Invalid authentication closes with code
+`4401`; an invalid cursor closes with `4400`. This is push with bounded
+catch-up, not polling.
+
+## Legacy and internal routes
+
+The server still contains raw routes used by Bridge transport, diagnostics,
+migration, and older clients. In particular:
+
+- `/v1/.../graphs` and graph-node fire routes are legacy mutable-composition
+  compatibility;
+- raw Context create/delete/participant/subscription routes are compatibility or
+  internal adapters;
+- raw Scope, runtime-binding, provider, pulse, Endpoint, Delivery, and Extension
+  mutations are not an alternate operator contract;
+- the older `/v1/.../capabilities` catalogue routes have been removed; actors
+  use the same `/operations` discovery and invocation contract as other clients,
+  with authority issued for the active Delivery.
+
+Product clients must discover and invoke semantic operations. A remaining raw
+mutation is acceptable only when it delegates to the same operation handler or
+is an authenticated internal transport that is not exposed as normal product
+capability.
 
 ## Implementation
 
-- `floe-bus/src/server.ts` — every route documented on this page
-- `floe-bus/src/store.ts` — `BusStore`, broadcast call sites, business logic behind the routes
-- `floe-bus/src/scope-graphs.ts` — node/graph storage (still keyed by `graph_id`; the model above is the current one)
-- `floe-bus/src/pulse-scheduler.ts` — pulse fire scheduling
+- `floe-bus/src/operations.ts` — operation definition, invocation, authority,
+  refusal, and receipt contracts
+- `floe-bus/src/operation-routes.ts` — Workspace and host discovery,
+  invocation, and receipt routes
+- `floe-bus/src/transport-auth.ts` — non-interchangeable transport audiences
+- `floe-bus/src/transport-push-stream.ts` — filtered cursor-based replay and
+  catch-up
+- `floe-bus/src/server.ts` — authenticated HTTP/WebSocket adapters and legacy
+  boundaries
+
+See [[Glossary]].

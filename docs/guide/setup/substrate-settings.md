@@ -2,11 +2,16 @@
 
 **Substrate Settings is the secondary developer observatory for machine-level Floe state. Normal provider and workspace model choices live together in Floe Settings.**
 
-A workspace's own settings live in its `.floe/` directory (see [[Workspace config]]) and travel with the repo. Substrate settings live on your machine, under `~/.floe/`, and apply across every workspace you attach. The split matters: credentials, daemon ports, and the model registry are properties of *your machine*, not of any project — committing them to a repo would leak secrets and hard-code someone else's local paths.
+A Workspace may carry committed configuration in its `.floe/` directory (see
+[[Workspace config]]). Host settings and SecretRef broker bindings apply to the
+local installation. Reusable credentials stay in the operating-system
+credential protector rather than `~/.floe/`, the Workspace, or the webview.
+Committing a host path or secret would leak local authority and confuse a
+Workspace locator with Workspace identity.
 
 The developer view covers:
 
-- auth credentials ([[Providers and auth]])
+- provider metadata, SecretRefs, and unresolved bindings ([[Providers and auth]])
 - daemon runtime (which adapter the bridge, see [[Services]], uses to run actors)
 - the model registry ([[Models and thinking level]])
 - MCP server configuration
@@ -34,6 +39,8 @@ Normal ChatGPT connection is intentionally absent from this view. It belongs in 
 
 - `floe-app/src/features/substrate/SubstrateSettingsView.tsx` — tab list (`auth`, `runtime` real; `models`, `mcp`, `workspaces`, `diagnostics` marked `isStub`), `AuthenticationPillar`, `RuntimeAdapterPillar`
 - `floe-cli/src/config.ts` — `~/.floe/config.yaml` schema (`bus`, `bridge`, `app`, `library`, `runtime` sections)
-- `floe-cli/src/auth.ts` — `~/.floe/auth/` (credentials, models, profiles)
+- `floe-bus/src/credential-broker.ts` — canonical SecretRef and broker
+  contract
+- `floe-cli/src/auth.ts` — legacy `~/.floe/auth/` migration/CLI boundary
 
 See [[Glossary]] for term definitions.

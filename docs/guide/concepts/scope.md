@@ -1,45 +1,61 @@
 # Scope
 
-**A scope is a way of organising the pieces of a product that make sense together — and it is the canvas they are organised on.**
+**A Scope is the durable outcome, organisation, lifecycle, and governance boundary for organised work.**
 
-A scope holds [[Node]]s. You place nodes in a scope and connect them to each other.
-That picture of connected nodes — what's in the scope and how it's wired — is the
-graph.
+A Scope owns its exact designs, executions, related Contexts and Artefacts,
+policies, budgets, attention state, and history. It is the stable operator-facing
+identity even as its design changes.
 
-## There is no graph primitive
+## Composition revisions
 
-You never create or name a graph as a separate organisation. It is the picture
-you get when you look at a scope. The substrate stores the current nodes under
-an internal stable routing handle and infers wiring from shared [[Context]]
-membership. Re-composing the same Scope replaces those current nodes and
-subscriptions without replacing its Context history.
+Each semantic design is a `ScopeCompositionRevision`. It contains
+NodePlacements, typed Ports, explicit Edges, bindings, instructions, activation
+policy, Context policy, and semantic configuration.
 
-## Scopes nest
+A draft revision may change. Publishing freezes that revision and atomically
+selects it for new ingress. A later semantic change creates another revision.
+Existing ScopeExecutions, callbacks, and retries remain pinned to the revision
+under which they began. Redo is an explicit new execution and may select the old
+or current published revision.
 
-A scope can contain other scopes, so a product's pieces can be organised at
-whatever grain makes sense — one scope for the whole thing, or many nested scopes
-for its parts.
+Pan, zoom, node position, and collapsed panels are client presentation state.
+They do not create a semantic revision.
 
-## What belongs in a scope
+## Explicit topology
 
-- Nodes: [[Event]] nodes, working space nodes, [[Command]] nodes
-- The connections between them (implied by shared context membership)
-- Nested scopes for related sub-work
+An Edge is a stored connection from one output Port to one input Port. Enabled
+Edges are the only routes that advance a canonical ScopeExecution. Context
+membership, Event type matches, subscriptions, direct Actor requests, and
+Artefact lineage are separate relationships.
 
-## What doesn't belong in a scope
+There is no separate user-facing Graph primitive. A graph is a useful
+visualisation of one ScopeCompositionRevision, not another source of truth.
 
-- [[Actor]]s — they live at workspace level and are only ever assigned into a
-  working space node, never owned by a scope
-- History of what already happened — that's in a [[Context]], read separately
-  from the authored nodes
-- A name or identity for "the graph" itself — it doesn't have one
+## Execution and history
+
+A ScopeExecution is one activation pinned to one published revision. Each
+NodeExecution records the exact placement, Port-bound inputs, Context, attempts,
+outputs, and state. This lets the operator inspect the current plan and the work
+that followed it without reconstructing either from Event traffic.
+
+Retiring a Scope makes it inert while preserving evidence. Removal is allowed
+only when no required history or active work would be destroyed.
+
+## Legacy graphs
+
+Legacy mutable Scope graphs and subscription-derived routing are migration
+input. They may be inspected as identified legacy revisions, but new and
+republished designs use explicit Edges. Legacy raw graph routes are
+compatibility/internal routes, not a second authoring contract.
 
 ## Implementation
 
-- `floe-bus/src/scope-graphs.ts` — node kinds and how connections are inferred from context membership (no stored edge record)
-- `floe-bus/src/server.ts` — `POST /v1/workspaces/:workspace_id/scopes`, `DELETE /v1/workspaces/:workspace_id/scopes/:scope_id`, `GET /v1/workspaces/:workspace_id/scopes`
-- `floe-bus/src/server.ts` — `GET /v1/workspaces/:workspace_id/scopes/:scope_id/projection` — the derived, read-only view of what happened
-- `floe-bus/src/server.ts` — `GET`/`POST /v1/workspaces/:workspace_id/scopes/:scope_id/graphs` — internal node-composition storage; POST creates or replaces the current composition for the stable Scope.
-- `floe-app/src/features/work/ScopeWorkView.tsx` — read-only operator view of current nodes, connections, endpoint state, and the scoped Context. Editing remains actor-owned rather than a human graph editor.
+- `floe-bus/src/scope-compositions.ts` — immutable composition revisions,
+  NodePlacements, Ports, and Edges
+- `floe-bus/src/scope-executions.ts` — canonical execution records
+- `floe-bus/src/scope-operations.ts` — canonical plan and execution operations
+- `floe-bus/src/scope-graphs.ts` — isolated legacy graph compatibility
+- `floe-app/src/features/work/ScopeWorkView.tsx` — operator projection of the
+  published plan and selected execution
 
 See [[Glossary]].

@@ -10,6 +10,35 @@ Floe determines what organisation, actors, capabilities, contexts, tools, and co
 
 The operator should not need to understand how Floe is implemented in order to use it.
 
+## Complete product direction
+
+Floe is one provider-neutral substrate with multiple clients. The desktop app,
+mobile experience, shared deployment, CLI, public API, and Actors operate on the
+same canonical organisation and safety contract rather than maintaining client-
+specific versions of it.
+
+The complete product includes:
+
+- explicit, versioned Scope design and durable execution which can branch,
+  converge, wait, retry, stop, recover, and preserve exact history;
+- canonical Artefact identity, immutable versions, provenance, collections, and
+  relationships across files, images, source trees, websites, reports, external
+  references, and future content types;
+- typed connectors for external Event sources and actions, including webhook,
+  scheduled, API, and legitimately polled sources;
+- credential brokering through operating-system or managed secret stores,
+  narrow grants, approvals, redaction, rotation, and audit;
+- safe, versioned Extensions which may contribute capabilities, connectors,
+  schemas, templates, previews, renderers, dashboards, and bounded product
+  surfaces under declared permissions and approval;
+- portable local operation, shared multi-user deployment, and a mobile
+  experience for conversation, attention, approval, status, recovery, and
+  Artefact inspection without changing substrate semantics.
+
+These are end-state capabilities. They need not ship in one release, but release
+boundaries must not redefine them as speculative or design foundations that make
+them harder to deliver later.
+
 ## Operator contract
 
 The operator may say:
@@ -122,7 +151,14 @@ Deep substrate telemetry belongs behind deliberate inspection, not in the normal
 
 When real use exposes a problem, the operator should be able to create a local support report from the affected conversation. Floe may contribute a tentative semantic explanation, while system facts come from authoritative supported APIs. The operator sees the exact redacted report before saving or sharing it; Floe does not transmit the report automatically. Reproduction should begin in an isolated workspace when replay could create persistent unwanted state, external effects, or material token use.
 
-When persistent work publishes a reference to extension-owned artifact lineage, the Workspace and Work surfaces may project that existing state as navigable upstream and downstream artifacts with links back to related Context history. The client may preview safe workspace-contained files and offer a focused visual trail or relationship graph over that same lineage. The artifact entry remains available after the originating work stops. Identity, status, version, and lineage remain owned by the extension's source document; the client does not invent a second artifact graph. Domain-specific invalidation and regeneration policy remains outside the substrate.
+When persistent work produces or consumes an Artefact, the Workspace and Work
+surfaces may project its canonical versions, provenance, lineage, collections,
+and related Contexts. The client may preview safe content and offer focused visual
+or domain-specific representations over the same canonical records. Floe owns
+stable Artefact and immutable ArtefactVersion identity and universal provenance.
+Extensions retain domain schemas, specialised statuses, invalidation and
+regeneration policy, and rich presentation. An extension document may be import
+evidence or a projection, but not a competing identity ledger.
 
 ## Product development
 
@@ -132,4 +168,7 @@ A user observation such as "I cannot tell what happened" is evidence of a legibi
 
 A user observation such as "I expected this to continue" is evidence of a continuity failure. It is not an instruction to add a particular scheduler.
 
-Diagnose the experience first. Build the smallest general correction. Then return the product to the operator.
+Diagnose the experience first. Build the smallest general correction that is a
+native part of the understood destination. Then return the product to the
+operator. Do not ship a knowingly disposable substitute for an already-proven
+missing mechanism.

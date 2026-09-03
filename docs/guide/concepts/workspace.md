@@ -1,48 +1,48 @@
 # Workspace
 
-**A workspace is the outer boundary of all work for a product.**
+**A Workspace is the portable identity and isolation boundary for one body of work.**
 
-One repo, one folder. It holds [[Actor]]s, [[Scope]]s, [[Extension]]s and settings.
+It owns Actors, Contexts, Scopes, Artefacts, authority, and history. Its stable
+opaque `workspace_id` is independent of a directory, host, repository URL,
+storage provider, display name, or tenant.
 
-## What lives in git
+## Location is a binding
 
-Everything that defines what the workspace *is* lives in `.floe/` and is committed:
+A Workspace locator binding associates that Workspace with one absolute path on
+one host. Moving or rebinding retains the Workspace identity and records the
+superseded binding as evidence. Restoring an export retains identity. Copying or
+forking creates a new identity with source provenance.
 
-- `.floe/agents/<id>.md` — actor definition files
-- `.floe/floe.yaml` — the list of actors, event sources, commands, and workspace settings
-- nodes and their connections — authored in the scope, stored alongside the workspace
-- extensions the workspace depends on
+Filesystem operations require both Workspace authority and the exact current
+binding. A stale binding is refused rather than silently redirected. Remote
+projections never expose host paths, binding IDs, or host identity.
 
-`.floe/floe.yaml` is human-authored, committed config. Treat it as read-only at
-runtime — the bridge reads it, actor-management tools patch it on disk, but nothing
-in the substrate treats it as a place to record what's happening right now.
+## Committed configuration and canonical state
 
-## What lives in the bus
+`.floe/floe.yaml`, Actor definition sources, and installed Extension manifests
+may form a committed, portable configuration surface. They are not the
+Workspace's identity and are not runtime scratch state.
 
-Everything that describes what is *happening right now* lives in the bus's SQLite
-store, not in git:
+The Bus owns canonical Context, Event, Delivery, Scope design/execution,
+Artefact, authority, operation receipt, and runtime records. A client or
+Extension must not create a competing ledger merely because some configuration
+is stored in Git.
 
-- [[Context]]s and their history
-- whether an [[Endpoint]] is paused, idle or busy
-- a node's on-canvas position (layout)
+## Authority
 
-## The rule
-
-**What the workspace IS lives in git. What is HAPPENING RIGHT NOW does not.**
-If you'd expect to `git diff` it, it's in `.floe/`. If it's a live status or a
-running conversation, it's in the bus.
-
-## Multiple workspaces
-
-A machine can attach more than one workspace. Attaching registers the workspace
-with the bus so its actors, scopes and extensions load and its events start
-flowing.
+Workspace operations require an authenticated principal and current
+CapabilityGrants for that exact Workspace. A request body cannot claim another
+Workspace or principal. Host control manages host-owned locator lifecycle but
+cannot substitute for a Workspace session.
 
 ## Implementation
 
-- `floe-bus/src/server.ts` — `POST /v1/workspaces/register`, `GET /v1/workspaces`, `POST /v1/workspaces/:workspace_id/select`, `POST /v1/workspaces/:workspace_id/delete`
-- `floe-bus/src/server.ts` — `GET /v1/workspaces/:workspace_id/config-status`, `POST /v1/workspaces/:workspace_id/config-snapshot`, `POST /v1/workspaces/:workspace_id/apply-config`
-- `floe-bridge/src/project.ts` — reads `.floe/floe.yaml` and `.floe/agents/*.md` on attach
-- `floe-bridge/src/tools/actor-tools.ts` — writes `.floe/agents/<id>.md` and patches `.floe/floe.yaml` on actor create/update
+- `floe-bus/src/workspace-identities.ts` — portable identities, locator
+  bindings, and provenance
+- `floe-bus/src/workspace-operations.ts` — inspect, register, rebind, restore,
+  copy, and fork semantic operations
+- `floe-bus/src/operation-routes.ts` — host and Workspace operation transport
+- `floe-bridge/src/project.ts` — reads the current local `.floe/`
+  configuration surface
 
 See [[Glossary]].

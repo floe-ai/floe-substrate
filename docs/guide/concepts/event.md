@@ -1,42 +1,44 @@
 # Event
 
-**An event is not a citizen of the substrate — it is something that lands, and it always has a source.**
+**An Event is an immutable fact, signal, communication, observation, or decision that landed in Floe.**
 
-Nothing in floe waits idly. An [[Actor]] or [[Command]] wakes because an event landed
-in a [[Context]] it participates in or is subscribed to. Nothing else wakes anything.
+It records source, time, Workspace, causation, correlation, schema, small
+payload facts, and zero or more exact ArtefactVersion references.
 
-## Four sources
+## What an Event may do
 
-| Source | What it is |
-|---|---|
-| **schedule** | A [[Event|Pulse]] — a cron expression or a one-off ISO timestamp |
-| **folder** | A watched directory; a file lands or changes |
-| **webhook** | An inbound HTTP call |
-| **manual** | A person or an actor fires it directly |
+An Event may:
 
-## "Trigger" is retired
+- start a ScopeExecution at an explicit ingress Port;
+- satisfy a Port on an existing NodeExecution;
+- record an output or decision;
+- carry direct Context communication; or
+- remain an observed fact with no Delivery.
 
-Older code and some still-unmigrated storage call this a "trigger node." That name is
-retired. The firing machinery underneath — the pulse scheduler, the folder watcher, the
-webhook route — is unchanged. Only the vocabulary moved: write "event," and name its
-source.
+Arbitrary Event content is not automatically an Artefact. An Event type match or
+Context subscription does not imply a Scope Edge.
 
-## What an event carries
+## Sources
 
-- `type` — a string naming what happened, e.g. `pulse.fired`
-- `content` — the payload, arbitrary JSON
-- `source_endpoint_id` — the [[Endpoint]] that emitted it, or `null` for a pulse
-- `destination` — where it goes: a specific endpoint, a [[Context]], or a workspace broadcast
-- `context_id` / `scope_id` — which context (and, derived from it, which [[Scope]]) it belongs to
+Human action, Actor communication, webhook, folder observation, schedule,
+Connector, Command, and runtime output can all produce Events through their
+authorised adapters. A source describes where a fact originated; it does not
+create a separate routing system.
 
-An event lands in a context. That is the only thing an event does.
+A Pulse is Bus-owned scheduled Event creation. In canonical Scope execution it
+enters through a schedule Connector and explicit ingress Port.
+
+## Emit
+
+`emit` deliberately publishes non-graph communication or an explicitly
+attached Port publication. A natural runtime completion is recorded in the
+origin Context without automatically emitting or advancing work.
 
 ## Implementation
 
-- `floe-bus/src/pulse-scheduler.ts` — the schedule source: cron and one-off pulses, single scheduled timer, no polling
-- `floe-bus/src/server.ts` — `POST /v1/events/emit`, `GET /v1/events`, `POST /v1/webhooks/:workspace_id/:route_id` (webhook source), `POST /v1/pulses` (schedule source)
-- `floe-bus/src/scope-graphs.ts` — event/trigger node kind, still named `"trigger"` in storage; the model above is the current name
-- `docs/adr/0008-event-is-the-primitive.md` — the decision retiring trigger/pulse/watcher/webhook as separate primitives
-- A folder source is self-describing on its stored Event node and is visible through scope-graph reads.
+- `floe-bus/src/store.ts` — canonical Event and Delivery persistence
+- `floe-bus/src/scope-executions.ts` — Event references pinned to execution
+- `floe-bus/src/connectors.ts` — typed external sources and actions
+- `floe-bus/src/pulse-scheduler.ts` — scheduled Event creation without polling
 
 See [[Glossary]].

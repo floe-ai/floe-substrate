@@ -68,6 +68,12 @@ When uncertainty can be answered by a small experiment, run the experiment rathe
 
 Deliver end-to-end vertical slices. Prefer the smallest change that advances a real outcome. Avoid horizontal plumbing, speculative abstraction, ontology expansion, and unrelated improvement.
 
+Small describes the delivery boundary, not permission to build a disposable
+substitute. When repeated operation or an accepted decision has already proved
+the required end-state mechanism, implement a native increment of that mechanism.
+Do not add an interim source of truth, inferred contract, compatibility model, or
+UI-owned behaviour merely because it produces a quicker demonstration.
+
 After every meaningful product change, return to the proving experience.
 
 ## Solution hierarchy

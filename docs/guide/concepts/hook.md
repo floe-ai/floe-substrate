@@ -14,7 +14,7 @@ the run.
 | `SessionStart` | A new pi Agent session is created for an (actor, context) pair | `provider`, `model_id`, endpoint/workspace/delivery ids, `reason: "session_created"` |
 | `SessionResume` | An existing session is reused | same as `SessionStart`, `reason: "session_reused"` |
 | `SessionEnd` | A session is replaced or the bridge shuts down | `reason`, `previous_session`, optionally `next_session` |
-| `BeforeTurn` | Just before a [[Delivery and Turn|Turn]] runs | endpoint/delivery ids, `origin: {id, kind: "context"\|"thread"}` — the delivery's origin |
+| `BeforeTurn` | Just before a [[Delivery and Turn|Turn]] runs | endpoint/delivery ids and the delivery's origin; `kind: "thread"` is legacy storage compatibility, while new contracts use Context |
 | `TurnEnd` | A turn finishes | `visible_output`, `tool_activity`, `emitted_events` |
 | `BeforeToolUse` | Before a tool call executes | `toolCallId`, `toolName` |
 | `AfterToolUse` | A tool call succeeds | `toolCallId`, `toolName`, `isError: false` |

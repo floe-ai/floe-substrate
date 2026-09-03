@@ -11,8 +11,9 @@ CLI.
 Run the `.msi` installer and launch Floe from the installed shortcut. The MSI is
 a per-machine installation, so Windows requests administrator approval when
 installing or upgrading it. An upgrade replaces the application binaries in
-place; Floe's workspaces, history, provider profiles, and credentials remain in
-the user's `~/.floe/` data directory rather than the installation directory.
+place. Floe's Workspace records and history remain in the user's data area;
+reusable provider and host credentials remain in the operating-system
+credential vault rather than the installation directory or webview.
 
 ## Developing from source
 
@@ -71,17 +72,20 @@ Once the native shell opens, it renders a lightweight **Starting Floe…** state
 
 ## First-use onboarding
 
-A [[Workspace]] is a repo or folder where Floe works. On a clean desktop installation, opening Floe starts or attaches to its packaged local substrate in the background. The app then offers the subscription providers supported by its packaged Pi runtime, asks for an existing or new workspace folder, applies the chosen model as the workspace default, and opens the Floe conversation. No CLI setup or login is required.
+A [[Workspace]] is a portable identity and isolation boundary. A local repo or
+folder is its host-local locator binding. On a clean desktop installation,
+opening Floe starts or attaches to its packaged local substrate in the
+background. The app then offers the subscription providers supported by its
+packaged Pi runtime, asks for an existing or new local binding, applies the
+chosen model as the Workspace default, and opens the Floe conversation. No CLI
+setup or login is required.
 
-`floe setup` and `floe open` still walk up from the current directory and automatically register an ancestor that already contains `.floe/`. Headless users can register directly against the bus:
-
-```bash
-curl -X POST http://localhost:5377/v1/workspaces/register \
-  -H "content-type: application/json" \
-  -d '{"locator": "C:/path/to/your/repo", "init_authorized": true}'
-```
-
-`init_authorized: true` lets the bus create the `.floe/` structure for a directory that doesn't have one yet. See [[Working without floe-app]] for more on driving the bus directly, and [[Workspace config]] for what lands inside `.floe/`.
+`floe setup` and `floe open` may discover an ancestor containing `.floe/`, but
+registration still runs through authenticated host semantic operation
+`workspace.register`. A headless integration needs a trusted host adapter; raw
+loopback access and a caller-supplied `init_authorized` field do not grant
+authority. See [[Working without floe-app]] for the authenticated terminal
+boundary, and [[Workspace config]] for the portable configuration surface.
 
 ## What you see when nothing exists yet
 
@@ -89,17 +93,32 @@ A freshly attached workspace lands in the conversation with Floe and asks what o
 
 ## If it breaks
 
-`~/.floe/config.yaml` is not migrated automatically. If it is incompatible, use `floe reset` or the repair instruction for the affected state. Do not delete the whole Floe home blindly when it contains valuable subscription or API credentials.
+If local state needs repair, use the bounded repair instruction for the
+affected state. Do not delete the whole Floe home or operating-system credential
+entry blindly. Workspace identity, history, SecretRefs, and provider credentials
+are valuable state; missing or mismatched authority must be shown for explicit
+recovery rather than silently replaced.
 
 ## Implementation
 
-The desktop installer includes the Node runtime used by Floe and one bundled desktop companion script. Together they run the real Floe bus and bridge as the background substrate and perform provider-neutral Pi authentication when requested by the Tauri shell. The window appears immediately while the frontend waits briefly for the local substrate to become ready. If a healthy substrate is already listening, the app attaches to it instead of starting another one.
+The desktop installer includes the Node runtime used by Floe and one bundled
+desktop companion script. Together they run the Bus and Bridge as the background
+substrate and perform provider-neutral Pi authentication when requested by the
+Tauri shell. The native shell loads host authority from the operating-system
+vault, passes it privately to a newly started sidecar, obtains a short-lived
+Workspace session, and brokers authenticated requests and push events. If an
+already-running Bus has incompatible authority, Floe shows recovery required
+instead of silently replacing it.
 
 - `floe-cli/src/cli.ts` — `setup`, `start`, `desktop`, `open` commands; `registerCurrentWorkspace`, `findAncestorWithFloe`
 - `floe-cli/src/desktop.ts` — `checkCargoAvailable`, `missingCargoMessage`
 - `floe-cli/src/config.ts` — `ensureConfig` (config creation, fail-fast reset message)
 - `floe-cli/src/process-manager.ts` — `startAll`/service start/stop
-- `POST /v1/workspaces/register` — register a workspace (`floe-bus/src/server.ts:625`)
-- `POST /v1/workspaces/:workspace_id/select` — select the active workspace (`floe-bus/src/server.ts:737`)
+- `floe-app/src-tauri/src/bus_broker.rs` — protected host credential, Workspace
+  session, authenticated request/media, and push broker
+- `floe-bus/src/workspace-operations.ts` — canonical registration and locator
+  lifecycle operations
+- `floe-bus/src/transport-auth.ts` — non-interchangeable host, Workspace, and
+  Bridge authorities
 
 See [[Glossary]].

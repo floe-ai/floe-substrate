@@ -1,199 +1,378 @@
 # Floe Substrate - Domain Context
 
+This document defines current Floe terminology and invariants. `MISSION.md` owns
+purpose, `PRODUCT.md` owns the operator experience, and accepted ADRs own the
+reason a lasting technical decision was made.
+
 ## Glossary
 
+### Workspace
+
+The top-level portable identity and isolation boundary for an organisation's
+Actors, Contexts, Scopes, Artefacts, authority, and history.
+
+A Workspace has a stable opaque `workspace_id`. A filesystem path is a
+host-local **Workspace locator binding**, never its identity. Moving or rebinding
+retains the Workspace identity. Restoring an export retains it. Copying or
+forking creates a new Workspace identity with source provenance. Remote
+projections never expose host paths, binding IDs, or host identity.
+
+_Avoid_: path-derived Workspace ID, path as identity, locator in a remote
+projection.
+
+### Workspace locator binding
+
+A replaceable association between one Workspace and one absolute path on one
+host. It owns local attachment, selection, configuration, and compare-and-swap
+revision state. Superseded bindings remain evidence. A callback must name the
+exact binding it began under; a late callback cannot update a replacement
+binding.
+
 ### Scope
-An intentional substrate organising boundary inside a Workspace for connected, event-driven, or operational work.
 
-An unused Scope may be removed together with its authored composition and empty Contexts. Once Events or Pulse records exist, cleanup must preserve them; destructive Scope removal is refused rather than treating history as disposable configuration.
-A retired Scope preserves its durable identity, Contexts, and Events but has no active subscriptions or world sources and cannot route new work. Retiring it is the durable stop boundary: queued deliveries are cancelled, active runtime and command deliveries are interrupted, scoped Pulses are cancelled, and late acknowledgements cannot restart the work. It remains available to developer/history inspection and is excluded from the normal operator work surface.
-_Avoid_: Field, canvas, block, thread, context, pulse scope, universal fallback bucket.
+The durable outcome, organisation, lifecycle, and governance boundary presented
+to the operator as organised work. A Scope owns draft and published
+ScopeCompositionRevisions, ScopeExecutions, related Contexts and Artefacts,
+policies, budgets, attention state, and history.
 
-### Workspace-level Context
-A Context with actor participants and no Scope. It is valid for direct actor communication, actor side conversations, actor self-notes, and unsorted/general conversation before it is intentionally attached to scoped work.
-_Avoid_: Default Scope, Default Field, orphan stream.
+Retirement makes a Scope inert while preserving evidence. Removal is allowed
+only when no required history or active work would be destroyed.
 
-### Scoped Context
-A Context with a non-null `scope_id`. Scope is required for actorless Contexts and for work that creates or joins scoped operational flow unless the operation targets an already-valid explicit unscoped actor Context.
-_Avoid_: fake default scope, field-owned membership.
+_Avoid_: graph as a separate product primitive, canvas, universal fallback
+bucket.
 
-### Scoped Primitive
-A substrate primitive that declares a non-null `scope_id` or derives one from its owning primitive.
-_Avoid_: Field Item, canvas item, block storage.
+### ScopeCompositionRevision
 
-### Scope Projection
-A read-only substrate-derived view of the primitives and relationships visible in a Scope. It returns substrate refs and derived relationships, not React Flow state. Future clients may consume the same projection without knowing FloeWeb internals.
-_Avoid_: storage source, Field-owned item list, Field-owned connection graph, client-side membership derivation.
+One exact semantic design of a Scope. It contains NodePlacements, Ports, Edges,
+bindings, instructions, activation policy, Context policy, and semantic
+configuration. A draft is mutable. Publication makes the revision immutable and
+atomically selects it for new ingress. Existing ScopeExecutions stay pinned to
+their starting revision.
 
-### Scope Projection Layout
-Renderer-specific arrangement state for how a Scope projection displays scoped primitives and derived relationships. It is keyed by stable projected refs.
-_Avoid_: membership, semantic graph, source of truth.
+Pan, zoom, node position, and collapsed panels are client presentation state and
+do not create a semantic revision.
 
-Visual representations of substrate primitives use the primitive's own name; no separate user-facing rendering vocabulary is introduced.
+Legacy mutable Scope graphs are retained migration input. They are not the
+canonical authoring or execution model.
 
-### Block
-A representational view of a scoped substrate primitive or derived substrate relationship.
-_Avoid_: storage category, substrate primitive, `.floe/blocks`.
+### NodePlacement
 
-### Derived Relationship
-A relationship rendered in a Scope projection because it already exists on the underlying substrate primitives.
-_Avoid_: separate connection model, relationship ontology, projection-owned edge.
+The graph-local representation and configuration of an Actor, Context, Command,
+Capability, Connector, Event boundary, or nested Scope within one
+ScopeCompositionRevision. It references that resource; it does not replace its
+identity.
 
-### Pulse
-Bus-owned scheduled event creation. A pulse fires at a configured time and creates the canonical `pulse.fired` event for its subscribers. Pulse is NOT heartbeat, keepalive, runtime wait-refresh, or inherently actor activation.
+A NodePlacement is design, not work. Runtime activity is represented by a
+NodeExecution.
 
-### Pulse Persistence
-Where and how a Pulse definition is stored or carried.
-- **workspace-backed** - portable, stored with the workspace configuration and committed with the repository.
-- **local/runtime-backed** - private or runtime-local, stored in bus/local state rather than committed workspace configuration.
-_Avoid_: Pulse Scope.
+### Port
 
-### Pulse Definition
-A portable or local declaration of a scheduled Pulse, including its schedule, `pulse.fired` event payload, subscribers, persistence, and Scope or explicit Context anchor where relevant.
+A stable typed input or output interface on a NodePlacement. It may carry a
+control Event, exact ArtefactVersion references, or both. Required cardinality,
+schema compatibility, collection role, and output identity policy belong to the
+Port contract.
 
-### Pulse Runtime State
-Ephemeral scheduling state (next fire time, last fired, active/paused) stored in bus SQLite. Rebuilt from definitions on workspace attachment. Not portable - local to each bus instance.
+### Edge
 
-### Scheduled Pulse
-A Pulse with a clock-based trigger: either a cron expression with timezone (recurring) or an ISO 8601 timestamp (one-off).
+A stored connection from one output Port to one input Port in one
+ScopeCompositionRevision. Enabled Edges are the only routes that advance a
+canonical ScopeExecution. Publishing one output traverses every enabled outgoing
+Edge exactly once logically.
 
-### Pulse Subscriber
-A target that receives the created `pulse.fired` event when the Pulse fires. Subscriber kind determines whether the event is appended for rendering or delivered for endpoint processing.
+Context membership, Event type matches, prompts, observed history, direct Actor
+requests, and Artefact lineage never imply an Edge.
 
-### Context Subscriber
-A Pulse Subscriber that appends the `pulse.fired` event to an existing Context for rendering only. It does not create endpoint delivery or activate an Actor.
+### ScopeExecution
 
-### Endpoint Subscriber
-A Pulse Subscriber that delivers the `pulse.fired` event to an Endpoint. If it declares an explicit `context_id`, delivery uses that Context. If it omits `context_id`, the Pulse requires Scope and uses one stable generated scoped delivery Context for that Pulse + Endpoint Subscriber configuration, reused across fires and recreated on a later fire if deleted. Endpoint delivery may activate only if the Endpoint has a processor.
+One causally coherent activation of a Scope under one pinned
+ScopeCompositionRevision. It records root ingress, exact initial Event and
+ArtefactVersion references, status, initiator, environment, children, budget,
+terminal outcome, cancellation, and redo lineage.
 
-### Endpoint
-An addressable participant/interface in the substrate. Humans, agents, webhooks, extensions, schedulers, and future actors are all endpoints. No endpoint type is privileged.
+It is an execution record, not a new Workspace primitive.
 
-A retired Endpoint keeps its durable identity for historical Contexts and Events but has no delivery processor or Context subscriptions and is excluded from future routing. Retiring a workspace Actor also removes its active workspace configuration; it does not rewrite historical participation.
+### NodeExecution
 
-### Actor
-A workspace-scoped Endpoint participant that may communicate through Events.
-_Avoid_: projection-owned object, draggable actor object.
+One logical activation of one NodePlacement within a ScopeExecution. It records
+exact Port-bound inputs, join or activation key, resolved Context, assigned
+Actors, lifecycle, attempts, outputs, decisions, and failure state.
+
+Every NodeExecution references an inspectable writable Context. Context policy
+may create a Context, reuse one by key, or enter a fixed persistent Context.
+
+### ExecutionAttempt
+
+One processing or infrastructure attempt within a NodeExecution. Retry creates
+another ExecutionAttempt without inventing another logical NodeExecution.
+Runtime, model, instructions, tools, Extension versions, resource use, result,
+error, and evidence belong to the attempt.
 
 ### Context
-A bounded stream in which stream entries occur. A Context is anchored by actor participants, a Scope, or both; it is not always a chat conversation.
-_Avoid_: channel, room, field, actor container, orphan stream.
 
-### Thread
-Legacy or conversational wording for Context. New domain language should use Context.
+The durable place where participants understand, discuss, and record work. It
+contains conversation, attached evidence, relevant references, decisions,
+summaries, and exact relationships to ArtefactVersions and execution records.
+
+Context is collaboration, never pipeline wiring. Membership, parentage,
+subscriptions, instructions, and proximity cannot advance a ScopeExecution.
+
+A Context may be a direct conversation, a processing space, a persistent Actor
+workspace, or a Scope overview. It may be anchored by participants, a Scope, or
+both. A Context with neither anchor is invalid.
+
+_Avoid_: channel as topology, room as routing table, Thread in new domain
+contracts.
+
+### Context participant
+
+An Actor with an explicit role and access relationship to a Context.
+Participation controls collaboration and authority; it does not create an Edge.
+
+### Context subscription
+
+Ordinary pub/sub for non-graph communication and a retained index for explicitly
+legacy compositions. A canonical ScopeCompositionRevision never dispatches by
+Context subscription, and one revision can never use both legacy subscription
+routing and Edge routing.
 
 ### Event
-The communication primitive. All coordination passes through canonical Events routed by the bus. A Pulse firing produces an Event like any other.
+
+An immutable fact, signal, communication, observation, or decision that landed
+in Floe. It records source, time, Workspace, causation, correlation, schema,
+small payload facts, and zero or more exact ArtefactVersion references.
+
+An Event can start an execution, satisfy a Port, record an output or decision,
+or remain non-graph communication. Arbitrary Event content is not automatically
+an Artefact.
 
 ### Emit
-The universal substrate publish operation. Endpoints use emit when they deliberately want an Event to cause or communicate an effect. A normal runtime turn result does not require emit.
+
+The substrate publish operation for deliberate non-graph communication or for
+an explicitly attached Port publication. A natural runtime response is recorded
+in its NodeExecution Context without automatically routing downstream.
 
 ### Delivery
-An Event made available to a specific Endpoint for processing. Context subscribers do not create deliveries.
 
-Once a Delivery enters a runtime it may already have produced effects. Runtime
-telemetry renews its single-shot ownership lease while the turn is alive. If
-ownership is lost, the Delivery becomes a terminal unknown-outcome failure and
-is not replayed automatically. An operator-cancelled Delivery is terminal and
-ignores late runtime callbacks.
+Floe's durable obligation to transfer an Event and exact ArtefactVersion
+references to an Endpoint or input Port. Delivery owns queue, lease,
+acknowledgement, transport attempt, expiry, and cancellation state. It is
+transport, not logical execution.
 
-### Event Cursor
-An opaque, ordered position in a Workspace's Event stream, keyed by `(created_at, event_id)`. It is the unit the `since` and backward-history `before` parameters on Event queries speak, and what an Endpoint Watermark stores. The `event_id` tie-break makes Events sharing a `created_at` safe to page past without skipping or repeating.
-_Avoid_: offset, page number, timestamp-only cursor.
+A graph-routed Delivery pins ScopeExecution, ScopeCompositionRevision, source
+and target Node/Port, Edge, causal Event, NodeExecution, and publication. Root
+ingress and continuation callbacks may have no Edge, but still pin their exact
+revision and NodeExecution. Direct conversations and direct Actor requests may
+have no ScopeExecution.
 
-### Endpoint Watermark
-A persisted, per-Endpoint Event Cursor marking how far an Endpoint has been carried forward — the point an Actor was last brought up to date. It is generic across Actors; the operator is one ordinary Endpoint. It advances only when explicitly set, never on read, so "what changed since I was last here" persists until the Actor deliberately marks themselves caught up. Distinct from `bridges.last_seen_at`, which is bridge liveness.
-_Avoid_: read receipt, seen, unread badge, last_seen_at.
-
-### Webhook
-An event source that ingests external input and produces canonical substrate Events. Actorless webhook streams must create or use a scoped Context; they must not fall back to a hidden Default Scope.
-
-### Work Log
-A committed Markdown activity record for human audit. Tool activity, telemetry, and a copy of runtime output may appear here, but the Work Log is not the mechanism that makes a turn result visible in its Context. Work logs derive Scope from their delivery/Context when scoped, and carry `scope_id: null` for direct unscoped actor Contexts.
+Once a Delivery enters a runtime it may already have caused effects. Loss of
+runtime ownership becomes a terminal unknown-outcome failure and is never
+silently replayed.
 
 ### Turn
-An Endpoint's processing cycle for one delivered Event from one originating Context. A non-empty natural model completion is durably recorded as that actor's local result in the originating Context. Recording the result does not route or fan out an Event, wake another actor, create a Context, or request another response. Turn end remains the separate lifecycle fact that the endpoint has finished processing.
 
-When an actor explicitly requests another actor's work, Floe stores the dependency over the existing Event, delivery, pending-response, and correlation mechanisms. The requested actor completes naturally; Floe returns that exact result or terminal failure and resumes the requester. The model does not manage return-path identifiers.
+An Endpoint processing cycle for one Delivery built from one origin Context. A
+non-empty natural completion is stored in the target NodeExecution Context, or
+the direct Delivery Context when no NodeExecution exists. It does not advance a
+ScopeExecution. Only publication to a named output Port does that.
 
-Context history is addressable durable state, not mandatory prompt material. A runtime turn starts with a compact causal orientation and may retrieve bounded history when the work requires it.
+When an Actor directly requests another Actor during a NodeExecution, the
+request remains non-graph delegation. Its exact result resumes the same
+NodeExecution, Context, and pinned revision. The model does not manage return
+identifiers.
+
+### Actor
+
+An entity permitted to perceive, decide, communicate, and act within declared
+responsibility and authority. Human, local-model, hosted-model, deterministic
+service, and future runtime backing do not change Actor identity or graph
+semantics.
+
+An Actor has stable identity, a versioned ActorDefinitionRevision, and a
+separately replaceable runtime binding. Assignment to a NodePlacement or Context
+controls responsibility and access, never routing.
+
+### Endpoint
+
+An addressable delivery interface used by an Actor, Command, Connector, service,
+or other runtime. Endpoint is not a type of identity and no backing is
+privileged. A retired Endpoint keeps historical references but receives no new
+Delivery.
+
+### ActorDefinitionRevision
+
+An immutable revision of an Actor's charter, responsibilities, knowledge,
+budgets, trust policy, instructions, capability grants, and escalation rules.
+Each ExecutionAttempt records the revision and runtime binding it actually used.
+
+### Command
+
+A deterministic executable operation with declared inputs, outputs, side
+effects, permissions, timeout, idempotency, and implementation. A Command
+executes a defined operation; an Actor can interpret, choose, converse, and
+delegate.
+
+### Artefact
+
+A stable logical thing produced, consumed, discussed, revised, assembled,
+tested, approved, or derived by work. Examples include a document, concept
+image, child image, collection, source tree, website, report, decision, or
+deployable package.
+
+Floe owns stable identity, type, access and retention state, creation
+provenance, and the version graph. Extensions own domain schemas, metadata,
+specialised statuses, invalidation policy, regeneration policy, and rich
+presentation.
+
+_Avoid_: mutable file path as identity, Event payload as identity,
+Extension-owned identity ledger.
+
+### ArtefactVersion
+
+One immutable state of an Artefact or exact externally pinned observation. It
+has a canonical version ID, digest or provider-guaranteed revision, media type,
+schema, typed ContentRef, provenance, exact lineage, membership, and Context or
+execution associations.
+
+There is no universal mutable `current_version`. Branches may have multiple
+heads. Current, approved, stale, or domain status is a policy-governed annotation
+or projection.
+
+### ContentRef
+
+A typed secure reference to exact content held by the filesystem, Git, object
+storage, document provider, database snapshot, or another content store. Floe
+does not need to copy large bytes when a verified immutable reference is
+sufficient.
+
+### Capability
+
+A discoverable semantic operation or reusable implementation available under
+authority. Its Bus-owned definition supplies one versioned contract for app,
+Actor, CLI, SDK, API, and MCP clients.
+
+### CapabilityGrant
+
+A durable, revocable, expiring grant from an issuer to one principal for exact
+semantic operation IDs within one explicit authority boundary: a Workspace or
+a host. A grant may also be restricted to exact resources. Authority sessions
+reference CapabilityGrant IDs and resolve their current state on every
+invocation; they never copy operation strings as authority.
+
+### SecretRef
+
+A stable metadata-only reference to credential material held by an operating
+system or managed credential broker. Floe records resolution and an opaque
+broker binding, never reusable secret bytes.
+
+Secret use requires a current CapabilityGrant targeting the exact SecretRef and
+resource plus credential-specific purpose constraints. Export contains only
+unresolved SecretRef metadata. Missing credentials remain unresolved bindings.
+
+### ConnectorDefinition and ConnectorBinding
+
+A ConnectorDefinition describes a typed external Event source or action. A
+ConnectorBinding configures it for one Workspace using SecretRefs, schemas,
+idempotency, health, and policy. Webhook, folder, schedule, API, and legitimate
+polling sources use this contract.
+
+### ExternalEffectReceipt
+
+The durable record of an attempted action outside Floe, including exact input,
+target, idempotency identity, provider receipt, and known, failed, or uncertain
+outcome. An uncertain effect pauses for reconciliation instead of blind retry.
+
+### Pulse
+
+Bus-owned scheduled Event creation. A Pulse is a scheduling mechanism, not a
+heartbeat, liveness loop, or separate routing system. In canonical execution a
+Pulse is bound through a schedule Connector and explicit ingress Port.
 
 ### Extension
-A substrate addition that provides tools, Pulse declarations, and/or programmatic Extension Hooks to agents. Lives in the workspace with an extension manifest and TypeScript entry point. Discovered and loaded by the bridge at workspace attach time.
-_Avoid_: Plugin, module, add-on.
 
-### Extension Manifest
-A JSON file declaring extension metadata, capabilities, and optional Pulse schedules. Schema-versioned (`floe.extension.v1`).
+A versioned package that can contribute Capabilities, Commands, Connectors,
+schemas, templates, Actor definitions, previews, renderers, dashboards, or
+bounded product surfaces under declared permissions, isolation, approval, and
+rollback. Workspace installation remains under `.floe/extensions/NAME/`;
+canonical source may live in an independent repository or package.
 
-### Extension Entry Point
-A TypeScript file that exports a factory function receiving `ExtensionContext` and returning an array of agent tools. Loaded by the bridge.
-_Avoid_: Pi extension factory (different lifecycle scope).
+The existing in-process TypeScript loader is legacy implementation to be
+replaced by the accepted isolated Extension lifecycle. It is not permission to
+grant arbitrary filesystem, network, secret, or action access.
 
-### Extension Tool Prefix
-Extension tool names are auto-prefixed with the Extension name to prevent collisions. Extension declares `name: "add"`, agent sees `todo_add`.
+### Projection
 
-### Extension Hook
-A substrate lifecycle point with a real firing path that an Extension can observe or contribute to by registering a TypeScript handler through `ExtensionContext.hooks.on(...)`.
+A read-only queryable view derived from canonical records. Organised Work,
+Scope plan/execution, Artefact lineage, Context trees, attention, health, and
+current heads are projections. A projection is never another ledger.
 
-### Hook Registration
-The load-time act of attaching an Extension handler to a named Extension Hook; registration alone does not mean that hook is fired by the current bridge/runtime path.
+### Presentation state
 
-### Hook Firing
-The bridge/runtime act of invoking registered handlers for an implemented lifecycle point.
+Client-owned arrangement such as pan, zoom, node positions, collapsed panels,
+and selected tabs. Presentation state may reference canonical IDs but cannot
+change topology, identity, execution, or authority.
 
-### Observation Hook
-An Extension Hook whose handler can observe payloads and perform side effects without changing routing, delivery, or runtime input.
+### Operation receipt
 
-### BeforeTurn Injection
-The implemented behaviour-changing Extension Hook result where `BeforeTurn` handlers return `inject` data that is rendered into runtime prompt context.
+The stable result of one idempotent semantic operation invocation. It records
+principal, authority context, exact target and revision, provenance, state,
+changed references, refusal or required action, progress/cancel references, and
+audit reference. A client reconnects to the receipt instead of guessing whether
+an operation committed.
 
-## Relationships
+### Event Cursor
 
-- A **Workspace** is the top-level boundary; it has **Actors**, **Contexts**, and zero or more named **Scopes**
-- **Workspace Home** is an index/dashboard over Workspace state; it is not a **Scope**
-- A **Scope** organises **Scoped Primitives**; it does not execute work, contain Actors, or own a duplicated membership list
-- Re-composing an active **Scope** replaces its current nodes and subscriptions while preserving the Scope's Context history; it does not create a second operator-visible organisation
-- A **Scope Projection** derives visible primitives and relationships from substrate state; it is not a storage source
-- A **Scope** is the user-facing visual representation of itself
-- A **Scope Projection Layout** belongs to a renderer's projection of a **Scope** and must not determine membership
-- A **Context** is valid when anchored by actor participants, a **Scope**, or both
-- A **Context** with actor participants may have `scope_id: null`
-- A **Context** without actor participants must have a non-null `scope_id`
-- A **Context** with neither actor participants nor Scope is invalid
-- **Events** derive Scope from their **Context** or source ownership; Event Scope may be null for unscoped actor Contexts and must not become an independent source of truth
-- A **Scope Projection** renders a **Context** as the top-level conversation/work node; Events inside that Context are its history and are not separate projection-level blocks
-- A **Pulse** has **Pulse Persistence** and must have either a Scope or an explicit valid Context/subscriber anchor
-- A **Pulse** creates a canonical **Event** with type `pulse.fired`
-- A **Context Subscriber** appends `pulse.fired` to an explicit **Context** without creating a **Delivery**; the Context may be an unscoped actor Context
-- An **Endpoint Subscriber** creates a **Delivery** for an **Endpoint** and may activate that endpoint's processor; without explicit `context_id`, it requires Pulse Scope and uses one stable generated scoped delivery Context for that Pulse + Endpoint Subscriber rather than creating a new Context per fire
-- A **Webhook** is an event source; actorless webhook Events must create or use a scoped Context, not a hidden Default Scope
-- A **Work Log** derives Scope from its delivery/context when available, and may carry `scope_id: null` for direct unscoped actor Contexts
-- **Actors** are workspace-scoped and are not contained by Scope projections
-- **Derived Relationships** are rendered from existing substrate state; editing one must update the primitive that owns the relationship
-- An **Extension** provides **Tools**, optional **Pulse** declarations, and optional **Extension Hooks**
-- An **Endpoint** declares which **Extensions** it uses via frontmatter `extensions: []`
-- The bridge loads **Extensions** at workspace attach alongside **Endpoints** and **Pulses**
-- Extension-declared **Pulses** are registered as normal **Pulses**; the bus is unaware of extensions
-- An **Extension** registers **Extension Hooks** programmatically when its entry point is loaded
-- **Hook Registration** and **Hook Firing** are separate: a registered hook only runs when the bridge/runtime fires that lifecycle point
-- Most active **Extension Hooks** are **Observation Hooks**; **BeforeTurn Injection** is the current implemented behaviour-changing hook result
+An opaque ordered position in a Workspace's Event or push stream. Cursor-based
+catch-up prevents skipping or duplicating records after reconnect. It is not an
+offset, page number, or periodic full-state refresh.
 
-## Flagged ambiguities
+### Work Log
 
-- "Scope" previously appeared in Pulse APIs and docs to mean workspace-backed versus local/runtime-backed storage. Resolved: use **Pulse Persistence** for storage/lifecycle location, and reserve **Scope** for the workspace organising boundary.
-- The earlier layout model made `.floe/fields/<id>.yaml` own items and connections. Resolved: **Scope** is the substrate primitive; projection-owned item and connection lists are superseded.
-- Earlier Scope work introduced **Default Scope** as an automatic bucket for every Context. Superseded: Scope is nullable for actor-anchored Contexts, required for actorless/scoped operational Contexts, and must not be used as a product fallback.
+A committed Markdown audit projection for a runtime Turn. It is useful evidence,
+not execution state, topology, an Artefact identity ledger, or the mechanism
+that makes a response visible.
 
-## Deferred Concepts
+## Standing relationships
 
-### Many-to-many Scope Membership
-A primitive belonging to more than one Scope. Deferred; first Scope work uses one primary Scope per scoped primitive.
+- A Workspace owns portable identity; each host owns its Workspace locator binding.
+- A Scope owns immutable composition revisions and executions; it remains the user-facing organisation.
+- A published ScopeCompositionRevision owns NodePlacements, Ports, and Edges.
+- A ScopeExecution pins exactly one published revision for its complete causal life.
+- A NodeExecution activates one NodePlacement and references one inspectable Context.
+- An ExecutionAttempt belongs to one NodeExecution and may reference several joined Deliveries.
+- A Delivery transports an Event and exact ArtefactVersion references; it does not replace NodeExecution.
+- Only explicit Edge traversal advances canonical graph work.
+- Context membership, subscription, and parentage remain collaboration relationships.
+- Direct `emit` and `request` remain valid non-graph communication.
+- Artefact lineage records exact version relationships; it is never pipeline topology.
+- Content storage owns bytes; Floe owns identity, provenance, authority, and safe references.
+- CapabilityGrant owns operation authority; SecretRef constraints narrow credential purpose without creating another grant lifecycle.
+- Clients project and invoke the same Bus-owned semantic operations; they do not own parallel validation or policy.
+- Developer diagnostics may expose raw evidence, but normal operator work cannot depend on Developer tools.
 
-### Global Connections
-Cross-scope or global relationship management. Deferred unless an existing substrate primitive already owns that relationship.
+## Legacy boundaries
 
-### Idle Pulse
-An idle-time-based Pulse that fires after an Endpoint has been idle for a configured duration. Deferred - it is a lifecycle/keepalive concern, not scheduled event delivery.
+- Legacy Scope graphs and Context subscriptions may be imported and inspected,
+  but new or republished compositions use stored Edges only.
+- Legacy extension lineage JSON may be imported idempotently as evidence; it is
+  not a continuing source of Artefact identity.
+- Legacy path-derived Workspace identifiers are retained as opaque identities
+  during safe migration; new identities are opaque and path-independent.
+- Legacy raw mutation routes must delegate to semantic operations or become
+  authenticated internal routes. They are not a second public contract.
+- Legacy `auth.json` is migration input. Secret material is transferred only
+  through an explicit trusted broker action, verified, and preserved until
+  separately approved cleanup.
 
-### Pending Response Timeout
-A timeout mechanism for stale `response.expected: true` states. Separate lifecycle concern from Pulse. Agents wait indefinitely; timeouts are optional lifecycle management to be designed separately.
+## Settled naming
+
+- Use **Workspace**, **Scope**, **Context**, **Actor**, **Event**, **Command**,
+  and **Artefact** for substrate primitives.
+- Use **ScopeCompositionRevision**, **NodePlacement**, **Port**, and **Edge** for
+  composition records.
+- Use **ScopeExecution**, **NodeExecution**, **ExecutionAttempt**, **Delivery**,
+  and **ExternalEffectReceipt** for execution records.
+- Use **Thread** only when describing legacy UI wording; new contracts use
+  **Context**.
+- Do not introduce `Work`, `Job`, `WorkItem`, `NodeRun`, `HumanGate`, `Split`,
+  `Gather`, or user-facing `Graph` as new primitives. Existing records and
+  Extension capabilities represent those behaviours.

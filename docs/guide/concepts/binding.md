@@ -1,45 +1,48 @@
 # Binding
 
-**A binding is one piece of typed configuration on an [[Actor]] or a node, held in an ordered list.**
+**A binding is a replaceable association between a stable resource and configuration it uses.**
 
-## Kinds
+A binding does not become the resource's identity and does not rewrite retained
+execution history.
 
-| Kind | What it configures |
-|---|---|
-| `model` | Which model the actor runs as |
-| `auth profile` | Which credentials it runs under |
-| `thinking level` | Reasoning effort: off, minimal, low, medium, high, xhigh |
-| `instructions` | Free-form text, resolved inline — the text itself is the material |
-| `role` | A centrally-stored, versioned bundle (planned; points at something rather than carrying text inline) |
+## Runtime binding
 
-The substrate carries and orders bindings generically. It does not know what any
-`kind` means — meaning lives with the kind, not with the list.
+An [[Actor]] has stable identity and immutable ActorDefinitionRevisions. Its
+runtime embodiment is a separately replaceable binding to a RuntimeProfile.
+That profile may select provider, model, reasoning effort, tool policy, and
+other runtime configuration.
 
-## The key idea
+Each ExecutionAttempt records the exact ActorDefinitionRevision,
+RuntimeProfileRevision, and binding it used. Changing a current binding affects
+new attempts according to policy; it cannot make an old attempt appear to have
+used the new configuration.
 
-A node's binding is what the actor is doing **as that node** — never baked into the
-actor's own identity file, and never hardcoded per workflow. The same actor can be
-bound to one model with terse instructions in one working space, and a different
-model with a different role in another. Its identity doesn't change; what it's doing
-right now does.
+## Placement binding
 
-## Resolution order
+A NodePlacement may add revision-specific instructions, capabilities, or
+configuration for how a resource participates in that
+ScopeCompositionRevision. These are part of the immutable published design, not
+changes to the Actor or Command itself.
 
-A binding resolves endpoint first, then falls back outward:
+## Credentials
 
-1. **endpoint** (agent-level, this actor specifically)
-2. **workspace** (workspace default, applies to every actor here without its own binding)
-3. **global** (machine-wide default)
+A runtime binding refers to SecretRef metadata where credentials are needed.
+Reusable credential values stay behind the native or deployment credential
+broker and never enter the binding, Context, Event, operation input, export, or
+webview.
 
-The first layer that has a value wins. `GET /v1/runtime/bindings/resolve` returns all
-three layers plus which one is effective, so a UI can show inheritance rather than
-just the resolved value.
+## Operations
+
+RuntimeProfile and Actor runtime-binding lifecycle use Bus-owned semantic
+operations. The legacy `/v1/runtime/bindings` routes are compatibility/internal
+adapters and cannot remain an alternate product write path.
 
 ## Implementation
 
-- `floe-bus/src/bindings.ts` — the generic `Binding` type; `instructions` is the only kind implemented on this path today
-- `floe-bus/src/server.ts` — `GET`/`POST /v1/runtime/bindings`, `POST /v1/runtime/bindings/clear`, `GET /v1/runtime/bindings/resolve` (endpoint → workspace → global resolution)
-- `floe-app/src/actors/ActorInspector.tsx` — model/auth-profile/thinking-level binding editor and the resolved effective-binding display
-- `role` binding (pointing at a versioned bundle) — Not built yet.
+- `floe-bus/src/runtime-profiles.ts` — RuntimeProfile revisions and Actor
+  bindings
+- `floe-bus/src/runtime-profile-operations.ts` — shared lifecycle operations
+- `floe-bus/src/credential-broker.ts` — SecretRef resolution boundary
+- `floe-bus/src/scope-compositions.ts` — placement-specific bindings
 
 See [[Glossary]].

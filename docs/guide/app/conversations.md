@@ -4,7 +4,15 @@
 
 ## Opening a conversation
 
-The normal **Conversations** entry lists Contexts in which the workspace operator participates. Workspace entry selects the latest Floe conversation inside this same surface; Floe is not a separate route. Opening any item names the other participant, fixes the speaking identity to the operator, and provides the same back, new, and delete actions. Developer tools can also open a conversation from a scope's Contexts tab, an actor's Conversations tab, or Activity; that form shows the context label and participant pills (see [[Navigating floe-app]]).
+The normal **Conversations** entry lists Contexts in which the Workspace
+operator participates. Workspace entry selects the latest Floe conversation
+inside this same surface; Floe is not a separate route. Opening any item names
+the other participant and fixes the speaking identity to the operator. Context
+lifecycle actions come from the shared semantic operation contract: archive is
+reversible, restore returns an archived Context, and permanent destruction is a
+separately confirmed action that may refuse while retained evidence depends on
+the Context. Developer tools can inspect the same Context details; they do not
+own another lifecycle.
 
 ## The message list
 
@@ -12,7 +20,11 @@ The body is a scrollable, chronological stream. Only events of `type === "messag
 
 ## Speaking as
 
-There is no human identity in floe — the substrate has no human/agent distinction, and peers cannot tell what backs an [[Actor]]. So the composer does not ask who *you* are; it asks which [[Actor]] you want to post as, via a "Speaking as" selector. Sending a message posts it into the context as that actor's [[Endpoint]].
+The substrate has no human/agent identity type. The authenticated principal
+establishes authority, and the selected Actor establishes the speaking identity
+where the product allows that choice. An [[Endpoint]] is only the addressable
+delivery interface used for the Event; it is not the Actor's identity or a
+credential.
 
 Normal operator conversations fix the speaking endpoint to the workspace operator and show the workspace provider, model, and reasoning effort above the composer. The composer remains disabled until a connected provider and model are saved, so an operator cannot create a message that a model-backed collaborator is not configured to handle. Developer-opened conversations keep the general "Speaking as" behaviour.
 
@@ -36,7 +48,13 @@ Nothing is sent automatically. After exact preview and explicit approval, the ap
 
 ## Creating a new context
 
-In normal Conversations, **New conversation** starts another Context with the currently selected collaborator; **New with Floe** starts one from the list. No Context is created until the operator submits the first outcome. Developer tools can also create contexts from a scope or actor view. A created context can optionally belong to a [[Scope]]; one with no scope still exists. If the operator is a participant, it is reachable from normal Conversations; otherwise it remains available through Developer tools.
+In normal Conversations, **New conversation** starts another Context with the
+currently selected collaborator; **New with Floe** starts one from the list. No
+Context is created until the operator submits the first outcome. Contexts may be
+archived and restored without losing retained evidence. Permanent destruction
+is a separately confirmed operation and may be refused when canonical evidence
+depends on the Context. Developer tools may inspect Context details, but they do
+not own a second lifecycle.
 
 See [[Glossary]].
 
@@ -45,7 +63,8 @@ See [[Glossary]].
 - `floe-app/src/scope/ContextConversation.tsx` — conversation view, message stream, Speaking-as selector, Join context, working indicator
 - `floe-app/src/features/conversations/OperatorConversations.tsx` — unified operator conversation lifecycle, discovery, and Needs you/Recent grouping
 - `floe-app/src/app/layout/LeftNav.tsx` — compact operator health status and recovery action
-- `POST /v1/contexts/:id/participants` — join a context (`addContextParticipant`)
+- `context.participant.set_access` — canonical participant role/access change
 - `GET /v1/events?context_id=…&type=message&direction=backward` — newest-first bounded message history with earlier-page cursors (`listContextEventHistoryPage`)
-- `POST /v1/workspaces/:ws/contexts` — create a context (`createContext` / `createDirectContext`)
+- `context.create` and `context.communication.emit` — canonical conversation
+  creation and communication
 - Bus WebSocket `GET /v1/events/stream` — live updates, `delivery_bundle_available` / turn-end signals drive the working indicator

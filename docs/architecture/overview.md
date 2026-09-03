@@ -13,13 +13,19 @@
 > they are and where they are going, and renders as diagrams on GitHub.  
 > Canonical terminology lives in [`CONTEXT.md`](../../CONTEXT.md).  
 > Accepted decisions live in [`docs/adr/`](../adr/).
+>
+> **Canonical foundation:** ADR-0010 through ADR-0012 supersede the earlier
+> subscription-routed mutable-graph, path-identity, raw-client, and direct-secret
+> assumptions still visible in legacy adapters. This document distinguishes
+> those adapters from the accepted contract; they are not alternate product
+> semantics.
 
 ---
 
-## Part 1 — Current State
+## Part 1 — Transitional implementation inventory
 
-Grounded in the code as of the time of writing. Every claim is anchored to a
-real file so a future reader can verify or correct it.
+Grounded in current code. Legacy adapters are labelled as such; canonical
+semantics come from `CONTEXT.md` and accepted ADRs.
 
 ---
 
@@ -30,14 +36,15 @@ below zoom in on each domain independently.
 
 ```mermaid
 graph LR
-    subgraph APP["floe-app · port 5379"]
-        UI["React UI\n(App.tsx, ScopeDetail, Settings)"]
+    subgraph APP["floe-app"]
+        UI["React webview\n(presentation only)"]
+        NATIVE["Tauri native broker\nhost vault · Workspace sessions"]
         CREG["COMPONENT_REGISTRY\n(maps extension component IDs\nto React components at build time)"]
     end
 
     subgraph BUS["floe-bus · port 5377"]
         BHTTP["Fastify HTTP + WebSocket"]
-        BSTORE["BusStore (SQLite)\nWorkspace · Scope · Context\nEndpoint · Event · Delivery · Pulse"]
+        BSTORE["BusStore (SQLite)\nidentity · authority · semantic operations\nScope design/execution · Context · Artefact\nEvent · Delivery · Connector · Extension"]
         BHTTP <-->|"internal"| BSTORE
     end
 
@@ -55,12 +62,13 @@ graph LR
         EFILES[".floe/extensions/name/\n(definition files)"]
     end
 
-    UI -->|"HTTP GET/POST /v1/*"| BHTTP
-    UI -->|"WebSocket — event_submitted"| BHTTP
+    UI -->|"typed IPC; no bearer material"| NATIVE
+    NATIVE -->|"authenticated projections\nand semantic operations"| BHTTP
+    NATIVE -->|"authenticated cursor stream"| BHTTP
     BHTTP -->|"GET /v1/extensions\n→ registered views"| UI
     CREG -.->|"unavailable components render a placeholder"| EVIEW
 
-    DAEMON -->|"GET deliveries\nPOST events, endpoints"| BHTTP
+    DAEMON -->|"authenticated Delivery/runtime transport"| BHTTP
     DAEMON -->|"POST /v1/extensions/report\n(relay_url)"| BHTTP
 
     ENTRY -->|"loaded by (workspace attach)"| LOADER
@@ -71,16 +79,20 @@ graph LR
     EFILES -->|"read/written by\nextension tools & handlers"| DAEMON
 ```
 
-**Desktop path (Tauri, optional):** `SubstrateSettingsView` auth-write operations bypass the bus
-and go directly through Tauri IPC to the local filesystem (ADR-0005). The bus never exposes
-auth-write endpoints.
+**Desktop trust boundary:** the Tauri shell owns the `host_control` credential in
+the operating-system vault, obtains short-lived Workspace operation sessions,
+and brokers HTTP, media, provider authentication, and resumable push events.
+The webview receives typed results, never bearer or provider credentials
+(ADR-0012).
 
 ---
 
 ### 1.1 Substrate Primitives (`floe-bus`)
 
-The bus is the canonical event store and the only mutable substrate daemon.
-All state is SQLite; all structural definitions live in files under `.floe/`.
+The Bus is the canonical substrate store and semantic operation authority.
+Committed `.floe/` files remain configuration or legacy import sources; they do
+not replace canonical Workspace identity, Scope topology, execution, Context,
+Artefact, authority, or receipt records.
 
 **Key invariant (`floe-bus/src/store.ts` header):** `BusStore` is the sole mutable
 substrate store for bus-owned records. No parallel runtime state.
@@ -90,24 +102,35 @@ substrate store for bus-owned records. No parallel runtime state.
 ```mermaid
 graph TD
     subgraph BUS["floe-bus — BusStore (SQLite)"]
-        WS["Workspace\n(locator + workspace_id)"]
+        WS["Workspace identity\n+ host-local locator binding"]
         SC["Scope\n(organising boundary)"]
-        CTX["Context\n(bounded stream)"]
-        EP["Endpoint\n(actor / agent / webhook / scheduler)"]
+        REV["ScopeCompositionRevision\nNodePlacements · Ports · Edges"]
+        EX["ScopeExecution\nNodeExecution · ExecutionAttempt"]
+        CTX["Context\ncollaboration + evidence"]
+        ACT["Actor\nidentity + definition revision"]
+        EP["Endpoint\ndelivery interface"]
+        ART["Artefact\nimmutable versions + provenance"]
         EV["Event\n(canonical record)"]
-        DEL["Delivery\n(per-endpoint view of an event)"]
+        DEL["Delivery\ntransport obligation"]
         PL["Pulse\n(scheduled trigger)"]
         PF["pulse.fired event\n(one per subscriber per fire)"]
     end
 
     WS -->|"contains 0..n"| SC
-    WS -->|"contains 0..n"| EP
+    WS -->|"contains 0..n"| ACT
+    SC -->|"owns immutable"| REV
+    SC -->|"owns"| EX
+    EX -->|"pins one"| REV
+    EX -->|"references"| CTX
+    REV -->|"explicit Edges advance"| EX
     SC -->|"organises"| CTX
-    CTX -->|"anchored by participants"| EP
+    CTX -->|"participants"| ACT
+    ACT -->|"uses"| EP
     CTX -->|"contains"| EV
     EP -->|"emits"| EV
     EV -->|"creates"| DEL
     DEL -->|"delivered to"| EP
+    EX -->|"produces/consumes exact"| ART
     PL -->|"fires → creates"| PF
     PF -->|"is a"| EV
     PF -->|"creates"| DEL
@@ -118,9 +141,11 @@ graph TD
 - A Context must be anchored by actor participants, a Scope, or both.
 - A Context with no actor participants **must** have a non-null `scope_id`.
 - A Context with actor participants may have `scope_id: null` (workspace-level conversation).
-- Participants are **frozen** at creation — there is no add/remove participant API
-  (`floe-bus/src/contexts/integration.test.ts` T10).
+- Participants have explicit role/access relationships and may change through
+  canonical Context semantic operations.
 - `parent_context_id` allows hierarchical nesting (e.g. sub-conversations).
+- Context membership, parentage, and subscriptions never advance a canonical
+  ScopeExecution. Only stored Edges do.
 
 **Pulse = scheduled event (ADR-0001, `floe-bus/src/server.ts:firePulse`):**
 
@@ -262,9 +287,11 @@ Handlers run sequentially in registration order; failures are caught and logged,
 
 ### 1.3 UI Surface (`floe-app`)
 
-One UI surface on port 5379: works in a plain browser and is wrapped by the
-Tauri desktop shell (ADR-0005, `floe-app/src-tauri/`). Same vite frontend;
-Tauri adds local IPC for auth-write operations.
+The React app is presentation. The packaged Tauri shell is the trusted desktop
+adapter: it owns host authority, obtains Workspace sessions, and brokers
+authenticated Bus requests, media, provider setup, filesystem access, and push
+events (ADR-0012). A standalone browser requires a separate trusted session
+adapter; loopback reachability is not authority.
 
 ```mermaid
 graph TD
@@ -286,7 +313,7 @@ graph TD
     end
 
     subgraph DESKTOP["Tauri desktop shell (optional)"]
-        TAURI["Tauri IPC\n(auth-write only — bypasses bus)"]
+        TAURI["Tauri native broker\nhost vault · Workspace sessions\nHTTP · media · push relay"]
     end
 
     APPX -->|"scope selected"| SD
@@ -295,11 +322,11 @@ graph TD
     SD --> EXT_TABS
     EXT_TABS -->|"unavailable component"| EV
     APPX --> SS
-    SS -->|"browser: GET /v1/auth/profiles (read-only)"| BAPI
-    SS -->|"desktop: invoke()"| TAURI
-
-    SD -->|"WebSocket — event_submitted"| BAPI
-    SD -->|"HTTP GET/POST"| BAPI
+    APPX -->|"typed IPC"| TAURI
+    SD -->|"typed IPC"| TAURI
+    SS -->|"typed IPC"| TAURI
+    TAURI -->|"authenticated projections\n+ semantic operations"| BAPI
+    TAURI -->|"cursor-resumable stream"| BAPI
 ```
 
 **Extension view registration** (`ScopeDetail.tsx`):
@@ -310,11 +337,11 @@ graph TD
 
 ---
 
-## Part 2 — Target Model
+## Part 2 — Extension implementation notes
 
-> **This section is aspirational / target state.**  
-> Items here represent agreed direction but are NOT yet in the code.
-> Do not treat this section as current-state documentation.
+> This section records extension boundaries that are not fully implemented.
+> Accepted ADR-0010 through ADR-0012 are current contract, not aspirations;
+> older extension-loader details remain transitional implementation only.
 
 ---
 
@@ -343,7 +370,10 @@ Extensions are independent consumers of the substrate. They define their own pro
 Extensions integrate into substrate primitives; they must not build parallel stores for substrate-owned mutable state.
 
 - Extension-owned definitions and product state belong to the extension workspace files or its own storage contract.
-- The bus owns contexts, events, deliveries, subscriptions, and runtime state.
+- The Bus owns Contexts, Events, Deliveries, Scope design/execution, Artefact
+  identity/provenance, authority, semantic operations, receipts, and runtime
+  state. Context subscriptions remain non-graph communication or identified
+  legacy routing only.
 - Extension hooks and handlers use the normal event and delivery paths; they do not introduce polling loops or separate participant management.
 - Tools are optional interfaces to extension-owned state. Events notify and route work; they are not a replacement for durable product state.
 
@@ -357,7 +387,7 @@ Following ADR-0001, human-authored definitions are committed and portable; bus r
 |---|---|---|
 | Project configuration | `.floe/floe.yaml` | ✅ Yes |
 | Extension definitions and product state | Extension-owned contract | Extension-defined |
-| Contexts, events, deliveries, subscriptions, and watermarks | Bus SQLite | ❌ No — runtime |
+| Contexts, Events, Deliveries, Scope revisions/executions, Artefacts, grants, receipts, and cursors | Bus SQLite | ❌ No — canonical/runtime state |
 
 ---
 ### 2.3 Pulse / Event / Hook Unification Note
@@ -414,6 +444,9 @@ graph LR
 | [`docs/adr/0002-extension-substrate-design.md`](../adr/0002-extension-substrate-design.md) | Extension manifest format, factory function entry, hook registration model, tool namespacing. |
 | [`docs/adr/0003-field-substrate-primitive.md`](../adr/0003-field-substrate-primitive.md) | Superseded renderer vocabulary decision (superseded by ADR-0004 for ownership questions). |
 | [`docs/adr/0004-scope-as-substrate-organising-boundary.md`](../adr/0004-scope-as-substrate-organising-boundary.md) | Scope is the organising boundary; contexts may be scope-anchored or actor-anchored; there is no automatic fallback Scope. |
-| [`docs/adr/0005-file-access-patterns.md`](../adr/0005-file-access-patterns.md) | File access: Tauri IPC for desktop auth-write; agent file writes sandboxed to workspace locator; no remote HTTP file-write. |
+| [`docs/adr/0005-file-access-patterns.md`](../adr/0005-file-access-patterns.md) | Original desktop file/auth boundary, now extended by ADR-0012's native authenticated transport and credential broker. |
 | [`docs/adr/0006-external-extension-repositories.md`](../adr/0006-external-extension-repositories.md) | Extensions live in independent repositories; the monorepo contains substrate only. |
-| [`docs/substrate-semantics.md`](../substrate-semantics.md) | Endpoint equality, event as primitive, turn as lifecycle, chat as a view. Substrate doctrine. |
+| [`docs/adr/0010-canonical-scope-composition-execution-and-artefacts.md`](../adr/0010-canonical-scope-composition-execution-and-artefacts.md) | Context is collaboration; immutable Scope revisions own Ports/Edges; execution and Artefact provenance are canonical. |
+| [`docs/adr/0011-one-semantic-operation-contract.md`](../adr/0011-one-semantic-operation-contract.md) | App, Actor, CLI, SDK, API, and MCP clients share one Bus-owned operation contract. |
+| [`docs/adr/0012-portable-workspace-authority-and-secret-brokering.md`](../adr/0012-portable-workspace-authority-and-secret-brokering.md) | Portable Workspace identity, authenticated authority, transport audiences, and credential brokering. |
+| [`docs/substrate-semantics.md`](../substrate-semantics.md) | Current working synthesis of canonical terms and accepted decisions. |

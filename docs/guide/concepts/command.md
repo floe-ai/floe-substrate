@@ -1,45 +1,33 @@
 # Command
 
-**A command is deterministic work, backed by a file that meets the command contract.**
+**A Command is a deterministic executable operation with declared inputs, outputs, side effects, authority, timeout, idempotency, and implementation.**
 
-Where an [[Actor]] reasons and its output needs judgement, a command just runs. Given
-the same inputs, it produces the same raw facts every time. That is why it can be
-re-run, cached, and trusted without a human or model reading the output.
+An Actor can interpret, choose, converse, and delegate. A Command executes one
+defined operation. Deterministic does not mean effect-free; declared effects
+and ExternalEffectReceipts still govern safe retry.
 
-## The contract
+## Placement and execution
 
-A command declares:
+A NodePlacement may reference a Command. Its input and output Ports define the
+exact Event and ArtefactVersion contracts for that placement.
 
-- **named inputs** — resolved by name from the triggering [[Event]]'s `content`, keyed by `content_key`
-- **named outputs** — mapped from raw execution facts
-- raw execution facts, always available: `exit_code`, `passed`, `stdout`, `stderr`
+When activated, one NodeExecution owns the logical work and one
+ExecutionAttempt records the concrete process, inputs, implementation version,
+result, error, resource use, and evidence. Retry adds an ExecutionAttempt to the
+same NodeExecution. Concurrent activations remain separate because their
+NodeExecution and Port-bound inputs are separate.
 
-If a declared input is `required` and missing from the event content, the command
-fails before it runs rather than running with a gap.
-
-## `{{name}}` substitution
-
-The command string itself is a template. Each resolved input value is substituted for
-`{{name}}` before the shell runs it:
-
-```
-echo "{{branch}} deployed"
-```
-
-resolves to `echo "main deployed"` once `branch` resolves to `main`.
-
-## The return path
-
-A command isn't called by a node — a node is just the declaration. **It is called by
-a working space run** (`called_by`), and its result returns to *that run*, not to the
-command's declaration. Five separate contexts can each call the same command node at
-once; each gets its own result back, because each call is scoped to the run that made
-it. This is why concurrent runs of the same command never cross wires.
+Command output advances a ScopeExecution only when it is published to a named
+output Port. Raw stdout, stderr, process telemetry, or natural runtime
+completion does not imply an Edge traversal.
 
 ## Implementation
 
-- `floe-bridge/src/command-runner.ts` — input resolution, `{{name}}` substitution, execution, output mapping
-- `floe-bus/src/scope-graphs.ts` — `ScopeGraphCommandInput`, `ScopeGraphCommandOutput` shapes (storage vocabulary only; the model is Command, not the graph naming)
-- `floe-bus/src/server.ts` — `POST /v1/workspaces/:workspace_id/graphs/:graph_id/nodes/:node_id/fire`
+- `floe-bridge/src/command-runner.ts` — current local command adapter
+- `floe-bus/src/scope-compositions.ts` — Command placements and Port contracts
+- `floe-bus/src/scope-executions.ts` — NodeExecution and ExecutionAttempt
+  evidence
+- `floe-bus/src/scope-operations.ts` — output publication through canonical
+  Edges
 
 See [[Glossary]].

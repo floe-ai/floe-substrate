@@ -1,43 +1,51 @@
-# Artifact
+# Artefact
 
-**An artifact is what travels between nodes — either on the wire or as a file.**
+**An Artefact is a stable logical thing produced, consumed, discussed, revised, assembled, tested, approved, or derived by work.**
 
-## Two carriers
+Examples include a document, concept image, child image, collection, source
+tree, website, report, decision, or deployable package.
 
-| Carrier | What it's for |
-|---|---|
-| **wire** | The [[Event]]'s `content` — small, ephemeral, disappears into history like any other event |
-| **file** | Large, durable, human-reviewable, or needed across [[Scope]] boundaries |
+## Identity and versions
 
-Pick wire for anything that only needs to reach the next step. Pick a file for
-anything a person will open later, anything too large for an event payload, or
-anything another scope needs to read independent of the context that produced it.
+Floe owns the stable Artefact identity. An ArtefactVersion is one immutable
+state of that Artefact, or one exact externally pinned observation. It records a
+digest or provider-guaranteed revision, media type, schema, ContentRef,
+provenance, exact lineage, collection membership, and Context or execution
+associations.
 
-## Default to emitting everything
+There is no universal mutable `current_version`. Branches may have several
+heads. Current, approved, stale, and other domain statuses are policy-governed
+annotations or projections.
 
-A node does not have to declare outputs to produce them. The default is to emit
-everything it has. Declared outputs (on a [[Command]]) *narrow* what gets mapped onto
-named results — they never *gate* what's allowed to be emitted. A command with no
-declared outputs still emits its raw execution facts in full.
+## Content and Events
 
-## Why there's no summariser and no blackboard
+The content store owns bytes. A ContentRef securely identifies exact content in
+a filesystem, Git repository, object store, document provider, database
+snapshot, or another store. Floe does not need to copy large bytes when a
+verified immutable reference is sufficient.
 
-Two designs were considered and rejected:
+An [[Event]] may carry small payload facts and zero or more exact
+ArtefactVersion references. Arbitrary Event content is not automatically an
+Artefact. A Delivery transports those references; it does not create a competing
+identity.
 
-- **Auto-summarisation between steps** — compressing an event's content before the
-  next node sees it. Rejected: it throws away information the next step might need,
-  silently, before anyone can decide it's safe to lose.
-- **A shared blackboard / global memory** — a place every actor reads and writes
-  regardless of context. Rejected: it re-introduces exactly the cross-wiring the
-  [[Command]] return path was built to prevent, and nobody can tell what wrote what.
+## Provenance is not topology
 
-**Wires are the context.** What travels on the event *is* the shared state between
-steps — nothing implicit sits behind it.
+Artefact lineage records exact version relationships. A [[Scope]] Edge records
+the designed route between Ports. One never implies the other.
+
+Extensions may own domain schemas, metadata, specialised statuses,
+invalidation and regeneration policy, and rich presentation. They do not own a
+parallel Artefact identity ledger. Existing extension lineage JSON is legacy
+import evidence or a projection over canonical Artefacts.
 
 ## Implementation
 
-- `floe-bus/src/scope-graphs.ts` — `ScopeGraphCommandOutput`, `buildCommandResultContent` in `floe-bridge/src/command-runner.ts` (outputs narrow, raw facts still available when none declared)
-- `floe-bus/src/fs/agentFiles.ts`, `floe-bus/src/fs/browseDir.ts` — the file carrier's storage
-- `floe-bus/src/server.ts` — `GET`/`PUT /v1/workspaces/:workspace_id/fs/file` for reading and writing a file artifact, plus `GET /v1/workspaces/:workspace_id/fs/media` for safe raster preview
+- `floe-bus/src/artefacts.ts` — canonical identity, versions, ContentRefs, and
+  lineage
+- `floe-bus/src/artefact-operations.ts` — create, publish-version, and inspect
+  semantic operations
+- `floe-bus/src/fs/` — one local content adapter; a path is never Artefact
+  identity
 
 See [[Glossary]].

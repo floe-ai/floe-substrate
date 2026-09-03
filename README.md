@@ -2,9 +2,11 @@
 
 Floe is a local daemon-driven substrate with three independent services:
 
-- `floe-bus`: durable event, queue, wait, workspace, and endpoint daemon
+- `floe-bus`: canonical identity, authority, semantic operation, Scope
+  design/execution, Context, Artefact, Event, and Delivery daemon
 - `floe-bridge`: runtime boundary and project `.floe/` loader
-- `floe-app`: local operator console
+- `floe-app`: chat-first operator surface with a trusted native transport
+  broker
 
 The local development and CI runtime adapter is deterministic fake runtime, so
 the core substrate can be tested without spending Copilot premium requests. It
@@ -18,11 +20,16 @@ npm install
 npm run floe -- setup -- --no-autostart --no-open
 ```
 
-Open:
+Open the trusted desktop client:
 
-```text
-http://127.0.0.1:5379
+```bash
+npm run floe -- desktop
 ```
+
+The React development server may still run at `http://127.0.0.1:5379`, but
+loopback access does not grant Bus authority. A standalone browser needs an
+authenticated session adapter; normal product use goes through the Tauri native
+broker.
 
 Useful commands:
 
@@ -38,18 +45,16 @@ When passing CLI flags through `npm run floe`, put `--` before the flags, as in
 `npm run floe -- setup -- --no-autostart --no-open`. A packaged `floe` binary
 does not need the extra separator.
 
-## Config & breaking changes (early development)
+## Local repair and breaking changes
 
-Floe is in early development. Breaking schema changes to `~/.floe/config.yaml`
-are expected, and there is **deliberately no config migration**. If your on-disk
-config is incompatible with the current version, `floe` fails fast with a clear
-message instead of migrating or crashing. The correct response is always to
-reset the config and re-run setup:
+Floe is in early development, but Workspace identity, history, SecretRefs,
+locator bindings, and provider credentials are valuable state. Do not delete
+`~/.floe` or operating-system credential entries as a generic repair step.
 
-```bash
-rm -rf ~/.floe        # or: rm ~/.floe/config.yaml
-npm run floe -- setup
-```
+Use the repair instruction for the exact failed state. Schema upgrades validate
+and back up retained data before destructive work. Missing or mismatched host
+authority and provider credentials become visible recovery states; Floe does
+not silently replace or copy them.
 
 If a service fails to start with a stale-dependency error, your `node_modules`
 is out of date after a version bump — reinstall with `npm install`.

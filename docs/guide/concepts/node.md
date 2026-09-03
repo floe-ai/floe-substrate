@@ -1,57 +1,52 @@
-# Node
+# Node placement
 
-**A node is a citizen placed on a scope's canvas.**
+**A NodePlacement is one resource's configured place in an exact [[Scope]] design.**
 
-A node is the work to be done. A [[Context]] on that node's scope is one run of it.
-One node spawns as many contexts as the work needs — a three-node pipeline and fifty
-documents don't disagree, because the pipeline is three nodes and the run is fifty
-contexts, one per document moving through it.
+The interface may shorten this to **node**. The canonical record is a
+NodePlacement inside one immutable `ScopeCompositionRevision`. It references an
+existing resource; it does not replace that resource's identity.
 
-The relationship only runs one way: every node's runs are contexts, but not every
-context is a node's run. Contexts also exist off any canvas as plain conversations
-between [[Actor]]s (see [[Context]]).
+A NodePlacement is design, not work. One activation of it is a NodeExecution.
+Every NodeExecution records its exact inputs, responsible [[Actor]]s, resolved
+[[Context]], attempts, outputs, decisions, and failure state.
 
-## The three kinds
+## What can be placed
 
-| Kind | What it is | Notes |
-|---|---|---|
-| Event node | Something that lands and wakes the system | Carries a source: schedule, folder, webhook, or manual |
-| Working space node | Where work happens | Not an [[Actor]] itself — actors are assigned into it |
-| [[Command]] node | Deterministic, backed by a file meeting the command contract | The only kind that declares a shape (named inputs/outputs) |
+A NodePlacement may reference an Actor, Context, [[Command]], Capability,
+Connector, Event boundary, or nested Scope. The placement adds only the
+configuration needed in that revision, such as bindings, instructions,
+activation policy, and Context policy.
 
-A working space node has no identity of its own. It's a place on the canvas that
-one or more actors are assigned into; the actor brings the judgement, the node
-just says where.
+## Ports and Edges
 
-Only a command node declares a shape. A conversation — a working space node's
-context — has none.
+Each placement exposes stable typed input and output Ports. A Port may carry a
+control [[Event]], exact [[Artifact|ArtefactVersion]] references, or both.
 
-## Two connection kinds
+An Edge is an explicit stored connection from one output Port to one input Port
+in the same revision. Enabled Edges are the only routes that advance a canonical
+ScopeExecution. Context membership, subscriptions, prompts, observed history,
+direct Actor requests, and Artefact lineage never imply an Edge.
 
-There are exactly two ways a node connects into a context:
+Branching is one output Port connected to several input Ports. Convergence is
+several Edges satisfying one placement's activation contract. These are
+topology, not special node kinds.
 
-1. An [[Event]] **lands in** a context.
-2. An [[Actor]] or a command **takes part in** a context.
+## Context policy
 
-Both are ordinary context membership and subscription — nothing new is stored for
-"the connection."
-
-## Branch and converge are just edges
-
-There's no special node kind for branching or converging work. If two nodes both
-connect into the same context, that's a converge. If one node's output lands in
-two different contexts, that's a branch. It's the same two connection kinds,
-used more than once.
-
-## Iteration is inside a run
-
-Running a node more than once over the same input isn't a separate node kind
-either — it's a pass count inside a single run. The node stays one thing; a
-context can be re-entered for another pass.
+Every NodeExecution references an inspectable writable Context. The placement's
+Context policy may create one, reuse one by a stable key, or enter a fixed
+persistent Context. A NodeExecution does not require a newly created Context,
+and a Context is never the connection between placements.
 
 ## Implementation
 
-- `floe-bus/src/scope-graphs.ts` — `ScopeGraphTriggerNode` (event node), `ScopeGraphActorNode`, command input/output types
-- `floe-bus/src/contexts/store.ts` — `applyContextSubscriptions` — how a node's connection to a context is realised as participation + subscription
+- `floe-bus/src/scope-compositions.ts` — immutable revisions, NodePlacements,
+  Ports, and Edges
+- `floe-bus/src/scope-executions.ts` — ScopeExecution, NodeExecution, and
+  ExecutionAttempt records
+- `floe-bus/src/scope-operations.ts` — canonical composition and execution
+  operations
+- `floe-bus/src/scope-graphs.ts` — legacy mutable graph import and inspection;
+  not the canonical authoring or execution model
 
 See [[Glossary]].

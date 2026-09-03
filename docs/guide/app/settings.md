@@ -9,11 +9,18 @@ The interface avoids asking a user to understand "substrate settings":
 - **Model providers** are connections available to Floe on this device and can be reused by every workspace.
 - **Workspace model** selects which connected provider and model Floe normally uses in the current workspace.
 
-They appear together because users commonly need to connect an account and then choose it. Their storage and scope remain separate: provider credentials are local or provider-owned, while the workspace choice is an ordinary runtime binding.
+They appear together because users commonly need to connect an account and then
+choose it. Their storage and scope remain separate: provider secret values stay
+behind the operating-system credential broker and canonical records hold
+SecretRefs, while the Workspace choice is an Actor/runtime-profile binding.
 
 ## Workspace model
 
-The Floe conversation shows the workspace's provider → model → effort choice directly above the composer. Floe does not accept an outcome or message until a connected provider and model have been saved for that workspace. Changing the inline choice updates the same workspace-default runtime binding used everywhere else.
+The Floe conversation shows the workspace's provider → model → effort choice
+directly above the composer. Floe does not accept an outcome or message until a
+connected provider and model have been saved for that Workspace. Changing the
+inline choice invokes the same Bus-owned runtime-profile/binding operation used
+by every authorised client.
 
 The gear next to the workspace switcher opens the fuller Settings surface. It contains subscription connections managed through Floe's packaged Pi authentication helper and the same workspace model choice. Both surfaces use provider names and model names rather than asking a normal user to create profile identifiers or paste tokens.
 
@@ -47,5 +54,9 @@ See [[Glossary]].
 - `floe-app/src/providers/ProviderAccess.tsx` — device-level subscription connection
 - `floe-app/src/actors/ActorInspector.tsx` — actor Configure tab, binding form, resolved-binding display
 - `floe-app/src/features/substrate/SubstrateSettingsView.tsx` — Substrate Settings shell and the six tabs (Authentication/Runtime real; Models/MCP/Workspaces/Diagnostics are stubs)
-- `GET /v1/auth/profiles`, `GET /v1/runtime/bindings`, `POST /v1/runtime/bindings` — auth profiles and binding reads/writes
-- `GET /v1/runtime/bindings/resolve` — effective resolved binding
+- `floe-bus/src/runtime-profile-operations.ts` — canonical RuntimeProfile and
+  Actor binding definitions
+- `floe-app/src-tauri/src/bus_broker.rs` — native authority and provider
+  credential boundary
+- legacy `/v1/auth/profiles` and `/v1/runtime/bindings` routes — developer or
+  compatibility adapters, not the product write contract

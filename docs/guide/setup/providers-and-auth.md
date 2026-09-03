@@ -1,70 +1,92 @@
 # Providers and auth
 
-**A provider connection gives Floe model labour; a profile is the local handle used by runtime bindings.**
+**A provider connection gives an authorised runtime access to model labour without exposing reusable credentials to the app webview, Actors, Contexts, Events, or the Bus API.**
 
-Floe uses its packaged Pi runtime across supported model providers. Normal desktop setup offers the subscription providers Pi currently exposes, including ChatGPT, Claude, and GitHub Copilot. API-key profiles remain available as an advanced option.
+Floe's packaged Pi runtime can use the subscription providers it supports,
+including ChatGPT, Claude, and GitHub Copilot. API-key connections remain an
+advanced option.
 
-## Connecting a subscription in the desktop app
+## Connecting a provider
 
-On a clean installation, Floe asks for a provider before asking for a workspace. Choose a provider and model, then continue. The packaged authentication helper runs Pi's provider-neutral OAuth flow, opens the provider's browser sign-in, and returns progress or a device code to floe-app. The user never needs to run `floe login`.
+On first use, the desktop app asks for a provider before asking for a Workspace.
+Choose a provider and model, then complete that provider's supported browser or
+device flow. The packaged native helper performs the exchange; the user does
+not need to run `floe login`.
 
-After onboarding, use the gear beside the workspace name and open **Settings → Model providers** to connect another supported subscription. The Floe conversation and Settings both expose the workspace's provider, model, and reasoning-effort choice. They update one shared workspace default; the conversation stays disabled until that choice contains a connected provider and model.
+After onboarding, **Settings → Model providers** connects another supported
+provider. The Floe conversation and Settings both expose the current
+Workspace's provider, model, and reasoning-effort choice. The composer remains
+unavailable until a usable runtime binding resolves.
 
-Floe stores the OAuth credential under the provider id and writes a normal provider profile for runtime bindings. The Pi-backed bridge resolves and refreshes that credential. Provider credentials never pass through the bus or web frontend.
+## SecretRef and credential broker
 
-## Advanced and compatibility profiles
+Canonical records hold a SecretRef: stable metadata and an opaque broker binding,
+never reusable secret bytes. The credential value remains in the operating
+system or deployment credential protector and is resolved by a trusted broker
+only for an authorised declared purpose.
 
-Developer tools → Substrate Settings retains API-key profile management and profile inspection for testing and compatibility. Those controls are intentionally not the normal subscription sign-in experience.
+Secret use requires both a current CapabilityGrant for the exact principal,
+Workspace, resource, operation, and SecretRef, and a matching purpose
+constraint. Rotation changes the protected value while retaining the SecretRef
+and audit evidence.
 
-The Floe CLI continues to expose the same Pi-supported OAuth and API-key profiles for terminal users:
+The following never receive reusable provider credentials:
 
-```
+- the webview or browser local storage;
+- URL query strings;
+- Contexts, Events, Artefacts, operation inputs, or exports;
+- Actor/model prompts; and
+- normal logs.
+
+## Desktop, browser, and CLI boundaries
+
+The desktop native shell brokers provider connection, authenticated Bus
+requests, media, and the push stream. It returns typed results to the webview,
+not bearer or provider credentials.
+
+A standalone browser needs its own trusted authenticated session adapter. It
+cannot read the operating-system vault or turn loopback access into authority.
+The CLI may support a terminal provider flow, but it uses the same SecretRef,
+grant, and broker rules rather than printing credentials.
+
+```text
 floe login --provider <provider>
-```
-
-`floe login` walks through choosing a provider, picking or creating a profile id, and authenticating through the mechanism that provider supports. API keys can be read from an environment variable with `--api-key-env`; `--model` sets a profile default.
-
-```
 floe auth list
 floe auth doctor
 floe logout
 ```
 
-These commands list, validate, and remove Floe-managed profiles.
+## Legacy files and migration
 
-## Where state lives
+Older installations may contain `~/.floe/auth/auth.json`,
+`~/.floe/auth/models.json`, and `~/.floe/auth/profiles.yaml`. They are
+explicit migration input, not the canonical secret contract.
 
-Floe's local auth metadata lives under `~/.floe/auth/`:
+Migration must inventory and verify each connection, create SecretRef metadata,
+move secret material through a trusted broker action, and preserve the original
+until separately approved cleanup. Missing credentials become visible
+unresolved bindings. Floe never silently copies, replaces, logs, or deletes
+them.
 
-- `auth.json` — subscription OAuth credentials and API keys, keyed by provider
-- `models.json` — optional local model catalogue overlays
-- `profiles.yaml` — named provider profiles used by runtime bindings
+## Developer tools
 
-## Writes are desktop/CLI only
-
-Per ADR-0005, the bus exposes no auth-write endpoints. Only the packaged desktop helper, Tauri shell, and Floe CLI can create or edit local auth state. Subscription credentials are written directly to Floe's local credential store and never cross a Floe network port or enter the web frontend.
-
-The browser build can only read profiles through `GET /v1/auth/profiles`. Account connection and local credential writes require the desktop app or CLI.
-
-## Setup and repair
-
-```
-floe setup
-```
-
-This creates local Floe configuration if needed, optionally enables autostart, starts services, verifies health, and opens the web UI.
-
-Floe is in early development and breaking config changes are expected. Use `floe reset` or the documented repair command for the affected state rather than deleting the entire Floe home blindly; preserve valuable subscription and API credentials.
-
-See [[Glossary]] for term definitions.
+Developer tools may inspect provider metadata, unresolved bindings, runtime
+health, and legacy migration state. They are an observatory, not the normal
+provider setup path and not a second credential-write contract.
 
 ## Implementation
 
-- `floe-app/src/providers/ProviderAccess.tsx` — normal provider connection surface
-- `floe-app/src/features/onboarding/OnboardingFlow.tsx` — first-use provider step
-- `floe-app/src/features/substrate/SubstrateSettingsView.tsx` — developer profile inspection and advanced writes
-- `floe-app/src-auth-sidecar/index.ts` — packaged Pi subscription authentication helper
-- `floe-app/src-tauri/src/substrate_commands.rs` — desktop authentication orchestration and advanced provider-keyed writes
-- `floe-bridge/src/adapters/pi-agent-core-adapter.ts` — multi-provider runtime execution
-- `floe-cli/src/cli.ts` — compatibility profile commands
-- `docs/adr/0005-file-access-patterns.md` — the desktop/CLI versus bus write boundary
+- `floe-app/src/providers/ProviderAccess.tsx` — normal provider connection
+  surface
+- `floe-app/src/features/onboarding/OnboardingFlow.tsx` — first-use provider
+  step
+- `floe-app/src-tauri/src/bus_broker.rs` — trusted Bus session and transport
+  broker
+- `floe-app/src-auth-sidecar/index.ts` — packaged Pi provider authentication
+  helper
+- `floe-bus/src/credential-broker.ts` — SecretRef and purpose-constrained
+  resolution contract
+- `floe-bus/src/runtime-profile-operations.ts` — canonical runtime profile and
+  Actor binding operations
+
+See [[Glossary]].

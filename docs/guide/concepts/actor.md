@@ -1,54 +1,43 @@
 # Actor
 
-**An actor is non-deterministic, backed by a model or a person.**
+**An Actor is an entity permitted to perceive, decide, communicate, and act within declared responsibility and authority.**
 
-An actor lives at [[Workspace]] level, not inside a [[Scope]]. It gets assigned
-into working space [[Node]]s and appears wherever it's assigned.
+A person, local model, hosted model, deterministic service, or future runtime
+backing does not change Actor identity or Scope semantics. The substrate does
+not encode a human/agent type distinction.
 
-## No human node, no human/agent distinction
+## Identity, definition, and runtime stay separate
 
-There is no human node, and there is no human/agent distinction anywhere in the
-substrate. An actor is an actor. Peers cannot tell what backs one — a model or a
-person looks identical from the outside.
+An Actor has stable identity. Its charter, responsibilities, knowledge, budgets,
+trust policy, instructions, capability grants, and escalation rules belong to
+an immutable ActorDefinitionRevision. A draft may change; publication freezes
+the revision.
 
-## The agent definition file
+Runtime embodiment is a separately replaceable binding to a RuntimeProfile. An
+ExecutionAttempt records the exact ActorDefinitionRevision and runtime binding
+it used, so later edits do not rewrite history.
 
-An actor is defined by `.floe/agents/<id>.md` — a Markdown file with YAML
-frontmatter:
+## Placement and participation
 
-```yaml
----
-schema: floe.agent.v1
-agent_id: reviewer
-label: Code Reviewer
-runtime: { engine: pi }
-extensions: []
-skills: []
-mcp: []
-pulse: { inherit: true }
-scope: { paths: ["./"], services: [] }
----
-# Code Reviewer
+A NodePlacement may reference an Actor and add placement-specific instructions
+or policy for one ScopeCompositionRevision. A Context participant relationship
+may give the Actor a role and access in one Context. Neither relationship makes
+the Actor owned by the Scope or Context, and neither creates an Edge.
 
-<the actor's instructions, in Markdown, below the frontmatter>
-```
+## Legacy definition files
 
-The frontmatter is the actor's identity and runtime config. The body is its
-instructions — what it generally is, in this workspace.
-
-## Instructions are never baked in per node
-
-An actor's per-node instructions are a [[Binding]], not part of its identity. A
-node's binding says what the actor is doing *as that node* — its role, model
-override, thinking level, auth profile — and it's attached to the node's
-connection, never written into the actor's own `.md` file. The same actor can be
-bound differently on every node it's assigned to.
+`.floe/agents/<id>.md` remains a portable definition source used by the current
+Bridge and migration tooling. It must import or project into canonical Actor and
+ActorDefinitionRevision records; the file path and frontmatter are not the
+Actor's universal identity.
 
 ## Implementation
 
-- `floe-bridge/src/tools/actor-tools.ts` — `create_actor`, `list_actors`, `update_actor` — writes `.floe/agents/<id>.md`, patches `.floe/floe.yaml`
-- `floe-app/src/actors/agentFile.ts` — `parseAgentFile`, `serializeAgentFile`, `buildFrontmatter` — the same file shape, used by the desktop UI
-- `floe-bus/src/scope-graphs.ts` — `ScopeGraphActorNode.bindings` — per-node bindings, distinct from the actor's own instructions file
-- `floe-bus/src/bindings.ts` — the `Binding` type
+- `floe-bus/src/actor-definitions.ts` — canonical Actor identity and immutable
+  definitions
+- `floe-bus/src/actor-definition-operations.ts` — shared Actor lifecycle and
+  definition operations
+- `floe-bus/src/runtime-profiles.ts` — runtime profiles and Actor bindings
+- `floe-bridge/src/project.ts` — legacy `.floe/agents/*.md` loading boundary
 
 See [[Glossary]].

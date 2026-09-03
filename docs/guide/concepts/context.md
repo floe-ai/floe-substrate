@@ -1,92 +1,78 @@
 # Context
 
-**A context is a bounded stream of [[Event]]s with participants — where work happens and outcomes appear.**
+**A Context is the durable place where participants understand, discuss, and record work.**
 
-Events land in a context, actors and commands take part in it, and its history is
-the record of what actually happened, as opposed to what was authored on the
-[[Scope]] canvas.
+It contains conversation, attached evidence, relevant references, decisions,
+summaries, and exact relationships to ArtefactVersions and execution records.
+It may be a direct conversation, a processing space, a persistent Actor
+workspace, or a Scope overview.
 
-## A context is anchored, not owned
+## Collaboration, never routing
 
-A context must be anchored by **a [[Scope]], by participants, or both**. That is
-the only rule. It gives contexts two everyday shapes:
+Context membership, parentage, subscriptions, instructions, and proximity do
+not advance a ScopeExecution. A published [[Scope]] design advances only through
+stored Edges between Ports.
 
-- **On a scope** — the context is one run of a [[Node]] on that scope's canvas.
-  One node spawns as many contexts as the work needs.
-- **Off any scope** — the context is simply a conversation between one or more
-  [[Actor]]s. It belongs to no canvas, and nothing about it is lesser for that:
-  it has the same history, participation, subscriptions and compaction as any
-  other context.
+Ordinary Context pub/sub remains available for deliberate non-graph
+communication. Legacy compositions may retain subscriptions for migration, but
+one composition revision can never mix subscription routing with Edge routing.
 
-A context that has a scope *and* participants is both at once.
+## Anchors
 
-Nothing in storage ties a context to a node — there is no node id on a context.
-The scope is the only structural anchor, so "one run of a node" describes a
-context's *situation*, never its definition.
+A Context must be anchored by participant relationships, a Scope, or both. A
+Context with neither anchor is invalid.
 
-## Events wake participants, wherever the context sits
+Every NodeExecution references an inspectable writable Context selected by its
+NodePlacement's Context policy. That policy may create a Context, reuse one by a
+stable key, or enter a fixed persistent Context. The Context is where the work is
+understood and recorded; it is not the NodeExecution itself.
 
-An event can be injected into any context, including a scope-less one, to wake
-the actors in it and get a reaction. This is how a bare conversation becomes
-active work: something lands, a subscribed actor is woken, it responds. A
-[[Node]] is not required for an actor to be woken — only a context, a
-participant and a subscription that matches.
+## Participants
 
-## Participation vs subscription
+A Context participant is an Actor with an explicit role and access relationship
+to that Context. Participation controls collaboration and authority. It does not
+create an Edge or automatically wake the Actor.
 
-These are different things and the substrate never conflates them:
+Participants and their access may change while the Context is active. Parent and
+child relationships organise related Contexts without creating pipeline routes.
 
-- **Participation** is membership. Any participant may always emit into the
-  context — participation alone is enough to speak.
-- **Subscription** is which event *types* wake an [[Actor]]. `["*"]` means woken
-  by everything; `[]` means a silent watcher — a participant that can speak but
-  is never woken; no subscription row at all means never woken.
+## Lifecycle and retained evidence
 
-There is no role enum anywhere. "Assignee" and "watcher" are not stored labels —
-they're emergent from what an actor happens to be subscribed to. You can't ask
-the substrate "who is the assignee here" — you can only ask "who is subscribed to
-what."
+Archive is the normal reversible way to remove a Context from active use.
+Restore returns it to active use. Both preserve conversation and evidence.
 
-## History, compaction, clear-history
+Permanent destruction is a separately named irreversible operation. It requires
+explicit confirmation and refuses while a retained ScopeExecution,
+NodeExecution, ArtefactVersion, pending Delivery, decision, approval, audit
+record, child Context, or other canonical evidence still references the
+Context. When Floe cannot safely enumerate retained relationships, it refuses
+destruction rather than assuming none exist.
 
-A context's history grows as events land and actors emit. Two operations manage
-it:
+History compaction and legacy clear-history routes are maintenance boundaries,
+not substitutes for archive, retention, redaction, or tombstones.
 
-- **Compact** — collapse history before a watermark into one summary event,
-  keeping the context usable without unbounded growth.
-- **Clear-history** — delete all events, keeping the context, its participants
-  and its subscriptions intact. Cannot run while a delivery is active.
+## Canonical operations
 
-An obsolete unscoped conversation may instead be deleted together with its
-history. Runtime actors discover this operation through the Bus-owned
-capability surface. Actor invocation requires an explicit history-deletion
-acknowledgement and refuses scoped Contexts or Contexts with queued, active, or
-dependent work. Scoped operational history is handled through Scope retirement
-or safe removal at the organising boundary.
+The Bus-owned semantic operation registry supplies the live schemas,
+availability, authority requirements, confirmations, and receipts for:
 
-## Participants change dynamically
+- `context.list`, `context.get`, and `context.inspect`
+- `context.create`, `context.archive`, and `context.restore`
+- `context.participant.set_access` and `context.participant.remove`
+- `context.communication.emit`
+- `context.destroy_permanently`
 
-Participants aren't fixed at creation. They're added and removed as work
-progresses — a context can gain a reviewer partway through, or drop a watcher
-once it's no longer relevant.
-
-## Parent and child contexts
-
-A context can declare a parent, and children can be listed from it. This is used
-both for scope-hierarchy provenance and for peer contexts a runtime spins up on
-the fly when it emits to a non-participant — the new context records the
-context it came from as its parent.
+Clients discover and invoke these definitions instead of maintaining their own
+Context rules. Older raw Context mutation routes are compatibility or internal
+adapters and must delegate to the same semantics where they remain reachable.
 
 ## Implementation
 
-- `floe-bus/src/contexts/store.ts` — context storage, `applyContextSubscriptions`, `compactContext`, `clearContextHistory`
-- `floe-bus/src/server.ts` — `POST /v1/workspaces/:workspace_id/contexts` — create
-- `floe-bus/src/server.ts` — `POST /v1/contexts/:id/participants`, `DELETE /v1/contexts/:id/participants/:endpoint_id`
-- `floe-bus/src/server.ts` — `POST /v1/contexts/:id/subscriptions`, `DELETE /v1/contexts/:id/subscriptions/:endpoint_id`, `GET /v1/contexts/:id/subscriptions`
-- `floe-bus/src/server.ts` — `POST /v1/contexts/:id/subscriptions:batch` — participants + subscriptions applied atomically
-- `floe-bus/src/server.ts` — `POST /v1/contexts/:id/compact`, `POST /v1/contexts/:id/clear-history`
-- `floe-bus/src/actor-capabilities.ts` — discoverable Context inspection and safe unscoped-conversation deletion
-- `floe-bus/src/server.ts` — `GET /v1/contexts/:id/children`, `GET /v1/contexts/:id`, `GET /v1/contexts/:id/events`
-- `floe-bus/src/contexts/participants.test.ts`, `subscriptions.test.ts`, `compaction.test.ts`, `batch-subscriptions.test.ts` — behaviour tests for the above
+- `floe-bus/src/contexts/store.ts` — Context records and lifecycle metadata
+- `floe-bus/src/context-operations.ts` — canonical definitions and handlers
+- `floe-bus/src/context-operation-backend.ts` — integration with Event delivery
+  and retained-reference checks
+- `floe-bus/src/operation-routes.ts` — shared discovery, invocation, and receipt
+  transport
 
 See [[Glossary]].

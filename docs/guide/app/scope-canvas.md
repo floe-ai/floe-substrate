@@ -1,27 +1,55 @@
-# The Scope view
+# The scope canvas
 
-An active [[Scope]] appears under **Organised work** on the Conversations workspace index. Opening it shows the current plan Floe composed for that work.
+An active [[Scope]] appears under **Organised work**. Opening it shows the
+currently published plan and the execution evidence that followed that exact
+plan.
 
 ## What it shows
 
-- Persistent Actor and deterministic Command responsibilities.
-- Planned routes phrased as “when this Event lands → these participants act,” derived from declared Event subscriptions.
-- Live endpoint state such as Working, Ready, Waiting, Error, or Not configured.
-- An execution count on each planned node. Selecting a node reveals its authored responsibility and the actual Event or delivery records that reached it.
-- The shared scoped [[Context]] behind **Context history**, opening at its newest page and progressively retrieving earlier Events as the operator scrolls upward, so execution traffic does not obscure the plan or make the initial view grow with history.
+- NodePlacements for the resources used by the published
+  ScopeCompositionRevision.
+- Typed Ports and explicit enabled Edges between them.
+- Current resource availability and attention state.
+- ScopeExecutions pinned to the revision under which they began.
+- NodeExecutions at the selected placement, including exact inputs, outputs,
+  resolved [[Context]], attempts, and failure state.
+- Exact ArtefactVersion references produced or consumed by execution.
 
-The view reads the Bus-owned Scope composition and endpoint state. It does not persist another graph, infer workflow policy, or turn the app into a graph editor.
+Following one connected placement reveals its immediate upstream and downstream
+relationships. Selecting a NodeExecution opens its real Context history. The
+app does not create Contexts merely to display the plan.
 
-## Current boundaries
+## Plan, execution, and presentation stay separate
 
-The plan map shows declared routing and current participant availability. It does not infer a sequential workflow or claim that an Actor will emit a particular next Event unless that relationship is present in substrate state. Node executions and Context history remain projections of what actually happened.
+The plan comes from the published ScopeCompositionRevision. Execution comes
+from ScopeExecution and NodeExecution records. Conversation comes from the
+Context referenced by the NodeExecution. Artefact lineage comes from exact
+ArtefactVersion relationships.
 
-Re-composing the same Scope replaces its current nodes and subscriptions in place while preserving that history. A retired Scope is inert and hidden from the normal operator index, but remains available under Developer tools for historical inspection.
+The app must not reconstruct topology from Context subscriptions, Event types,
+observed emissions, or Artefact lineage. Those relationships answer different
+questions.
 
-The developer Scope detail view still provides Contexts, Ops, and extension tabs. It is a secondary observatory rather than the operator's route to understanding organised work.
+Pan, zoom, node positions, collapsed panels, and the current selection are
+presentation state. Saving them does not create a semantic revision.
+
+## Revisions and retirement
+
+A semantic edit begins or changes a draft. Publishing makes that revision
+immutable and selects it for new ingress. Existing executions remain pinned to
+their original revision, so history stays explainable.
+
+A retired Scope is inert and hidden from normal operator navigation while
+remaining inspectable through Developer tools. Developer tools are an
+observatory, not a second authoring or execution contract.
 
 ## Implementation
 
-- `floe-app/src/features/work/ScopeWorkView.tsx` renders the read-only operator representation.
-- `floe-bus/src/scope-graphs.ts` stores the current node composition behind an internal stable routing handle.
-- `floe-bus/src/actor-capabilities.ts` owns actor-safe inspection, in-place composition, Event activation, and retirement contracts.
+- `floe-app/src/features/work/ScopeWorkView.tsx` — operator Scope projection
+- `floe-app/src/features/work/ScopePipelineFocusView.tsx` — focused topology
+  and execution navigation
+- `floe-bus/src/scope-compositions.ts` — canonical revisions, placements,
+  Ports, and Edges
+- `floe-bus/src/scope-executions.ts` — canonical execution evidence
+- `floe-bus/src/scope-operations.ts` — shared plan and execution operations
+- `floe-bus/src/scope-graphs.ts` — legacy compatibility only

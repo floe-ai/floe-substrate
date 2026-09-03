@@ -1,47 +1,34 @@
 # Endpoint
 
-**An endpoint is the substrate's addressable identity for an [[Actor]].**
+**An Endpoint is an addressable delivery interface. It is not an [[Actor]] identity.**
 
-Every actor that can send or receive an [[Event]] is an endpoint. Nothing about an
-endpoint says what backs it.
+An Actor, [[Command]], Connector, service, or another runtime may use an
+Endpoint. Runtime backing does not change the Endpoint's transport semantics,
+and no backing type is privileged.
 
-## No stored backing label
+## Delivery and lifecycle
 
-There is no `actor_kind` column, and no human/agent distinction stored anywhere.
-Delivery is gated on **runtime attachment** — `bridge_id` plus `status` — never on any
-label saying what the endpoint is. Peers cannot tell what backs a given endpoint, and
-the substrate is built so they never need to.
+An active Endpoint can receive an authorised [[Delivery and Turn|Delivery]].
+Retirement prevents new Delivery while retaining historical references.
+Attachment and status describe whether a runtime currently owns the interface;
+they do not define the Actor or grant authority.
 
-An endpoint with no live runtime (`bridge_id` unset) still accrues readable history:
-events land in its contexts and stay there. It just is not delivered to — there is no
-bridge attached to hand the delivery bundle to.
+## Authority and identity
 
-## Registration and status
+Authenticated transport establishes the Bridge or Workspace authority. Request
+content cannot claim an Endpoint, Actor, Bridge, or grant. An Endpoint ID is an
+address inside authorised substrate state, not a credential.
 
-An endpoint registers with the bus, gets a `bridge_id` when a bridge attaches to run
-it, and carries a status such as `idle`, `active`, or `runtime_unconfigured` (no
-model/auth binding resolved yet, so it can't be delivered to even if attached).
-
-## Watermarks and cursors
-
-An **endpoint watermark** is a persisted [[Event]] cursor marking how far an endpoint
-has been carried forward — the point it was last brought up to date. It advances only
-when explicitly set, never on read, so "what's changed since I was last here"
-persists until the endpoint deliberately marks itself caught up.
-
-An **event cursor** is an opaque, ordered position in a workspace's event stream, keyed
-by `(created_at, event_id)`. The `since` parameter on event queries speaks this cursor;
-the tie-break on `event_id` means events sharing a timestamp can be paged past safely.
-
-Neither is a per-message seen/unseen marker — they only ever mark a caught-up
-position, set explicitly, never on read.
+Endpoint watermarks are retained transport/runtime cursors where older adapters
+need them. Product push clients use the Workspace Event Cursor and resumable
+WebSocket contract.
 
 ## Implementation
 
-- `floe-bus/src/server.ts` — `POST /v1/endpoints/register`, `DELETE /v1/endpoints/:endpoint_id`, `POST /v1/endpoints/:endpoint_id/status`, `GET /v1/endpoints`, `GET /v1/workspaces/:workspace_id/endpoints`
-- `floe-bus/src/server.ts` — `GET`/`PUT /v1/workspaces/:workspace_id/endpoints/:endpoint_id/watermark`
-- `floe-bus/src/endpoint-watermark-store.ts` — `EndpointWatermarkStore`
-- `floe-bus/src/event-cursor.ts` — `EventCursor`, `encodeEventCursor`, `decodeEventCursor`
-- `floe-bus/src/server.ts` — bridge liveness: `POST /v1/bridges/:bridge_id/liveness`, socket-presence check in `GET /v1/runtime/status`
+- `floe-bus/src/store.ts` — Endpoint and Delivery transport records
+- `floe-bus/src/transport-auth.ts` — authenticated Bridge and Workspace
+  audiences
+- `floe-bus/src/server.ts` — authenticated Endpoint projections and legacy
+  Bridge transport routes
 
 See [[Glossary]].

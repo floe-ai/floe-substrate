@@ -120,15 +120,23 @@ floe uninstall
 
 ## Not covered by the CLI
 
-There is no `floe` command for any of the following. Use [[Bus API]] instead:
+There is no dedicated `floe` command family for the following. An authorised
+terminal integration discovers and invokes the same semantic operations
+documented in [[Bus API]]; it does not use raw mutation routes as a shortcut:
 
-- **Scopes** — create, update, delete, list. See `POST/PATCH/DELETE/GET /v1/workspaces/:workspace_id/scopes`.
-- **Contexts** — create, list, read events, participants, subscriptions, compaction. See the `/v1/contexts` and `/v1/workspaces/:workspace_id/contexts` routes.
-- **Nodes / graphs** — the picture of connected nodes in a scope. See `/v1/workspaces/:workspace_id/scopes/:scope_id/graphs`.
-- **Events** — emit, list, trace. See `POST /v1/events/emit`, `GET /v1/events`.
-- **Pulses** — create, pause, resume, cancel, subscribe. See `/v1/pulses`.
-- **Endpoints / actors** — register, list, delete. See `/v1/endpoints`.
-- **Extensions** — report, list, relay. See `/v1/extensions`.
+- **Scopes** — composition revisions, publication, execution, stop, retirement,
+  and safe removal.
+- **Contexts** — create, inspect, participant access, archive, restore,
+  communication, and guarded permanent destruction.
+- **NodePlacements, Ports, and Edges** — the exact design inside one
+  ScopeCompositionRevision.
+- **Events and Artefacts** — publish, inspect, trace, and exact-version
+  provenance.
+- **Pulses and Connectors** — schedule or external source/action lifecycle.
+- **Actors and runtime profiles** — versioned definition, binding, retirement,
+  and reactivation.
+- **Extensions** — inspect, install, upgrade, disable, and rollback under
+  declared authority.
 
 ## `npm run build` (developer tool, not a `floe` command)
 

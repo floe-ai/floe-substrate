@@ -32,6 +32,12 @@ The operator contributes outcomes, reactions, confusion, corrections, preference
 
 When an experience exposes a problem, diagnose the problem before choosing a solution. Prefer the smallest correction at the highest possible layer.
 
+A delivery may be divided into small proving increments, but an increment must
+be a native part of the intended design. Do not knowingly introduce a temporary
+substitute for an already-understood required mechanism merely because it is
+quicker to demonstrate; such substitutes become permanent state and obscure the
+real gap.
+
 ## Mechanism, never policy
 
 Floe should make many organisations possible without encoding one preferred organisation.

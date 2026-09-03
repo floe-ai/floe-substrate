@@ -10,7 +10,11 @@ Models are labor. The substrate is the company.
 
 Every model release makes the labor smarter and cheaper. No model release gives you the company — the durable record of who did what, why, and what happened, or the coordination fabric that turns interchangeable model capability into something that compounds. Floe is that layer.
 
-The bet is that a few primitives — [[Workspace]], [[Scope]], [[Node]], [[Actor]], [[Context]], [[Event]] — plus a real objective can express anything a workspace needs, and that the system should be able to extend *itself* toward whatever that objective is, rather than needing every capability designed in up front.
+The bet is that a few stable concepts — [[Workspace]], [[Scope]], [[Actor]],
+[[Context]], and [[Event]] — plus explicit composition records when repeatable
+work needs them, can express what a workspace needs. Floe should extend *itself*
+toward a real objective rather than needing every capability designed in up
+front.
 
 The operator's own bar for this, which the whole guide is written against:
 
@@ -42,4 +46,5 @@ If your problem is genuinely a fixed, linear procedure that never needs a person
 ## Implementation
 
 - `MISSION.md` — the source for this page: the bet, the redundancy test, what floe is not
-- `docs/guide/concepts/README.md` — [[Concepts]], the primitives this bet is built from
+- `docs/guide/concepts/README.md` — [[Concepts]], the substrate vocabulary and
+  its design/execution records

@@ -1,6 +1,10 @@
 # ADR-0009: Actor-safe capability contracts are Bus-owned and discovered on demand
 
-**Status:** accepted (2026-08-25)
+**Status:** superseded in part by ADR-0011 (2026-09-04)
+
+The two-tool, on-demand discovery seam remains. The separate Actor capability
+catalogue and `/capabilities` routes do not: actors now consume the canonical
+semantic operation registry through Delivery-scoped authority.
 
 ## Context
 

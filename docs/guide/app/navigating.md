@@ -25,13 +25,39 @@ If no Floe conversation exists, the app asks what outcome the operator wants. Su
 
 The list contains only Contexts where the ordinary workspace operator is already a participant; actor-to-actor operational traffic is not promoted into this view. Floe is the default collaborator and new-outcome target, not a separate navigation hierarchy.
 
-Active Scopes appear under **Organised work** on the same index. Opening one focuses the current Event, Actor, or Command and reveals only its immediate upstream and downstream Scope nodes. Following a connected node reveals the next layer while the breadcrumb preserves the path. The focused node shows the executions that reached it. Current artifact references may appear inside it when extension-owned lineage supplies the relationship. A Context history action appears only when there is a real Context reference and opens that exact Context. The app derives routes from the current Scope composition and execution evidence. It does not invent Contexts or artifact relationships.
+Active Scopes appear under **Organised work** on the same index. Opening one
+shows the currently published ScopeCompositionRevision. Focusing a
+NodePlacement reveals its immediate upstream and downstream Edges, then the
+NodeExecutions that reached it. Each NodeExecution may open its exact Context
+and exact ArtefactVersion inputs or outputs. The app reads topology from stored
+Ports and Edges and execution from canonical execution records; it does not
+infer either from Context subscriptions or observed Event traffic.
 
-When public workspace Events reference an extension-owned artifact-lineage document, **Artifacts** remains on the Workspace index even after the originating Scope stops. **Visual trail** shows the selected artifact between its immediate upstream and downstream artifacts. **Relationship graph** shows the same nearby relationships as an interactive graph. Raster images appear directly; selected JSON and Markdown files show a readable preview. Related Context history remains accessible from either view. The app reads the existing lineage document and safe workspace-contained files; it does not store another graph or decide invalidation policy. Retired Scopes remain available under Developer tools for history/debugging and do not appear as active organisation.
+When canonical Artefacts exist, **Artefacts** remains on the Workspace index
+even after the originating Scope stops. **Visual trail** and **Relationship
+graph** are projections of exact ArtefactVersion lineage, collection membership,
+and execution provenance. Raster images appear directly; selected JSON and
+Markdown content can show a readable preview. Related Context history remains
+accessible from exact associations. Extensions may add domain metadata,
+invalidation policy, and rich presentation, but their files are not a parallel
+Artefact identity ledger. Retired Scopes remain available under Developer tools
+for history and diagnostics and do not appear as active organisation.
 
 An incoming message addressed to the operator with a response expected appears under **Needs you**. Once the operator replies, the conversation returns to **Recent**. This is an interpretation of existing Event response metadata, not separate task or notification state.
 
-Opening an item keeps the speaking identity fixed to the operator and names the other participant in the conversation header. Every selected operator conversation has the same back, work, problem-report, new-conversation, and delete controls. New conversation starts a fresh Context with the current collaborator; from the list, **New with Floe** starts a fresh outcome with Floe. **Report a problem** prepares an explicitly approved local Markdown and JSON export from bounded Bus diagnostics; a Floe-authored draft can open the same review flow. Saved reports appear on the workspace index with an explicit **Not shared** status and a developer-handoff action. A compact provider → model → effort control sits at the conversation boundary, and the composer remains disabled until the workspace has a connected provider and saved model.
+Opening an item keeps the speaking identity fixed to the operator and names the
+other participant in the conversation header. Context lifecycle actions use the
+same Bus-owned semantic definitions as Actors: archive is reversible, restore
+returns an archived Context, and permanent destruction is separately named,
+confirmed, and refused when retained evidence depends on it. New conversation
+starts a fresh Context with the current collaborator; from the list, **New with
+Floe** starts a fresh outcome with Floe. **Report a problem** prepares an
+explicitly approved local Markdown and JSON export from bounded Bus diagnostics;
+a Floe-authored draft can open the same review flow. Saved reports appear on the
+workspace index with an explicit **Not shared** status and a developer-handoff
+action. A compact provider → model → effort control sits at the conversation
+boundary, and the composer remains disabled until the workspace has a connected
+provider and saved model.
 
 Conversation history opens on a bounded newest page. Scrolling upward retrieves earlier pages through the Bus cursor contract without hiding or discarding durable messages. The conversation index reads only each Context's newest message, and supplementary runtime/delivery status may fail independently without hiding conversation history.
 
@@ -73,9 +99,12 @@ See [[Glossary]].
 - `floe-app/src/app/layout/LeftNav.tsx` — the left nav
 - `floe-app/src/hooks/useNavigation.ts` — navigation state machine
 - `floe-app/src/features/conversations/OperatorConversations.tsx` — unified operator entry, conversation lifecycle, list, and attention projection
-- `floe-app/src/features/work/ScopeWorkView.tsx` — loads the current Scope and execution evidence and owns Context/artifact navigation
-- `floe-app/src/features/work/ScopePipelineFocusView.tsx` — progressive Event/Actor/Command path with exact Context and current Artifact evidence
-- `floe-app/src/features/work/ArtifactLineageView.tsx` — visual trail and relationship-graph projections with related Context history
+- `floe-app/src/features/work/ScopeWorkView.tsx` — loads the published Scope
+  plan and canonical execution evidence
+- `floe-app/src/features/work/ScopePipelineFocusView.tsx` — progressive
+  NodePlacement/Edge path with exact Context and ArtefactVersion evidence
+- `floe-app/src/features/work/ArtifactLineageView.tsx` — legacy extension
+  lineage projection pending canonical Artefact projection cutover
 - `floe-app/src/workspace/FloeModelControl.tsx` — inline workspace model selection and readiness gate
 - `floe-app/src/features/home/HomeView.tsx` — scope grid
 - `floe-app/src/scope/ScopeDetail.tsx` — Contexts/Ops/extension tabs

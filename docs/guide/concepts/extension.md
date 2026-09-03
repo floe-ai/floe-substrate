@@ -1,8 +1,11 @@
 # Extension
 
-**An extension is an independent repository, built against the substrate contract, that contributes tools, pulses, views, HTTP handlers, hooks, and bundled agents.**
+**An Extension is a versioned package that contributes bounded capability under declared permissions, isolation, approval, and rollback.**
 
-An extension never lives in this repository (ADR-0006). The floe monorepo contains substrate only; extensions evolve on their own schedule against a stable contract.
+Canonical Extension source may live in an independent repository or package
+(ADR-0006). A Workspace-installed copy or pointer remains under
+`.floe/extensions/NAME/` so the Bridge can discover it. Source ownership and
+Workspace installation are different concerns.
 
 ## What an extension contributes
 
@@ -12,6 +15,15 @@ An extension never lives in this repository (ADR-0006). The floe monorepo contai
 - **HTTP handlers** — request handlers reachable through the bridge's extension relay.
 - **Hooks** — programmatic handlers for the runtime lifecycle (`SessionStart`, `BeforeTurn`, `Pulse`, and so on — see [[Hook]]).
 - **Bundled agents** — agent definitions the extension ships with, loaded in memory at workspace attach.
+- **Capabilities, Commands, and Connectors** — semantic operations and typed
+  external sources/actions exposed through the shared Bus contract.
+- **Schemas and presentation** — domain metadata, previews, renderers,
+  dashboards, and bounded product surfaces over canonical records.
+
+An Extension may own domain schemas, specialised statuses, invalidation and
+regeneration policy, and rich presentation. It does not own competing
+Workspace, Context, Scope topology, Artefact identity, authority, or operation
+ledgers.
 
 ## Manifest
 
@@ -33,9 +45,12 @@ Extensions live in `.floe/extensions/NAME/` and declare an `extension.json`:
 
 `schema` must be exactly `floe.extension.v1`. `entry` resolves to a file that default-exports a factory `(ctx: ExtensionContext) => AgentTool[]`. An `extension.json` may also be a lightweight pointer (`{ "manifest_source": "..." }`) to a manifest that lives in the extension's own repository, so the installed copy never drifts from the source.
 
-## Bundled agents are loaded in memory, never written to disk
+## Current loader boundary
 
-The bridge reads each bundled agent's `instructions_path` at load time and holds the resulting body in memory. It never writes that agent into the workspace's committed `.floe/agents/` tree — see [[Workspace config]] for why `.floe/floe.yaml` must stay read-only at runtime.
+The current in-process Bridge loader reads bundled Actor definitions and
+handlers. That loader and its relay routes are legacy implementation beneath the
+accepted isolated Extension lifecycle. They do not grant arbitrary filesystem,
+network, secret, or action access.
 
 ## HTTP relay
 
@@ -49,6 +64,9 @@ A declared view renders as a tab in the scope detail view, alongside the built-i
 
 ## Implementation
 
+- `floe-bus/src/extensions.ts` — canonical package/install lifecycle records
+- `floe-bus/src/extension-operations.ts` — shared inspect, install, upgrade,
+  disable, and rollback operations
 - `docs/adr/0006-external-extension-repositories.md` — extensions live outside this repo
 - `docs/adr/0002-extension-substrate-design.md` — manifest format, tool prefixing, hook registration
 - `floe-bridge/src/extension-loader.ts` — `loadExtensions`, `validateManifest` (schema `floe.extension.v1`), `loadBundledAgentsInMemory`, tool-name prefixing

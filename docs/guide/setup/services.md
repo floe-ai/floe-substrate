@@ -4,12 +4,17 @@
 
 | Piece | What it is | Port |
 |---|---|---|
-| bus | The [[What floe is|substrate]]. SQLite + HTTP + WebSocket. Owns contexts, events, deliveries, scopes, pulses. | 5377 |
+| bus | The [[What floe is|substrate]]. SQLite + authenticated HTTP/WebSocket. Owns canonical identity, Context, Event, Delivery, Scope design/execution, Artefact, authority, and operation receipts. | 5377 |
 | bridge | Runs [[Actor]]s. Attaches workspaces, claims deliveries, executes [[Delivery and Turn|Turn]]s, loads [[Extension]]s. | — |
-| floe-app | The UI. Works as a plain browser page and as a Tauri desktop shell. | 5379 |
+| floe-app | React presentation plus the trusted Tauri desktop broker. A standalone browser needs its own authenticated session adapter. | 5379 |
 | floe-cli | The `floe` command. Setup, services, auth. | — |
 
-floe-app is a client of the substrate. Workspace operations and conversations go through the bus and bridge. Host-local provider setup and filesystem access use the native Tauri boundary defined by ADR-0005 instead of carrying credentials through the bus.
+floe-app is a client of the substrate. Its trusted native shell holds host
+authority in the operating-system vault, obtains short-lived Workspace
+sessions, and brokers authenticated requests, media, and push frames. The
+webview receives results, never bearer or provider credentials. State-changing
+product actions invoke Bus-owned semantic operations; the Bridge runs authorised
+Deliveries.
 
 ## Starting services
 
