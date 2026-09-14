@@ -6,7 +6,8 @@
 
 use floe_native_authority::{
     ConfirmHostOperationRequest, ConfirmWorkspaceOperationRequest, DiscoverOperationsRequest,
-    InvokeOperationRequest, NativeAuthorityBroker, RegisterWorkspaceRequest,
+    InvokeOperationRequest, NativeAuthorityBroker, ProvideBridgeServiceTokenRequest,
+    RegisterWorkspaceRequest,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -20,6 +21,7 @@ const MAX_COMMAND_BYTES: u64 = 1024 * 1024;
 enum AuthorityCommand {
     ListLocalWorkspaces,
     ProvideHostControlToken,
+    ProvideBridgeServiceToken(ProvideBridgeServiceTokenRequest),
     RegisterWorkspace(RegisterWorkspaceRequest),
     DiscoverOperations(DiscoverOperationsRequest),
     InvokeOperation(InvokeOperationRequest),
@@ -61,6 +63,9 @@ async fn run() -> Result<Value, String> {
         AuthorityCommand::ProvideHostControlToken => broker
             .host_control_token_for_local_boot()
             .map(|token| json!({ "token": token })),
+        AuthorityCommand::ProvideBridgeServiceToken(input) => {
+            broker.provide_bridge_service_token(input).await
+        }
         AuthorityCommand::RegisterWorkspace(input) => broker.register_workspace(input).await,
         AuthorityCommand::DiscoverOperations(input) => broker.discover_operations(input).await,
         AuthorityCommand::InvokeOperation(input) => broker.invoke_operation(input).await,
@@ -87,6 +92,7 @@ fn parse_command(bytes: &[u8]) -> Result<AuthorityCommand, String> {
     let allowed: &[&str] = match command {
         "list_local_workspaces" => &["command"],
         "provide_host_control_token" => &["command"],
+        "provide_bridge_service_token" => &["command", "bridge_id"],
         "register_workspace" => &["command", "locator", "init_authorized"],
         "discover_operations" => &["command", "boundary", "query", "category", "target"],
         "invoke_operation" => &["command", "boundary", "invocation"],
@@ -114,6 +120,15 @@ mod tests {
     fn accepts_only_typed_commands_and_refuses_raw_transport_or_credentials() {
         assert!(parse_command(br#"{"command":"list_local_workspaces"}"#).is_ok());
         assert!(parse_command(br#"{"command":"provide_host_control_token"}"#).is_ok());
+        assert!(parse_command(br#"{"command":"provide_bridge_service_token"}"#).is_ok());
+        assert!(parse_command(
+            br#"{"command":"provide_bridge_service_token","bridge_id":"bridge:local"}"#
+        )
+        .is_ok());
+        assert!(parse_command(
+            br#"{"command":"provide_bridge_service_token","bearer_token":"x"}"#
+        )
+        .is_err());
         assert!(parse_command(
             br#"{"command":"register_workspace","locator":"C:/work/demo","init_authorized":true}"#
         )

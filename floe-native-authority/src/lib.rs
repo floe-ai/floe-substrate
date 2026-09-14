@@ -94,6 +94,17 @@ pub struct RegisterWorkspaceRequest {
     pub init_authorized: bool,
 }
 
+fn default_bridge_id() -> String {
+    "bridge:local".to_string()
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvideBridgeServiceTokenRequest {
+    #[serde(default = "default_bridge_id")]
+    pub bridge_id: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfirmWorkspaceOperationRequest {
@@ -229,6 +240,34 @@ impl NativeAuthorityBroker {
             return Err(operator_http_error(select.status()));
         }
         Ok(registered)
+    }
+
+    /// Provision the ephemeral bridge-service credential one Bridge process
+    /// start requires, using the host-control credential this broker owns. The
+    /// CLI cannot mint this itself: the Bus is the sole issuer and the mint
+    /// route is host-control authenticated, so the credential is obtained here
+    /// on the same trust path as the Bus host-control token and then injected
+    /// into the Bridge process environment only. The route literal is fixed
+    /// here, not caller-supplied, so no host-path allowlist entry is required.
+    pub async fn provide_bridge_service_token(
+        &self,
+        request: ProvideBridgeServiceTokenRequest,
+    ) -> Result<Value, String> {
+        let response = self
+            .inner
+            .client
+            .post(format!("{BUS_HTTP_BASE}/v1/bridges/service-credential"))
+            .bearer_auth(self.host_control_token()?)
+            .json(&json!({ "bridge_id": request.bridge_id }))
+            .send()
+            .await
+            .map_err(|_| unavailable_message())?;
+        let issued = response_to_json(response).await?;
+        let token = issued
+            .pointer("/bearer_token")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Floe did not provide a Bridge service credential.".to_string())?;
+        Ok(json!({ "token": token }))
     }
 
     /// Read the fixed installation health projection. This does not admit

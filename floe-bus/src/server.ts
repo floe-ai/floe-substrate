@@ -2713,6 +2713,26 @@ export async function createBusServer(
     return { models: await listAuthModels(configPath, config, query.provider) };
   });
 
+  // Provision the ephemeral bridge-service credential one Bridge process start
+  // needs. This is a host-control bootstrap route (the pre-handler enforces
+  // host_control), reached only through the native broker that owns the
+  // host-control credential — never an unauthenticated loopback call. Each call
+  // revokes prior credentials for the same Bridge/host, so a restart cannot
+  // leave a second live authority behind.
+  app.post("/v1/bridges/service-credential", async (request, reply) => {
+    const body = z.object({ bridge_id: z.string().min(1) }).parse(request.body);
+    const issued = store.transportCredentialStore.replaceBridgeServiceCredential({
+      bridge_id: body.bridge_id,
+      host_id: store.localHostId,
+      expires_at: oneDayFromNow(),
+    });
+    return reply.code(201).send({
+      bridge_id: issued.credential.bridge_id,
+      bearer_token: issued.bearer_token,
+      expires_at: issued.credential.expires_at,
+    });
+  });
+
   app.post("/v1/bridges/register", async (request, reply) => {
     const bridgeAuthority = requireBridgeService(request, reply);
     if (!bridgeAuthority) return reply;
@@ -3982,6 +4002,7 @@ function resolveTransportRequirement(request: any, store: BusStore): TransportRe
     || route === "/v1/workspaces/:workspace_id/delete"
     || route === "/v1/workspaces/:workspace_id/config-snapshot"
     || route === "/v1/workspaces/:workspace_id/apply-config"
+    || route === "/v1/bridges/service-credential"
     || route.startsWith("/v1/auth/")
     || route === "/v1/runtime/status"
     || route === "/v1/fs/capability"

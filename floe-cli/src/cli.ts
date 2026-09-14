@@ -17,7 +17,7 @@ import {
   type ServiceName
 } from "./process-manager.js";
 import { registerOperationsCommand } from "./operations-command.js";
-import { fetchHostControlToken, registerLocalWorkspaceViaBroker } from "./operation-client.js";
+import { fetchHostControlToken, fetchBridgeServiceToken, registerLocalWorkspaceViaBroker } from "./operation-client.js";
 
 const program = new Command();
 
@@ -216,7 +216,12 @@ async function startAll(configPath: string, config: LocalConfig): Promise<void> 
     await startService(configPath, config, "bus", { FLOE_HOST_CONTROL_TOKEN: hostControlToken });
   }
   await waitForHealth(config.bus.http_base_url, "floe-bus");
-  await startService(configPath, config, "bridge");
+  // The Bridge authenticates to the Bus as a transport peer. Its ephemeral
+  // service credential is minted by the Bus and obtained through the native
+  // broker on the same trust path as the host-control token, then handed to the
+  // Bridge process environment only — never set by the operator, never on disk.
+  const bridgeServiceToken = await fetchBridgeServiceToken();
+  await startService(configPath, config, "bridge", { FLOE_BRIDGE_SERVICE_TOKEN: bridgeServiceToken });
 }
 
 async function verifyHealth(config: LocalConfig): Promise<void> {

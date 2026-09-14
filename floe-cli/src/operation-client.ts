@@ -338,6 +338,27 @@ export async function fetchHostControlToken(): Promise<string> {
 }
 
 /**
+ * Obtain the ephemeral Bridge service credential from the native broker so the
+ * CLI can boot the Bridge as an authenticated transport peer of the Bus.
+ *
+ * The Bus is the sole issuer and its mint route is host-control authenticated,
+ * so the broker (the only host-control owner) obtains the credential on the
+ * same trust path as the host-control token. The returned value must be
+ * injected into the Bridge process environment only and never logged or
+ * persisted.
+ */
+export async function fetchBridgeServiceToken(bridgeId = "bridge:local"): Promise<string> {
+  const result = await runNativeAuthorityCommand({
+    command: "provide_bridge_service_token",
+    bridge_id: bridgeId,
+  });
+  if (!isRecord(result) || typeof result.token !== "string" || !result.token) {
+    throw new Error("Floe's native authority broker did not provide a Bridge service credential.");
+  }
+  return result.token;
+}
+
+/**
  * Register the current directory as a local Workspace and select it, through
  * the native broker. Registration is a host-control bootstrap route, so the CLI
  * authenticates through the broker rather than an unauthenticated HTTP call.
