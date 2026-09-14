@@ -1,91 +1,88 @@
 # substrate-build
 
-Deep reference for inspecting, composing, and extending the Floe substrate. Use this when someone asks
-you to add a capability, build an extension, wire an MCP, or understand how Floe is built. Compose
-before you code; keep the substrate general.
+Read this reference when a concrete outcome needs a capability, composition, or Extension contract.
+Discover current operations before writing code. Floe provides the shared environment; actors and
+Extensions choose how work is organised.
 
-## The layering (preserve the daemon boundary)
+## Ownership
 
-- **floe-bus** owns durable routing state: contexts, events, threads, participants, subscriptions,
-  deliveries, pulses, scopes. It PUSHES to subscribers; nothing polls it.
-- **floe-bridge** owns runtime adaptation: it embodies actors (runtimes), fires hooks, assembles
-  prompts, and initializes the `.floe/` workspace template.
-- **floe-app** owns the human operator experience. It is one client over the substrate; it holds no
-  substrate state of its own.
+- **floe-bus** owns canonical identity, authority, Contexts, Events, Scope composition and execution,
+  Artefact versions, Extension lifecycle, and semantic operations. It pushes changes to clients.
+- **floe-bridge** adapts runtime execution using Bus-issued processing contracts and supplies compact
+  actor guidance. It does not import Extension code or create a second capability catalogue.
+- **floe-app** presents work and invokes the same operations as other authorised actors. Its layout
+  and selection state cannot change execution or authority.
 
-Never route around this boundary or push substrate state into the client.
+Use existing grants and brokers. Neither a client nor a generated script may create a parallel
+source of authority or execution state.
 
-## Compose primitives first (usually no code)
+## Compose for the actual outcome
 
-Most needs are met with existing primitives:
+Use `discover_capabilities` for the concrete need, inspect existing resources, and invoke
+`use_capability` with the returned operation and schema versions. Discover again when availability
+or the contract changes; do not copy a catalogue of operation names into instructions.
 
-- **Contexts** — bounded streams for a piece of work; open one and add the participants who should be
-  woken.
-- **Scopes** — the intentional organising boundary for connected/operational work (`scope_id` on
-  scoped primitives; actorless contexts must be scoped; there is no Default Scope).
-- **Events + emit** — all coordination is canonical events; `emit` is the only way to communicate.
-- **Pulses** — bus-owned scheduled events (cron or one-off) delivered to subscribers; the way to
-  schedule recurring or future work without polling (see `docs/adr/0001-pulse-scheduled-event-delivery.md`).
-- **Workspace files** — durable truth; read and write them with file tools.
-- **Connected operation** — use `discover_capabilities` with the concrete organisation or routing need,
-  then follow the returned Bus-owned schema through `use_capability`. Inspect existing organisation before
-  creating it, place Event, Actor, and deterministic Command nodes in a real scoped Context, and activate
-  the operation when work should start. The nodes' declared event types are the durable wake connections.
-  Actor files, a shared skill, controller instructions, or event-name conventions alone are not a
-  composed operation. Composition supplies routing, not arbitrary stage-policy enforcement; keep policy
-  in node/actor instructions or an external extension when deterministic enforcement is required.
-- **Folder-driven model work** — create the model actor, then discover and use the current organisation
-  capability that can make each arriving file an Event in a scoped Context. The actor receives the file
-  path and can use `read_image` when the file is an image. Do not start a detached watcher or invoke
-  another model CLI.
+- **Context** holds bounded collaboration and evidence. Use direct conversation, `emit`, or `request`
+  where they suffice. Context membership, subscriptions, and parentage do not wire a Scope execution.
+- **Scope** provides optional durable organisation. For explicit connected execution, publish a
+  composition of NodePlacements, typed Ports, and stored Edges. Each execution pins one published
+  revision; subsequent design changes affect new executions. Read ADR-0010 when this boundary matters.
+- **Output publication** validates the executing node's pinned Port contract and traverses stored
+  Edges. A final Context contribution or direct actor request does not substitute for publication.
+- **Artefact** provides stable identity; an immutable ArtefactVersion identifies the exact result,
+  content reference, and provenance. Content stores own bytes. File paths, lineage, and pipeline
+  Edges are different relationships. Extensions own domain meaning and presentation.
+- **External ingress and actions** use discovered Connector contracts. A Pulse schedules an Event;
+  a folder arrival is a source Event. Verify the available adapter before activation. Do not add
+  detached watchers, model CLIs, or polling loops beside Floe.
 
-Report the resulting Scope and Context as useful references. Do not make the operator design or manually
-wire the composition.
+Keep workflow policy in actor instructions, configuration, or Extensions using existing enforcement
+mechanisms. Confirm the requested work actually starts and return useful result and Context references.
+Do not make the operator design the composition.
 
-This skill explains durable substrate concepts, not the live operation catalogue. Capability ids,
-descriptions, and input shapes are owned by the Bus discovery response and must not be copied here.
+After an uncertain effect, inspect its receipt; do not blindly retry. Preserve exact output versions
+and unaffected work when applying a correction.
 
-## Write a code extension only as the escape hatch
+## Extend only for a demonstrated gap
 
-Reserve extensions for genuinely new capability (external I/O, computation, a new tool surface). An
-extension is a `.floe/extensions/NAME/` folder with:
+Read accepted ADR-0002 and ADR-0006 together with current discovery and host contracts before authoring
+an Extension. Source belongs in an independent repository or package. `.floe/extensions/NAME/` is the
+workspace installation location; its descriptor identifies an exact canonical ExtensionPackageVersion.
 
-- `extension.json` — the manifest (`floe.extension.v1`): metadata, capabilities, optional pulse
-  declarations.
-- a TypeScript entry `export default function(ctx: ExtensionContext): AgentTool[]` — returns agent
-  tools (auto-prefixed with the extension name, so `add` becomes `name_add`) and may register
-  programmatic hooks via `ctx.hooks.on(...)`. `ctx` provides `workspacePath`, `busClient`,
-  `workspaceId`, and `extensionName`.
-- binding — add the extension to an actor's frontmatter `extensions: ["name"]`.
+Use the discovered package, installation, approval, activation, and invocation operations. The isolated
+Extension host verifies package bytes and permissions; code receives no ambient filesystem, network,
+secret, or Bridge access. A declared permission is insufficient when the corresponding broker is
+unavailable. Secret values remain in trusted brokers.
 
-Hooks that can fire: `SessionStart`, `SessionResume`, `BeforeTurn` (can inject prompt context via a
-returned `inject`), `Pulse`, `TurnEnd`, `Error`, `BeforeToolUse`, `AfterToolUse`, `ToolUseFailed`,
-`SessionEnd`, `WebhookReceived`. Registration and firing are separate: a registered hook only runs when
-the bridge/runtime fires that lifecycle point. See `docs/adr/0002-extension-substrate-design.md`.
+The Bridge does not load package source, inject package tools, or serve an Extension HTTP relay.
+An authored folder or actor frontmatter entry does not enable a package.
 
-## MCP
+An Extension may declare a bounded preview, renderer, lens, or dashboard over canonical projection and
+action operations. Verify that the client supports its presentation contract and can render the result.
+A declaration alone is not a working interface. Do not invent an executable UI loader or universal
+renderer to bypass a missing supported capability.
 
-Runtime-native MCP profiles are referenced or copied under `.floe/mcp/`. Use one to give an actor an
-external tool server when a capability is better served by an existing MCP than by a bespoke extension.
+For MCP, inspect the current runtime's supported attachment and authority contract. A file under
+`.floe/mcp/` alone does not prove that a tool server is connected or callable.
 
-## Keep it substrate-first and thin
+## Keep the substrate general
 
-Before adding any machinery, apply the two `MISSION.md` tests:
+Apply the `MISSION.md` tests before proposing substrate machinery:
 
-- **Redundancy test** — would a 10x better model make this unnecessary? If yes, do not build it.
+- **Redundancy test** — would a 10x better model make this unnecessary? If yes, prefer actor behaviour
+  or an Extension.
 - **Actor-generality test** — is it useful to an actor that never opens the UI (an agent, a webhook
   processor, a headless script)? If only the UI needs it, it is client code, not substrate.
 
-Check whether the workspace filesystem and typed events already cover the need. Extensions stay thin:
-file formats + config + minimal glue, never a parallel state machine beside the substrate.
+Report a proven missing mechanism with the attempted outcome and evidence. Consumer actors must not
+rewrite Floe core to escape its boundaries.
 
 ## Where the canonical knowledge lives
 
-`CONTEXT.md` (terminology and invariants), `docs/adr/` (accepted decisions), `docs/architecture/`,
-`MISSION.md` (intent and the tests), and `docs/floe_thought_log.md` (current direction). Canonical
-documents govern: where a plan, PRD, or roadmap conflicts with `CONTEXT.md` or an accepted ADR, the
-canonical document wins — surface the conflict, do not follow the stale side. Read what you need; be
-precise and token-frugal.
+`MISSION.md` owns purpose, `PRODUCT.md` owns the operator experience, `CONTEXT.md` owns terminology,
+and accepted ADRs explain lasting decisions. Current code, discovered contracts, and observed behaviour
+establish what works now. Plans and historical notes are evidence. Surface contradictions and read
+only the references needed for the current attempt.
 
 ## Tests
 

@@ -1,40 +1,19 @@
 /**
- * Scope composition storage.
+ * Legacy mutable Scope graph compatibility.
  *
- * `buildScopeProjection` (scopes/projection.ts) is DESCRIPTIVE: it derives refs
- * and relationships from contexts, pulses, events and activity that have
- * already happened. The stored composition is PRESCRIPTIVE: nodes authored
- * before anything happens describe what is currently placed in the Scope and
- * then cause the work. `graph_id` is an internal, stable routing handle rather
- * than a second product object beside the Scope.
+ * This record predates canonical ScopeCompositionRevision, Port, Edge and
+ * ScopeExecution storage. It inferred routing from one shared Context and its
+ * subscriptions. That model is retained only to inspect and migrate existing
+ * v0.1.x Workspaces; new pipeline topology must use `scope-compositions.ts`
+ * and `scope-executions.ts`.
  *
- * This slice supports three node kinds: `trigger`, `actor` and `command`.
- * There is deliberately no stored "edge" record. A graph owns exactly one
- * Context (an EXISTING substrate primitive), and that shared context_id IS
- * the wiring:
- * - An actor node's connection is realised, at authoring time, purely through
- *   existing Context primitives — ContextStore.applyContextSubscriptions adds
- *   it as a participant AND subscribes it to the node's event types.
- * - A command node is wired IDENTICALLY to an actor node (participant +
- *   subscription) — it is an ordinary Context participant whose endpoint just
- *   happens to be backed by a deterministic runtime instead of a model
- *   (BridgeDaemon substitutes the runtime behind the endpoint; the substrate
- *   has no `actor_kind` and does not know or care). Its specific behaviour —
- *   which script, which named inputs/outputs — is its own instance config,
- *   exactly as an actor's specific behaviour comes entirely from its own
- *   bindings, never a bespoke substrate field per node.
- * - Firing a trigger node emits into the graph's context via
- *   BusStore.emitTriggerEvent (the same bus-originated wake primitive pulse
- *   firing already uses) once per endpoint whose EXISTING context subscription
- *   matches the trigger's event type — read via ContextStore.getContextSubscriptions.
- * No new routing table is introduced; "the edge" is inferred from shared
- * context membership, not stored as a separate concept.
+ * Context membership and subscriptions remain valid for collaboration and
+ * deliberate non-graph pub/sub. They never define or advance canonical Scope
+ * execution. A revision uses either explicit Edge routing or this identified
+ * legacy mode, never both.
  *
- * Node ownership, typed ports and nesting are deliberately out of scope for
- * this slice.
- *
- * A composition never claims to describe a Scope's derived history. What
- * happened remains in the Context; replacing current nodes does not rewrite it.
+ * `graph_id` is therefore a legacy storage handle, not a user-facing primitive
+ * and not proof of the current published Scope plan.
  */
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
@@ -218,7 +197,7 @@ export class ScopeGraphStore {
     return rows.map((row) => this.rowToGraph(row));
   }
 
-  /** All graphs in a workspace, across every scope — used by the bridge to discover command nodes at attach time. */
+  /** All retained legacy graphs in a Workspace, used for migration evidence and remaining Event-source/Actor bindings. */
   listScopeGraphsForWorkspace(workspaceId: string): ScopeGraphRecord[] {
     const rows = this.db.prepare(`
       SELECT * FROM scope_graphs WHERE workspace_id = ? ORDER BY created_at ASC

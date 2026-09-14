@@ -5,6 +5,7 @@ import { join } from "node:path";
 import YAML from "yaml";
 import { defaultConfig, type LocalConfig } from "../config.js";
 import { createBusServer } from "../server.js";
+import { registerExecutableActorFixture } from "../executable-actor-test-fixture.js";
 
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
 
@@ -13,7 +14,7 @@ async function makeServer(): Promise<{ handle: ServerHandle; tmp: string }> {
   const cfgPath = join(tmp, "config.yaml");
   const cfg: LocalConfig = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const handle = await createBusServer(cfgPath, cfg);
+  const handle = await createBusServer(cfgPath, cfg, { allow_unauthenticated_test_requests: true });
   await handle.app.ready();
   return { handle, tmp };
 }
@@ -24,6 +25,7 @@ async function registerWorkspace(handle: ServerHandle, tmp: string, name: string
   const registered = await handle.app.inject({
     method: "POST",
     url: "/v1/workspaces/register",
+    headers: { authorization: `Bearer ${handle.localControlToken}` },
     payload: { locator, name }
   });
   expect(registered.statusCode).toBe(201);
@@ -153,5 +155,30 @@ describe("Workspace Context discovery", () => {
         scope_id: "research"
       })
     ]);
+  });
+
+  it("returns current response state in both participant and Workspace lists", async () => {
+    const workspaceId = await registerWorkspace(handle, tmp, "status-workspace");
+    const actor = `actor:${workspaceId}:worker`;
+    handle.store.registerEndpoint({ endpoint_id: actor, workspace_id: workspaceId, name: "Worker", bridge_id: "bridge:status", status: "idle" }, () => {});
+    registerExecutableActorFixture(handle.store, workspaceId, actor);
+    const contextId = handle.store.contextStore.createContext({ workspace_id: workspaceId, scope_id: null, participants: [actor], created_by_endpoint_id: null });
+    handle.store.submitPrincipalContextCommunication({ workspace_id: workspaceId, context_id: contextId,
+      principal_id: "operator:test", type: "message", recipient_endpoint_id: actor, content: { text: "Review the saved work" },
+      artefact_version_ids: [], attachment_ingress_ids: [], response_expected: true, idempotency_key: "status-request",
+      provenance: { cause_event_id: null, delivery_ids: [], execution_attempt_id: null, node_execution_id: null, scope_execution_id: null },
+    }, () => {});
+    const [delivery] = handle.store.claimDeliveries("bridge:status", 1, () => {});
+    const participantList = await handle.app.inject({ method: "GET",
+      url: `/v1/contexts?participant=${encodeURIComponent(actor)}&workspace_id=${encodeURIComponent(workspaceId)}` });
+    expect(participantList.statusCode).toBe(200);
+    expect(participantList.json().contexts.find((row: any) => row.context_id === contextId)?.delivery_summary)
+      .toEqual({ active_count: 1, latest_state: "delivered_to_bridge" });
+    handle.store.cancelRuntimeDelivery({ workspace_id: workspaceId, delivery_id: delivery.delivery_id,
+      principal_id: "operator:test", invocation_id: "status-stop" }, () => {});
+    const workspaceList = await handle.app.inject({ method: "GET", url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/contexts` });
+    expect(workspaceList.statusCode).toBe(200);
+    expect(workspaceList.json().contexts.find((row: any) => row.context_id === contextId)?.delivery_summary)
+      .toEqual({ active_count: 0, latest_state: "cancelled" });
   });
 });

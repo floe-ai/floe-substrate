@@ -12,10 +12,10 @@
 | `floe stop` | Stop local services | — |
 | `floe restart` | Restart local services | — |
 | `floe logs [service]` | Print service logs (`bus`, `bridge`, or `app`; all three if omitted) | — |
-| `floe login` | Configure an auth profile | `--provider`, `--profile`, `--model`, `--api-key-env` |
-| `floe auth list` | List configured auth profiles | — |
-| `floe auth doctor` | Validate auth/profile setup | — |
-| `floe logout <profile>` | Remove an auth profile | — |
+| `floe login` | Connect a provider account through the protected native broker | `--provider` |
+| `floe auth list` | List provider-account status without exposing credentials | — |
+| `floe auth doctor` | Validate provider-account health | — |
+| `floe logout <provider>` | Disconnect a provider after the Bus-authored confirmation | — |
 | `floe doctor` | Diagnose local setup | — |
 | `floe config path` | Print active config path | — |
 | `floe config edit` | Open config in `$EDITOR`, or print the path | — |
@@ -69,11 +69,12 @@ floe logs bridge     # bridge only
 
 ## `floe login`
 
-Configures a provider auth profile (API key or OAuth, depending on the provider).
+Connects a provider subscription through its supported authentication flow.
+The native authority broker keeps host and provider credentials out of the CLI.
 
 ```bash
-floe login --provider anthropic --profile default
-floe login --provider openai --api-key-env OPENAI_API_KEY
+floe login --provider anthropic
+floe login --provider openai-codex
 ```
 
 ## `floe auth list` / `floe auth doctor` / `floe logout`
@@ -81,7 +82,7 @@ floe login --provider openai --api-key-env OPENAI_API_KEY
 ```bash
 floe auth list
 floe auth doctor
-floe logout default
+floe logout openai-codex
 ```
 
 ## `floe config path` / `floe config edit`

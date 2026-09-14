@@ -16,7 +16,6 @@ import * as client from "../bus-client/client.ts";
 
 vi.mock("../bus-client/client.ts", () => ({
   listContextsForScope: vi.fn(),
-  deleteContext: vi.fn(),
 }));
 
 // Mock Ops to avoid rendering its full subtree

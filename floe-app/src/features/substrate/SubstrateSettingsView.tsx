@@ -539,8 +539,8 @@ function BrowserAuthPillar(): React.ReactElement {
         borderRadius: tk.r3, padding: "14px 18px",
       }}>
         <p style={{ fontSize: 12.5, color: tk.ink3, margin: 0, lineHeight: 1.6 }}>
-          <strong style={{ color: tk.ink2 }}>Note:</strong> Credential write operations are desktop/CLI-only (ADR-0005).
-          Use <code>floe login</code> or <code>floe logout</code> from the CLI, or open the Floe desktop app to manage credentials.
+          <strong style={{ color: tk.ink2 }}>Note:</strong> Provider connections use the protected native broker (ADR-0012).
+          Use <code>floe login</code> to connect from the CLI, or open Provider settings in the Floe desktop app.
         </p>
       </section>
     </div>
@@ -548,26 +548,15 @@ function BrowserAuthPillar(): React.ReactElement {
 }
 
 // ---------------------------------------------------------------------------
-// Desktop (Tauri) full read/write auth pillar
+// Desktop provider-account observatory. Credential mutation belongs to the
+// normal Provider settings flow so this diagnostic surface cannot create a
+// second credential store or bypass canonical confirmation.
 // ---------------------------------------------------------------------------
 
 function TauriAuthPillar(): React.ReactElement {
   const [profiles, setProfiles] = useState<AuthProfileRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  // Form State
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [newId, setNewId] = useState("");
-  const [newProvider, setNewProvider] = useState("openai");
-  const [newModel, setNewModel] = useState("");
-  const [newApiKey, setNewApiKey] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveState] = useState<string | null>(null);
-
-  // Delete State
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [deleteConfirmInput, setDeleteConfirmInput] = useState("");
 
   const loadProfiles = () => {
     setLoading(true);
@@ -586,83 +575,25 @@ function TauriAuthPillar(): React.ReactElement {
     loadProfiles();
   }, []);
 
-  const handleSave = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const id = newId.trim().toLowerCase();
-    const provider = newProvider.trim();
-    const model = newModel.trim();
-    const apiKey = newApiKey.trim();
-
-    if (!id || !provider) return;
-    setSaving(true);
-    setSaveState(null);
-
-    try {
-      await invokeTauri<void>("save_substrate_auth_profile", {
-        profile: {
-          id,
-          provider,
-          model: model || null,
-          label: null,
-        },
-        apiKey: apiKey || null,
-      });
-      setShowAddForm(false);
-      setNewId("");
-      setNewModel("");
-      setNewApiKey("");
-      loadProfiles();
-    } catch (err) {
-      setSaveState(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleDelete = async (id: string) => {
-    if (deleteConfirmInput !== id) return;
-    try {
-      await invokeTauri<void>("delete_substrate_auth_profile", { profileId: id });
-      setDeletingId(null);
-      setDeleteConfirmInput("");
-      loadProfiles();
-    } catch (err) {
-      alert(err instanceof Error ? err.message : String(err));
-    }
-  };
-
   return (
     <div style={{ maxWidth: 800, display: "flex", flexDirection: "column", gap: 28 }}>
-      {/* Intro */}
       <section>
-        <h2 style={{ fontSize: 16, fontWeight: 510, color: tk.ink, margin: "0 0 6px" }}>Authentication Profiles</h2>
+        <h2 style={{ fontSize: 16, fontWeight: 510, color: tk.ink, margin: "0 0 6px" }}>Provider accounts</h2>
         <p style={{ fontSize: 13, color: tk.ink3, margin: 0, lineHeight: 1.5 }}>
-          Create and manage host credentials and API profiles. The desktop app writes natively and securely directly to your machine's YAML/JSON configurations.
+          Inspect the connected provider accounts available from this host's protected credential broker.
         </p>
       </section>
 
       <section style={{ background: "rgba(138,168,156,0.06)", border: `1px solid rgba(138,168,156,0.22)`, borderRadius: tk.r3, padding: 16 }}>
         <p style={{ margin: 0, color: tk.ink3, fontSize: 12.5, lineHeight: 1.55 }}>
-          Normal subscription connections are managed from the main Floe settings. This developer view remains available for inspecting profiles and testing API-key configurations.
+          Connect or disconnect an account from the normal Provider settings flow. Legacy auth files remain available only as explicit migration sources and are never changed here.
         </p>
       </section>
 
-      {/* Profiles list */}
       <section style={{ background: tk.surface, border: `1px solid ${tk.border}`, borderRadius: tk.r3, overflow: "hidden" }}>
         <div style={{ padding: "16px 20px", borderBottom: `1px solid ${tk.border2}`, display: "flex", alignItems: "center" }}>
-          <h3 style={{ fontSize: 13, fontWeight: 510, margin: 0, color: tk.ink }}>Registered Profiles</h3>
-          {!showAddForm && (
-            <button
-              onClick={() => setShowAddForm(true)}
-              style={{
-                marginLeft: "auto", background: tk.accent, color: "#0c1714", border: "none",
-                borderRadius: tk.r2, padding: "5px 12px", fontSize: 11.5, fontWeight: 510,
-                cursor: "pointer",
-              }}
-            >
-              + Add Profile
-            </button>
-          )}
+          <h3 style={{ fontSize: 13, fontWeight: 510, margin: 0, color: tk.ink }}>Connected accounts</h3>
+          <span style={{ marginLeft: "auto", fontSize: 11, color: tk.ink4 }}>Read-only diagnostics</span>
         </div>
 
         {loading ? (
@@ -671,7 +602,7 @@ function TauriAuthPillar(): React.ReactElement {
           <div role="alert" style={{ padding: 24, color: tk.danger }}>{error}</div>
         ) : profiles.length === 0 ? (
           <div style={{ padding: 32, textAlign: "center", color: tk.ink4, fontStyle: "italic" }}>
-            No auth profiles configured. Click "+ Add Profile" to register API credentials.
+            No connected provider accounts.
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column" }}>
@@ -684,164 +615,14 @@ function TauriAuthPillar(): React.ReactElement {
                 }}
               >
                 <div>
-                  <code style={{ fontSize: 13, fontWeight: 550, color: tk.ink }}>{p.id}</code>
-                  <span style={{ fontSize: 11, color: tk.ink4, marginLeft: 12 }}>Provider:</span>
-                  <span style={{ fontSize: 12, color: tk.ink2, marginLeft: 4, textTransform: "capitalize" }}>{p.provider}</span>
-                  {p.model && (
-                    <>
-                      <span style={{ fontSize: 11, color: tk.ink4, marginLeft: 12 }}>Default Model:</span>
-                      <code style={{ fontSize: 11, color: tk.accentHov, marginLeft: 4 }}>{p.model}</code>
-                    </>
-                  )}
+                  <span style={{ fontSize: 13, fontWeight: 550, color: tk.ink }}>{p.label ?? p.provider}</span>
+                  <code style={{ fontSize: 11, color: tk.ink4, marginLeft: 12 }}>{p.provider}</code>
                 </div>
-
-                {deletingId === p.id ? (
-                  <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 11, color: tk.danger }}>Type "{p.id}" to delete:</span>
-                    <input
-                      aria-label="Confirm profile ID"
-                      placeholder={p.id}
-                      value={deleteConfirmInput}
-                      onChange={(e) => setDeleteConfirmInput(e.target.value)}
-                      style={{
-                        background: "rgba(255,255,255,0.03)", border: `1px solid ${tk.danger}`,
-                        borderRadius: tk.r1, padding: "3px 6px", fontSize: 11, color: tk.ink, outline: "none",
-                        width: 100,
-                      }}
-                    />
-                    <button
-                      onClick={() => void handleDelete(p.id)}
-                      disabled={deleteConfirmInput !== p.id}
-                      style={{
-                        background: deleteConfirmInput === p.id ? tk.danger : "rgba(184,90,90,0.3)",
-                        color: "#fff", border: "none", borderRadius: tk.r1, padding: "4px 8px", fontSize: 11,
-                        cursor: deleteConfirmInput === p.id ? "pointer" : "not-allowed",
-                      }}
-                    >
-                      Delete
-                    </button>
-                    <button
-                      onClick={() => { setDeletingId(null); setDeleteConfirmInput(""); }}
-                      style={{
-                        background: "transparent", border: `1px solid ${tk.border}`,
-                        color: tk.ink3, borderRadius: tk.r1, padding: "3px 8px", fontSize: 11, cursor: "pointer",
-                      }}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => setDeletingId(p.id)}
-                    style={{
-                      marginLeft: "auto", background: "transparent", border: `1px solid ${tk.border}`,
-                      color: tk.ink3, borderRadius: tk.r2, padding: "4px 10px", fontSize: 11,
-                      cursor: "pointer", transition: "background 100ms ease, color 100ms ease",
-                    }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = tk.danger; (e.currentTarget as HTMLButtonElement).style.color = tk.danger; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.borderColor = tk.border; (e.currentTarget as HTMLButtonElement).style.color = tk.ink3; }}
-                  >
-                    ✕ Delete
-                  </button>
-                )}
               </div>
             ))}
           </div>
         )}
       </section>
-
-      {/* Add form */}
-      {showAddForm && (
-        <form
-          onSubmit={handleSave}
-          style={{
-            background: tk.surface, border: `1px solid ${tk.accent}`, borderRadius: tk.r3,
-            padding: 20, display: "flex", flexDirection: "column", gap: 14,
-          }}
-        >
-          <h3 style={{ fontSize: 13, fontWeight: 510, margin: "0 0 4px", color: tk.accent }}>Add Authentication Profile</h3>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: tk.ink3 }}>
-              Profile ID (unique, lowercase)
-              <input
-                required
-                autoFocus
-                placeholder="openai-personal"
-                value={newId}
-                onChange={(e) => setNewId(e.target.value)}
-                style={inputStyle}
-              />
-            </label>
-
-            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: tk.ink3 }}>
-              Provider
-              <select
-                value={newProvider}
-                onChange={(e) => setNewProvider(e.target.value)}
-                style={selectStyle}
-              >
-                <option value="openai">OpenAI</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="google">Google Gemini</option>
-                <option value="github-copilot">GitHub Copilot</option>
-                <option value="cohere">Cohere</option>
-                <option value="custom">Custom (Ollama / Local)</option>
-              </select>
-            </label>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: tk.ink3 }}>
-              Default Model (optional)
-              <input
-                placeholder="gpt-4o"
-                value={newModel}
-                onChange={(e) => setNewModel(e.target.value)}
-                style={inputStyle}
-              />
-            </label>
-
-            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: tk.ink3 }}>
-              API Key / Auth Token (securely stored in auth.json)
-              <input
-                type="password"
-                placeholder="••••••••••••••••"
-                value={newApiKey}
-                onChange={(e) => setNewApiKey(e.target.value)}
-                style={inputStyle}
-              />
-            </label>
-          </div>
-
-          {saveError && <p role="alert" style={{ color: tk.danger, fontSize: 12, margin: 0 }}>{saveError}</p>}
-
-          <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-            <button
-              type="submit"
-              disabled={saving}
-              style={{
-                background: tk.accent, color: "#0c1714", border: "none",
-                borderRadius: tk.r2, padding: "6px 14px", fontSize: 12, fontWeight: 510,
-                cursor: saving ? "not-allowed" : "pointer",
-              }}
-            >
-              {saving ? "Registering…" : "Register Profile"}
-            </button>
-            <button
-              type="button"
-              onClick={() => { setShowAddForm(false); setSaveState(null); }}
-              style={{
-                background: "transparent", border: `1px solid ${tk.border}`,
-                color: tk.ink3, borderRadius: tk.r2, padding: "6px 14px", fontSize: 12,
-                cursor: "pointer",
-              }}
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      )}
     </div>
   );
 }

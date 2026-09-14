@@ -12,6 +12,7 @@ function makeDelivery(contextId: string | null = "ctx_delivery"): DeliveryBundle
     thread_id: "thread:test",
     context_id: contextId,
     correlation_id: null,
+    artefact_version_ids: [],
     destination_json: {
       kind: "endpoint",
       endpoint_id: "actor:workspace:test:floe"
@@ -55,6 +56,9 @@ function makeContext(): {
   };
   bus.emit = async (event) => {
     emittedEvents.push(event);
+    return { event_id: "event:accepted", accepted_at: "2026-09-05T00:00:00Z",
+      event: { ...makeDelivery().events[0]!, ...event,
+        event_id: "event:accepted", destination_json: event.destination } };
   };
   return {
     emittedEvents,

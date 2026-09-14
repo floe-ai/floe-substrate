@@ -29,9 +29,43 @@ Authorization: Bearer <opaque credential>
 A request body cannot claim its own principal, Workspace, host, Bridge, Actor,
 Endpoint, grants, or interaction mode.
 
+An operation's target and its causal provenance are separate. An authorised
+Actor may inspect or control another execution from its current Context. The
+receipt retains the originating Event, Delivery and execution; governance
+evaluates the selected target. Publishing runtime output remains tied to the
+originating NodeExecution. Clients use the canonical lifecycle states and
+`state_revision` when requesting execution changes.
+Scope execution inspection includes each Node's `resource_ref`, whose `revision`
+is the exact mutation precondition. The numeric `state_revision` alone is not
+that reference; clients must not guess or manufacture it.
+
+A Bridge reports `deferred` for a runtime setup failure before the model turn
+starts, including credential resolution after injection. A prepared Scope
+attempt then closes as failed, its NodeExecution becomes `blocked` with the
+setup reason, and its inputs are held for an explicit retry. Reattaching the
+Endpoint does not replay those inputs. Retry retains the original Actor and
+runtime pins; changing their configuration requires a deliberate new execution.
+Failures after the model turn begins remain terminal and are never replayed
+automatically.
+
 `GET /health` is public. Other routes require the authority selected by the
 route. A missing, expired, revoked, wrong-audience, or wrong-Workspace
 credential is refused rather than treated as anonymous.
+
+## Push stream starting position
+
+The first authenticated WebSocket frame may supply `start_at: "current"` for
+a client that needs new activity, such as a notification listener. A snapshot
+view must read fresh authoritative state after `authenticated`. It receives the
+accepted cursor and subsequent changes without replaying the old activity log.
+The client must retain that cursor even when no live update arrives. Reconnect
+with `after_cursor` to receive missed changes; do not request a new current
+position after an interruption. The two starting-position fields are mutually
+exclusive. Without either field, historical replay remains available.
+
+Each client view owns its replay position. Bridge service connections retain
+their durable acknowledged checkpoint and cannot skip it with `start_at`.
+This is a transport option, not a change to canonical Event or Context history.
 
 ## Workspace operation session
 
@@ -92,6 +126,14 @@ availability, preconditions, grants, interaction constraints, confirmation or
 approval, expected-revision rules, and result shape. Clients render or wrap
 these definitions; they do not copy their rules.
 
+Approval operation result schema version 2 includes a canonical `resource_ref`
+on every returned ApprovalRequest and ApprovalReceipt. Lists and inspection
+return the exact identity and current mutation revision, so a client can open
+the next permitted action without interpreting IDs or revision counters.
+Decisions still append under the immutable request policy and do not require a
+mutable request-state revision. Cancellation and receipt revocation retain their
+own discovered revision requirements.
+
 ## Invoke a semantic operation
 
 Workspace-bound invocation:
@@ -138,10 +180,24 @@ GET /v1/local/operation-receipts/:receipt_id
 A caller can read its own receipt. Reading another principal's receipt requires
 the explicit `operation.receipt.read.all` grant.
 
+## Portable Workspace operations
+
+Portable transfer uses the same discoverable operation contract. Workspace
+authority exports and inspects a package, reconciles exact target-host
+dependencies, and explicitly releases restored work. Host authority locates,
+preflights, and restores a package or supplies exact missing content. The full
+retention, redaction, verification, and restore-hold contract is documented in
+[[Portable Workspace transfer]].
+
 ## Canonical Scope operations
+
+Keyword discovery puts the closest identity and multi-word matches first, so
+bounded clients can find a concrete operation without loading the catalogue.
+Ordering does not change availability, authority or the operation contract.
 
 The live definitions come from discovery. Current operation families include:
 
+- `scope.create` and `scope.list` at the authenticated Workspace boundary;
 - creating and replacing a draft ScopeCompositionRevision;
 - publishing a revision;
 - inspecting the published plan;
@@ -151,6 +207,13 @@ The live definitions come from discovery. Current operation families include:
 A published revision owns NodePlacements, Ports, and Edges. Existing executions
 remain pinned to their starting revision. Only Port publication and enabled Edge
 traversal advance canonical Scope work.
+
+Creating a Scope supplies its title, optional description and optional identity.
+It does not prescribe a plan or start execution. Actors and clients use the same
+creation and listing definitions. The existing POST
+`/v1/workspaces/:workspace_id/scopes` also invokes `scope.create` and returns its
+`receipt_id`; it is not a separate write path. Both creation paths require the
+same grant and preserve idempotent replay.
 
 Read-only Scope projections include:
 
@@ -202,6 +265,13 @@ GET /v1/contexts/:id
 GET /v1/contexts/:id/tree
 GET /v1/contexts/:id/events
 ```
+
+Context list rows include `delivery_summary` with `active_count` and
+`latest_state` (null when there are no Deliveries). The projection includes
+Deliveries triggered in the Context, their explicit dependent requests and
+responses resumed by those requests' results,
+within the same Workspace. It is batched across the returned list, does not
+infer work from participation, and does not define an overall outcome status.
 
 ## Canonical Artefact operations
 

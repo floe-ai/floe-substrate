@@ -53,6 +53,7 @@ function makeDelivery(deliveryId: string, threadId: string, text: string): Deliv
       source_endpoint_id: "actor:workspace:test:operator",
       thread_id: threadId,
       correlation_id: null,
+      artefact_version_ids: [],
       destination_json: { kind: "endpoint", endpoint_id: "actor:workspace:test:floe" },
       content: { text, data: {} },
       response: { expected: false },
@@ -246,16 +247,23 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
   it("emit tool accepts a neutral ref and translates to legacy endpoint_id before forwarding to bus", async () => {
     const emittedEvents: any[] = [];
     let emitTool: any = null;
+    let accepted: any;
     const fakeAgent: any = {
       registeredTools: [] as any[],
       listeners: [] as Array<(e: any) => void | Promise<void>>,
       subscribe(l: any) { this.listeners.push(l); },
       async prompt() {
         emitTool = this.registeredTools.find((t: any) => t.name === "emit");
-        await emitTool!.execute("tc_emit_neutral", {
+        accepted = await emitTool!.execute("tc_emit_neutral", {
           type: "message",
           destination: "operator",
           text: "Hello via neutral ref",
+          references: [{ name: "Local preview approval", resource_ref: { kind: "approval_request", id: "approval:exact", revision: "2" } }],
+          attachments: [
+            { artefact_version_id: "artefact-version:lantern", name: "Teal Lantern" },
+            { artefact_version_id: "artefact-version:scene", name: "Revised Courtyard" },
+          ],
+          artefact_version_ids: ["artefact-version:lantern"],
           data: { report: { schema: "example.v1" } },
           response_expected: false,
         });
@@ -278,7 +286,11 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
       bridge_id: "bridge:test",
       bus: { recordRuntimeTurnResult,
         async appendRuntimeTelemetry() {},
-        async emit(event: any) { emittedEvents.push(event); },
+        async emit(event: any) {
+          emittedEvents.push(event);
+          return { event_id: "event:accepted", accepted_at: "2026-09-05T00:00:00Z",
+            event: { artefact_version_ids: ["artefact-version:retained-by-bus"] } };
+        },
         async listEndpoints() {
           return [
             { endpoint_id: "actor:workspace:test:floe", name: "Floe", status: "idle" },
@@ -301,6 +313,15 @@ describe("Substrate-direction: agents see only neutral actor refs", () => {
     expect(emittedEvents).toHaveLength(1);
     expect(emittedEvents[0].destination.endpoint_id).toBe("actor:workspace:test:operator");
     expect(emittedEvents[0].content.text).toBe("Hello via neutral ref");
+    expect(emittedEvents[0].content.references).toEqual([{ name: "Local preview approval", resource_ref: { kind: "approval_request", id: "approval:exact", revision: "2" } }]);
+    expect(emittedEvents[0].artefact_version_ids).toEqual(["artefact-version:lantern", "artefact-version:scene"]);
+    expect(emittedEvents[0].content.attachments).toEqual([
+      { artefact_version_id: "artefact-version:lantern", name: "Teal Lantern" },
+      { artefact_version_id: "artefact-version:scene", name: "Revised Courtyard" },
+    ]);
+    // Confirmation comes from the retained Bus result, not the requested refs.
+    expect(JSON.parse(accepted.content[0].text)).toEqual({ ok: true, event_id: "event:accepted",
+      accepted_at: "2026-09-05T00:00:00Z", artefact_version_ids: ["artefact-version:retained-by-bus"] });
     expect(emittedEvents[0].content.data).toMatchObject({
       report: { schema: "example.v1" },
       origin: "pi_emit_tool",
@@ -552,4 +573,3 @@ describe("Integration: agent cannot cite substrate metadata to identify actor ca
     expect(allAgentVisibleText).not.toContain("actor:workspace:test:floe");
   });
 });
-

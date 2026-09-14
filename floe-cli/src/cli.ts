@@ -31,6 +31,10 @@ import {
   type ServiceName
 } from "./process-manager.js";
 import { checkCargoAvailable, missingCargoMessage } from "./desktop.js";
+import { registerOperationsCommand } from "./operations-command.js";
+import { confirmInTerminal } from "./operations-command.js";
+import { NativeCliOperationAuthorityBroker } from "./operation-client.js";
+import { disconnectProviderAccount } from "./provider-account-command.js";
 
 const program = new Command();
 
@@ -155,145 +159,61 @@ program
 
 program
   .command("login")
-  .description("Configure a Floe auth profile")
-  .option("--provider <provider>", "provider id")
-  .option("--profile <profile>", "profile id")
-  .option("--model <model>", "default model id for this profile")
-  .option("--api-key-env <name>", "read API key from environment variable")
+  .description("Connect a provider account through Floe's protected local broker")
+  .requiredOption("--provider <provider>", "subscription provider id")
   .action(async (options) => {
     const { configPath, config } = ensureConfig(program.opts().config);
-    const runtime = createAuthRuntime(configPath, config);
-    const providerOptions = listProviderOptions(runtime);
-    if (providerOptions.length === 0) {
-      throw new Error("No providers are available in the local model registry.");
-    }
-
-    const providerOption = await resolveProviderOption(providerOptions, options.provider);
-    const profileId = await resolveProfileId(runtime.profiles, providerOption.id, options.profile);
-    const model = typeof options.model === "string" && options.model.trim().length > 0 ? options.model.trim() : undefined;
-
-    if (providerOption.auth_type === "oauth") {
-      await loginWithOAuth(runtime, providerOption.id, providerOption.name);
-    } else {
-      const apiKey = await resolveApiKey(options.apiKeyEnv);
-      runtime.authStorage.set(providerOption.id, { type: "api_key", key: apiKey });
-    }
-
-    upsertProfile(runtime.profiles, {
-      id: profileId,
-      provider: providerOption.id,
-      model,
-      label: providerOption.name
-    });
-    saveProfiles(runtime.paths.profilesYamlPath, runtime.profiles);
-    if (providerOption.id !== "fake" && config.bridge.runtime_adapter !== "pi-agent-core") {
+    const providerId = String(options.provider ?? "").trim();
+    if (!providerId) throw new Error("Provider id is required.");
+    const account = await new NativeCliOperationAuthorityBroker().connectProviderAccount(providerId);
+    if (!account.connected) throw new Error("Floe did not confirm the provider account connection.");
+    if (config.bridge.runtime_adapter !== "pi-agent-core") {
       config.bridge.runtime_adapter = "pi-agent-core";
       saveConfig(configPath, config);
       console.log("Runtime adapter: pi-agent-core");
     }
-    runtime.modelRegistry.refresh();
-    console.log(`Saved profile '${profileId}' for provider '${providerOption.id}'.`);
-    if (model) console.log(`Default model: ${model}`);
+    console.log(`Connected provider '${account.provider_id}' using protected Windows credential storage.`);
   });
 
-const authCommand = program.command("auth").description("Inspect Floe auth profiles");
-authCommand.command("list").description("List configured Floe auth profiles").action(() => {
-  const { configPath, config } = ensureConfig(program.opts().config);
-  const runtime = createAuthRuntime(configPath, config);
-  if (runtime.profiles.profiles.length === 0) {
-    console.log("No Floe auth profiles are configured.");
+const authCommand = program.command("auth").description("Inspect Floe provider accounts");
+authCommand.command("list").description("List connected Floe provider accounts").action(async () => {
+  const accounts = await new NativeCliOperationAuthorityBroker().listProviderAccounts();
+  if (accounts.length === 0) {
+    console.log("No Floe provider accounts are configured.");
     return;
   }
-  for (const profile of runtime.profiles.profiles) {
-    const status = runtime.modelRegistry.getProviderAuthStatus(profile.provider);
-    const configured = status.configured ? "configured" : "missing";
-    const modelText = profile.model ? profile.model : "(default)";
-    console.log(
-      `${profile.id} | provider=${profile.provider} | model=${modelText} | auth=${configured} (${getAuthStatusLabel(status)})`
-    );
+  for (const account of accounts) {
+    console.log(`${account.provider_id} | ${account.connected ? "connected" : "missing"}`);
   }
 });
 
 authCommand.command("doctor").description("Validate Floe auth/profile setup").action(async () => {
-  const { configPath, config } = ensureConfig(program.opts().config);
-  const runtime = createAuthRuntime(configPath, config);
-  const errors: string[] = [];
-  const warnings: string[] = [];
-  const providersInRegistry = new Set(runtime.modelRegistry.getAll().map((model) => model.provider));
-
-  if (!existsSync(runtime.paths.authJsonPath)) errors.push(`Missing auth file: ${runtime.paths.authJsonPath}`);
-  if (!existsSync(runtime.paths.modelsJsonPath)) errors.push(`Missing model config file: ${runtime.paths.modelsJsonPath}`);
-  if (!existsSync(runtime.paths.profilesYamlPath)) errors.push(`Missing profiles file: ${runtime.paths.profilesYamlPath}`);
-
-  if (runtime.modelRegistry.getError()) {
-    warnings.push(`models.json warning: ${runtime.modelRegistry.getError()}`);
-  }
-  if (runtime.profilesLoadError) {
-    errors.push(`profiles.yaml parse/schema error: ${runtime.profilesLoadError}`);
-  }
-
-  for (const profile of runtime.profiles.profiles) {
-    if (!providersInRegistry.has(profile.provider)) {
-      errors.push(`Profile '${profile.id}' uses unknown provider '${profile.provider}'.`);
-      continue;
-    }
-    if (profile.model && !runtime.modelRegistry.find(profile.provider, profile.model)) {
-      errors.push(`Profile '${profile.id}' references unknown model '${profile.provider}/${profile.model}'.`);
-    }
-  }
-
-  const profileProviders = new Set(runtime.profiles.profiles.map((profile) => profile.provider));
-  for (const provider of profileProviders) {
-    try {
-      const apiKey = await runtime.authStorage.getApiKey(provider);
-      if (!apiKey) {
-        errors.push(`Provider '${provider}' has no usable auth. Run 'floe login --provider ${provider}'.`);
-      }
-    } catch (error) {
-      errors.push(`Provider '${provider}' auth check failed: ${(error as Error).message}`);
-    }
-  }
-
-  for (const authError of runtime.authStorage.drainErrors()) {
-    warnings.push(`Auth refresh warning: ${authError.message}`);
-  }
-
-  if (errors.length === 0 && warnings.length === 0) {
-    console.log("Auth doctor: OK");
+  const accounts = await new NativeCliOperationAuthorityBroker().listProviderAccounts();
+  const missing = accounts.filter((account) => !account.connected);
+  if (accounts.length > 0 && missing.length === 0) {
+    console.log("Provider account health: OK");
     return;
   }
-
-  if (errors.length > 0) {
-    console.log("Auth doctor errors:");
-    for (const error of errors) console.log(`- ${error}`);
-  }
-  if (warnings.length > 0) {
-    console.log("Auth doctor warnings:");
-    for (const warning of warnings) console.log(`- ${warning}`);
-  }
-  if (errors.length > 0) process.exitCode = 1;
+  if (accounts.length === 0) console.log("Provider account health: no accounts configured");
+  for (const account of missing) console.log(`Provider '${account.provider_id}' is not connected.`);
+  process.exitCode = 1;
 });
 
 program
   .command("logout")
-  .argument("<profile>", "profile id")
-  .description("Remove a Floe auth profile")
-  .action((profile) => {
-    const { configPath, config } = ensureConfig(program.opts().config);
-    const runtime = createAuthRuntime(configPath, config);
-    const existing = findProfile(runtime.profiles, profile);
-    if (!existing) {
-      throw new Error(`Unknown profile '${profile}'.`);
-    }
-    removeProfile(runtime.profiles, profile);
-    saveProfiles(runtime.paths.profilesYamlPath, runtime.profiles);
-    const providerStillReferenced = runtime.profiles.profiles.some((item) => item.provider === existing.provider);
-    if (!providerStillReferenced) {
-      runtime.authStorage.logout(existing.provider);
-      console.log(`Removed profile '${profile}' and provider auth '${existing.provider}'.`);
+  .argument("<provider>", "provider id")
+  .description("Disconnect a Floe provider account")
+  .action(async (provider: string) => {
+    const result = await disconnectProviderAccount(provider, { confirm: confirmInTerminal });
+    if (result.kind === "cancelled") {
+      console.log("Provider account left connected.");
       return;
     }
-    console.log(`Removed profile '${profile}'. Provider auth '${existing.provider}' is still used by other profiles.`);
+    if (result.kind === "already_disconnected") {
+      console.log(`Provider '${result.account.provider_id}' is already disconnected.`);
+      return;
+    }
+    console.log(`Disconnected provider '${result.account.provider_id}'.`);
   });
 
 program.command("doctor").description("Diagnose local Floe setup").action(async () => {
@@ -383,6 +303,8 @@ program
     executeReset(configPath, config);
     console.log("\nReset complete. Run \`floe setup\` or \`floe start\` to start fresh.");
   });
+
+registerOperationsCommand(program, {});
 
 program.action(async () => {
   const { configPath, config, created } = ensureConfig(program.opts().config);

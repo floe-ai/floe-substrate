@@ -1,6 +1,6 @@
 [package]
 name = "floe-console"
-version = "0.1.32"
+version = "0.1.80"
 description = "Floe substrate console (Tauri shell)"
 authors = ["floe"]
 license = ""
@@ -23,7 +23,15 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.11.2", features = [] }
 tauri-plugin-log = "2"
+tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 thiserror = "2"
 serde_yaml = "0.9"
 base64 = "0.22"
+futures-util = "0.3"
+rand = "0.8"
+reqwest = { version = "0.13.4", default-features = false, features = ["json"] }
+tokio = { version = "1", features = ["sync", "time"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake"] }
+urlencoding = "2.1"
+floe-native-authority = { path = "../../floe-native-authority" }

@@ -60,6 +60,9 @@ function runShellCommand(input: {
       cwd: input.cwd,
       env: input.env,
       windowsHide: true,
+      // Match Node's cmd.exe shell invocation: preserve the complete command
+      // instead of escaping its nested quotes as ordinary argv strings.
+      windowsVerbatimArguments: input.isWindows,
       stdio: ["ignore", "pipe", "pipe"],
     });
     const stdout: Buffer[] = [];
@@ -152,7 +155,7 @@ export function createBashTool(ctx: ToolContext): AgentTool {
       const env = sanitiseEnvironment();
       const isWindows = isWindowsHost;
       const shell = isWindows ? "cmd.exe" : "/bin/bash";
-      const shellArgs = isWindows ? ["/c", command] : ["-c", command];
+      const shellArgs = isWindows ? ["/d", "/s", "/c", `"${command}"`] : ["-c", command];
 
       const proc = await runShellCommand({
         shell,

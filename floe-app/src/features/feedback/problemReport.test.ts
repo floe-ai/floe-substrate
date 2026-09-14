@@ -40,6 +40,7 @@ const evidence: ContextDiagnosticEvidence = {
     content: { text: "Open C:\\Users\\alice\\secret.txt with sk-abcdefghijklmnopqrstuvwxyz" },
     response: { expected: true },
     metadata: { authorization: "Bearer abcdefghijklmnopqrstuvwxyz" },
+    artefact_version_ids: [],
     created_at: "2026-09-01T02:01:00.000Z",
   }],
   deliveries: [{
@@ -62,7 +63,13 @@ const evidence: ContextDiagnosticEvidence = {
     created_at: "2026-09-01T02:02:00.000Z",
   }],
   runtime: { bridge: { online: false, runtime_adapter: "pi" } },
-  capabilities: [{ capability_id: "scope.inspect", category: "organisation", title: "Inspect", effect: "read" }],
+  operations: [{
+    operation_id: "scope.plan.inspect",
+    operation_version: "1",
+    category: "scope",
+    title: "Inspect Scope plan",
+    effects: { mode: "read", reversibility: "none", external: false, secret_access: "none" },
+  }],
   limits: {
     events: 30,
     deliveries: 30,

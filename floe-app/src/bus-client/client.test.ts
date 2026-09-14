@@ -1,8 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+const nativeInvoke = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/core", () => ({ invoke: nativeInvoke }));
 import {
   listWorkspaces,
+  registerWorkspace,
   listScopes,
   listScopeCompositions,
+  listScopeCompositionRevisions,
+  listScopeExecutions,
+  getScopeExecutionProjection,
+  listContextScopeExecutions,
+  listOperations,
+  invokeOperation,
   listContextEventHistoryPage,
   listContextEvents,
   listContextTree,
@@ -37,6 +46,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  nativeInvoke.mockReset();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -55,6 +65,19 @@ describe("bus-client — existing", () => {
 // ---------------------------------------------------------------------------
 
 describe("bus-client — reads", () => {
+  it.each([true, false])("reads desktop runtime health without a Workspace request (online=%s)", async online => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+    const runtime = { bridge: { online, runtime_adapter: "pi" } };
+    nativeInvoke.mockResolvedValue({ status: 200, contentType: "application/json", body: JSON.stringify(runtime) });
+    expect(await getRuntimeStatus()).toEqual(runtime);
+    expect(nativeInvoke).toHaveBeenCalledExactlyOnceWith("get_local_runtime_status");
+  });
+
+  it("keeps a failed native health read visible as a failure", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+    nativeInvoke.mockResolvedValue({ status: 503, body: "{}" });
+    await expect(getRuntimeStatus()).rejects.toMatchObject({ status: 503 });
+  });
   it("listWorkspaces unwraps { workspaces }", async () => {
     const workspaces = [{ workspace_id: "ws1", name: "Test", locator: "/tmp/ws1", status: "active", selected_at: null, created_at: "2024-01-01T00:00:00Z", updated_at: "2024-01-01T00:00:00Z" }];
     vi.stubGlobal("fetch", mockFetch({ workspaces }));
@@ -70,8 +93,8 @@ describe("bus-client — reads", () => {
     await listWorkspaces(controller.signal);
 
     expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/v1/workspaces"),
-      expect.objectContaining({ signal: controller.signal }),
+      "/v1/browser/session",
+      { signal: controller.signal, credentials: "same-origin" },
     );
   });
 
@@ -117,7 +140,7 @@ describe("bus-client — reads", () => {
 
   it("getRuntimeStatus returns bridge shape", async () => {
     const status = { bridge: { online: true, runtime_adapter: "claude" } };
-    vi.stubGlobal("fetch", mockFetch(status));
+    vi.stubGlobal("fetch", mockFetch({ runtime: status }));
     const result = await getRuntimeStatus();
     expect(result.bridge.online).toBe(true);
   });
@@ -259,13 +282,121 @@ describe("bus-client — writes", () => {
     expect(fetchMock.mock.calls[0][0] as string).toContain("/scopes/delivery%20pipeline/graphs");
   });
 
-  it("createScope unwraps { scope } and POSTs", async () => {
+  it("loads the published plan and bounded canonical Scope executions", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ published_revision_id: "revision-2", revisions: [] }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ executions: [], next_cursor: "older" }) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(listScopeCompositionRevisions("workspace:one", "scope one")).resolves.toEqual({ published_revision_id: "revision-2", revisions: [] });
+    await expect(listScopeExecutions("workspace:one", "scope one", { limit: 25, before: "cursor" })).resolves.toEqual({ executions: [], next_cursor: "older" });
+
+    expect(fetchMock.mock.calls[0][0] as string).toContain("/scopes/scope%20one/compositions");
+    expect(fetchMock.mock.calls[1][0] as string).toContain("/scopes/scope%20one/executions?limit=25&before=cursor");
+  });
+
+  it("loads an exact execution projection and explicit conversation links", async () => {
+    const projection = { execution: { execution_id: "execution-1" }, revision: { revision_id: "revision-1" }, node_executions: [], traversals: [] };
+    const linked = [{ execution_id: "execution-1", cause_event_id: "event-message" }];
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ projection }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ executions: linked }) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getScopeExecutionProjection("workspace:one", "execution one")).resolves.toEqual(projection);
+    await expect(listContextScopeExecutions("workspace:one", "context one")).resolves.toEqual(linked);
+    expect(fetchMock.mock.calls[0][0] as string).toContain("/scope-executions/execution%20one");
+    expect(fetchMock.mock.calls[1][0] as string).toContain("/contexts/context%20one/scope-executions");
+  });
+
+  it("discovers and invokes Stop through one authenticated operation contract", async () => {
+    const descriptor = { operation_id: "scope.execution.stop", operation_version: "1" };
+    const receipt = { receipt_id: "receipt-1", state: "completed" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ operations: [descriptor] }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ kind: "receipt", replayed: false, receipt }) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(listOperations("workspace:one", { kind: "scope_execution", id: "execution-1" })).resolves.toEqual([descriptor]);
+    await expect(invokeOperation("workspace:one", {
+      operation_id: "scope.execution.stop",
+      operation_version: "1",
+      input_schema_version: "1",
+      target: { kind: "scope_execution", id: "execution-1" },
+      expected_resource_revision: "revision-1:running::",
+      idempotency_key: "stop-1",
+      input: { reason: "Operator stopped it." },
+    })).resolves.toEqual(receipt);
+
+    const invokeInit = fetchMock.mock.calls[1][1] as RequestInit;
+    expect(invokeInit.headers).toEqual({ "content-type": "application/json" });
+  });
+
+  it("adds a Workspace through the discovered host operation and returns its local binding", async () => {
+    const descriptor = {
+      operation_id: "workspace.register",
+      operation_version: "1",
+      input: { version: "1", schema: {} },
+      availability: { available: true },
+    };
+    const localWorkspace = {
+      workspace_id: "workspace:new",
+      name: "New Workspace",
+      locator: "C:\\Work\\New",
+      status: "active",
+      selected_at: null,
+      created_at: "2026-09-04T00:00:00.000Z",
+      updated_at: "2026-09-04T00:00:00.000Z",
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ operations: [descriptor] }) })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          kind: "receipt",
+          replayed: false,
+          receipt: {
+            receipt_id: "receipt-register",
+            state: "completed",
+            refusal: null,
+            result: { workspace: { workspace_id: "workspace:new" } },
+          },
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ workspaces: [localWorkspace] }) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(registerWorkspace({
+      locator: "C:\\Work\\New",
+      name: "New Workspace",
+      init_authorized: true,
+    })).resolves.toEqual(localWorkspace);
+
+    const discoveryUrl = String(fetchMock.mock.calls[0][0]);
+    const invocationUrl = String(fetchMock.mock.calls[1][0]);
+    expect(discoveryUrl).toContain("/v1/browser/host/operations?query=register+workspace");
+    expect(invocationUrl).toContain("/v1/browser/host/operations/invoke");
+    const invocation = JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body));
+    expect(invocation).toMatchObject({
+      operation_id: "workspace.register",
+      operation_version: "1",
+      input_schema_version: "1",
+      input: { locator: "C:\\Work\\New", name: "New Workspace", init_authorized: true },
+    });
+    expect(invocation.idempotency_key).toMatch(/^workspace-register:/);
+  });
+
+  it("creates a Scope through the discovered shared operation", async () => {
     const scope = { scope_id: "s-new", workspace_id: "ws1", title: "New Scope", description: null, created_at: "2024-01-01T00:00:00Z", updated_at: "2024-01-01T00:00:00Z" };
-    const fetchMock = mockFetch({ scope }, 201);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ operations: [{ operation_id: "scope.create", operation_version: "1", input: { version: "1" }, availability: { available: true } }] }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ kind: "receipt", receipt: { state: "completed", result: { scope } } }) });
     vi.stubGlobal("fetch", fetchMock);
     const result = await createScope("ws1", { title: "New Scope" });
     expect(result).toEqual(scope);
-    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("POST");
+    expect(String(fetchMock.mock.calls[1][0])).toContain("/workspaces/ws1/operations/invoke");
+    expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))).toMatchObject({ operation_id: "scope.create", input: { title: "New Scope" } });
   });
 
   it("updateScope unwraps { scope } and PATCHes", async () => {

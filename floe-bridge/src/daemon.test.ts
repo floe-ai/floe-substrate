@@ -2,13 +2,24 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { defaultConfig, type LocalConfig } from "./config.js";
 import { BridgeDaemon, chooseAdapter } from "./daemon.js";
 import { TurnFailedError } from "./adapters/pi-agent-core-adapter.js";
 import { HookRegistry, type HookPayload } from "./hooks.js";
 
 const envStack: Array<string | undefined> = [];
+const bridgeServiceToken = `test-bridge-service-${"b".repeat(48)}`;
+const originalBridgeServiceToken = process.env.FLOE_BRIDGE_SERVICE_TOKEN;
+
+beforeAll(() => {
+  process.env.FLOE_BRIDGE_SERVICE_TOKEN = bridgeServiceToken;
+});
+
+afterAll(() => {
+  if (originalBridgeServiceToken === undefined) delete process.env.FLOE_BRIDGE_SERVICE_TOKEN;
+  else process.env.FLOE_BRIDGE_SERVICE_TOKEN = originalBridgeServiceToken;
+});
 
 function makeConfig(runtimeAdapter?: string): { configPath: string; config: LocalConfig; cleanup: () => void } {
   const home = mkdtempSync(join(tmpdir(), "floe-bridge-adapter-"));
@@ -41,6 +52,32 @@ afterEach(() => {
 });
 
 describe("chooseAdapter", () => {
+  it.each(["push", "claim"])("retains a %s reservation arriving while the previous response unwinds", async path => {
+    const made = makeConfig();
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      let finish!: () => void;
+      const firstDone = new Promise<void>(resolve => { finish = resolve; });
+      const handled = vi.fn().mockImplementationOnce(() => firstDone).mockResolvedValue(undefined);
+      (daemon as any).handleDelivery = handled;
+      (daemon as any).endpointRuntime.set("actor:test", {});
+      const first = { endpoint_id: "actor:test", delivery_id: "del:first" };
+      const second = { endpoint_id: "actor:test", delivery_id: "del:second" };
+      await (daemon as any).handleEventStreamMessage({ type: "delivery_bundle_available", payload: { delivery: first } });
+      await (daemon as any).handleEventStreamMessage({ type: "delivery_bundle_available", payload: { delivery: first } });
+      if (path === "push") {
+        await (daemon as any).handleEventStreamMessage({ type: "delivery_bundle_available", payload: { delivery: second } });
+      } else {
+        (daemon as any).bus = { claimDeliveries: vi.fn().mockResolvedValue([second]) };
+        await (daemon as any).processDeliveries();
+      }
+      expect(handled).toHaveBeenCalledTimes(1);
+      finish();
+      await vi.waitFor(() => expect(handled).toHaveBeenCalledTimes(2));
+      expect(handled.mock.calls[1][0]).toBe(second);
+      expect((daemon as any).pendingDeliveries.size).toBe(0);
+    } finally { made.cleanup(); }
+  });
   it("uses Pi as the live runtime on a clean start", () => {
     withoutAdapterEnv();
     const made = makeConfig();
@@ -94,6 +131,27 @@ describe("chooseAdapter", () => {
 });
 
 describe("BridgeDaemon shutdown", () => {
+  it("stays explicitly unavailable instead of trusting loopback when its credential is missing", async () => {
+    withoutAdapterEnv();
+    const made = makeConfig("fake");
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config, {
+        transport_authority: null,
+      });
+
+      expect(daemon.transportAuthorityState).toEqual({
+        status: "unavailable",
+        reason: "credential_missing",
+      });
+      await expect(daemon.start()).rejects.toMatchObject({
+        code: "bridge_transport_unavailable",
+        reason: "credential_missing",
+      });
+    } finally {
+      made.cleanup();
+    }
+  });
+
   it("disposes runtime adapter sessions with bridge_shutdown reason", async () => {
     withoutAdapterEnv();
     const made = makeConfig("fake");
@@ -165,10 +223,10 @@ describe("BridgeDaemon shutdown", () => {
   });
 });
 
-describe("BridgeDaemon Scope composition refresh", () => {
-  it.each(["scope_graph_created", "scope_graph_updated", "scope_retired"])(
+describe("BridgeDaemon canonical runtime and Scope refresh", () => {
+  it.each(["scope_graph_created", "scope_graph_updated", "scope_retired", "actor_runtime_binding_changed"])(
     "reattaches workspaces when receiving %s",
-    (messageType) => {
+    async (messageType) => {
     withoutAdapterEnv();
     const made = makeConfig("fake");
     try {
@@ -178,7 +236,7 @@ describe("BridgeDaemon Scope composition refresh", () => {
       (daemon as any).attachKnownWorkspaces = attach;
       (daemon as any).processDeliveries = process;
 
-      (daemon as any).handleEventStreamMessage({
+      await (daemon as any).handleEventStreamMessage({
         type: messageType,
         payload: { graph: { graph_id: "graph-1" } },
       });
@@ -190,6 +248,31 @@ describe("BridgeDaemon Scope composition refresh", () => {
     }
     },
   );
+
+  it("rechecks attachment when a configuration push arrives during the current pass", async () => {
+    withoutAdapterEnv();
+    const made = makeConfig("fake");
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      let finish!: () => void;
+      const pending = new Promise<void>(resolve => { finish = resolve; });
+      const workspace = { workspace_id: "workspace:test" };
+      const list = vi.fn().mockResolvedValue([workspace]);
+      const attach = vi.fn().mockImplementationOnce(() => pending).mockResolvedValue(undefined);
+      (daemon as any).bus = { listWorkspaces: list };
+      (daemon as any).attachWorkspace = attach;
+      const first = (daemon as any).attachKnownWorkspaces();
+      await Promise.resolve();
+      expect(attach).toHaveBeenCalledOnce();
+      const second = (daemon as any).attachKnownWorkspaces();
+      finish();
+      await Promise.all([first, second]);
+      expect(attach).toHaveBeenCalledTimes(2);
+      expect(list).toHaveBeenCalledTimes(2);
+    } finally {
+      made.cleanup();
+    }
+  });
 });
 
 describe("BridgeDaemon hook event stream", () => {
@@ -240,6 +323,10 @@ describe("BridgeDaemon hook event stream", () => {
       };
 
       await daemon.start();
+      socket?.emitMessage(JSON.stringify({
+        type: "authenticated",
+        payload: { audience: "bridge_service", bridge_id: daemon.bridgeId, cursor: "cursor:0" },
+      }));
       (daemon as any).workspaceHooks.set("workspace:test", hooks);
 
       socket?.emitMessage(JSON.stringify({
@@ -411,6 +498,10 @@ describe("BridgeDaemon hook event stream", () => {
       };
 
       await daemon.start();
+      socket?.emitMessage(JSON.stringify({
+        type: "authenticated",
+        payload: { audience: "bridge_service", bridge_id: daemon.bridgeId, cursor: "cursor:0" },
+      }));
       (daemon as any).workspaceHooks.set("workspace:test", hooks);
 
       const emitWebhook = (eventId: string) => socket?.emitMessage(JSON.stringify({
@@ -509,7 +600,7 @@ describe("BridgeDaemon – TurnFailedError handling (FIX 1)", () => {
 
       (daemon as any).bus = {
         async emit(event: any) { emittedEvents.push(event); },
-        async reportDeliveryStatus(...[, id, state, error]: [string, string, string, string?]) {
+        async reportDeliveryStatus(...[id, state, error]: [string, string, string?]) {
           deliveryStatusUpdates.push({ id, state, error: error ?? null });
           return { state, attempt_count: 1 };
         },
@@ -566,11 +657,140 @@ describe("BridgeDaemon – TurnFailedError handling (FIX 1)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Ungating: every agent gets all workspace-loaded extension tools
+// Canonical direct Context runtime pins
 // ---------------------------------------------------------------------------
 
-describe("BridgeDaemon – extension tool ungating", () => {
-  it("passes all workspace extension tools to an agent with frontmatter extensions: []", async () => {
+describe("BridgeDaemon – canonical direct Context runtime", () => {
+  it.each([false, true])("uses the pinned runtime and its Workspace binding without an Actor file (local access: %s)", async (hasLocalBinding) => {
+    withoutAdapterEnv();
+    const made = makeConfig("fake");
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      const selected: any[] = [];
+      const contexts: any[] = [];
+      if (hasLocalBinding) (daemon as any).workspaceLocators.set("workspace:test", made.config.home);
+      let mutableResolutionCalls = 0;
+      let runtimePrepareCalls = 0;
+      (daemon as any).adapter = {
+        name: "fake",
+        async handleBundle(context: unknown, _delivery: unknown, config: unknown) {
+          contexts.push(context);
+          selected.push(config);
+        },
+      };
+      (daemon as any).bus = {
+        async prepareRuntimeDelivery() {
+          runtimePrepareCalls += 1;
+          return {
+            delivery: { state: "claimed", execution_attempt_id: null },
+            processing_contract: processingContract,
+            operation_authority_session: {
+              authority_session_id: "operation-authority-session:pinned-direct",
+              bearer_token: "operation-bearer-pinned-direct",
+              expires_at: "2099-01-01T00:00:00.000Z",
+            },
+          };
+        },
+        async reportDeliveryStatus(_id: string, state: string) { return { state }; },
+        async reportTurnEnd() {},
+        async resolveRuntimeBinding() { mutableResolutionCalls += 1; throw new Error("must not resolve"); },
+      };
+
+      const delivery: any = {
+        delivery_id: "delivery:pinned-direct",
+        stable_delivery_ids: ["stable-delivery:pinned-direct"],
+        endpoint_id: "actor:workspace:test:floe",
+        workspace_id: "workspace:test",
+        trigger_event_id: "event:pinned-direct",
+        delivered_at: new Date().toISOString(),
+        events: [],
+        actor_definition_revision_id: "actor-definition:pinned",
+        runtime_profile_revision_id: "runtime-profile-revision:pinned",
+        actor_runtime_binding_id: "runtime-binding:pinned",
+        processing_contract: {
+          contract_kind: "direct_context",
+          contract_version: 1,
+          processing_contract_id: "runtime-processing-contract:v1:delivery:pinned-direct",
+          workspace_id: "workspace:test",
+          delivery: {
+            delivery_id: "delivery:pinned-direct",
+            stable_delivery_ids: ["stable-delivery:pinned-direct"],
+            endpoint_id: "actor:workspace:test:floe",
+            context_id: "context:pinned-direct",
+          },
+          context: { context_id: "context:pinned-direct", inspect_operation_id: "context.inspect" },
+          actor: {
+            actor_id: "actor:workspace:test:floe",
+            definition: {
+              actor_definition_revision_id: "actor-definition:pinned",
+              actor_id: "actor:workspace:test:floe",
+              workspace_id: "workspace:test",
+              content: {
+                instructions: "Use the exact recorded runtime.",
+                capability_grant_ids: [],
+              },
+            },
+          },
+          runtime: {
+            binding: {
+              actor_runtime_binding_id: "runtime-binding:pinned",
+              actor_id: "actor:workspace:test:floe",
+              workspace_id: "workspace:test",
+              runtime_profile_revision_id: "runtime-profile-revision:pinned",
+              endpoint_id: "actor:workspace:test:floe",
+            },
+            profile: {
+              runtime_profile_revision_id: "runtime-profile-revision:pinned",
+              runtime_profile_id: "runtime-profile:floe",
+              content: {
+                adapter_id: "fake",
+                configuration: {
+                  provider: "recorded-provider",
+                  model: "recorded-model",
+                  auth_profile: "recorded-profile",
+                  thinking_level: "high",
+                },
+                secret_ref_ids: ["secret-ref:recorded-profile"],
+                resource_policy: {},
+              },
+            },
+          },
+          operation_authority: {
+            principal_id: "actor:workspace:test:floe",
+            capability_grant_ids: [],
+            authority_session_required: true,
+          },
+          events: [],
+          outputs: { publish_operation_id: null, ports: [] },
+        },
+      };
+      const processingContract = delivery.processing_contract;
+      delete delivery.processing_contract;
+
+      await (daemon as any).handleDelivery(delivery);
+
+      expect(mutableResolutionCalls).toBe(0);
+      expect(runtimePrepareCalls).toBe(1);
+      expect(contexts[0].workspace_locator).toBe(hasLocalBinding ? made.config.home : undefined);
+      expect(selected).toEqual([expect.objectContaining({
+        provider: "recorded-provider",
+        model: "recorded-model",
+        model_source: "runtime_profile_revision",
+        thinking_level: "high",
+        instructions: "Use the exact recorded runtime.",
+      })]);
+    } finally {
+      made.cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Extension isolation: workspace package code never enters an Actor runtime
+// ---------------------------------------------------------------------------
+
+describe("BridgeDaemon – Extension isolation", () => {
+  it("does not inject workspace Extension code into an Actor runtime", async () => {
     withoutAdapterEnv();
     const made = makeConfig("fake");
 
@@ -587,23 +807,8 @@ describe("BridgeDaemon – extension tool ungating", () => {
         }
       };
 
-      // Simulate a workspace that has loaded one extension with two tools
-      const mockExtension = {
-        name: "acme",
-        errors: [],
-        tools: [
-          { name: "acme_check_criteria", description: "check", parameters: {} },
-          { name: "acme_move_card", description: "move", parameters: {} }
-        ],
-        pulses: [],
-        bundledAgents: [],
-        views: [],
-        httpHandlers: []
-      };
-      (daemon as any).workspaceExtensions.set("workspace:test", [mockExtension]);
-
-      // Register a column-worker agent whose frontmatter had extensions: [] (no extensions)
-      // After the ungating fix, EndpointEntry has no extensions field at all.
+      // Register an ordinary Actor. Extension capabilities are reached only
+      // through canonical operations and never arrive as imported tool code.
       (daemon as any).endpointRuntime.set("actor:workspace:test:floe", {
         config: { auth_profile: "test-profile", provider: "anthropic", model: "claude-haiku-4-5" },
         instructions: "",
@@ -658,14 +863,8 @@ describe("BridgeDaemon – extension tool ungating", () => {
 
       await (daemon as any).handleDelivery(delivery);
 
-      // The adapter must have been called with the workspace extension — not an empty list
       expect(capturedBundles).toHaveLength(1);
-      const passedExtensions = capturedBundles[0].extensions;
-      expect(passedExtensions).toHaveLength(1);
-      expect(passedExtensions[0].name).toBe("acme");
-      expect(passedExtensions[0].tools).toHaveLength(2);
-      expect(passedExtensions[0].tools.map((t: any) => t.name)).toContain("acme_check_criteria");
-      expect(passedExtensions[0].tools.map((t: any) => t.name)).toContain("acme_move_card");
+      expect(capturedBundles[0]).not.toHaveProperty("extensions");
     } finally {
       made.cleanup();
     }
@@ -682,7 +881,12 @@ describe("BridgeDaemon – D1 WS reconnect with exponential back-off", () => {
     const made = makeConfig("fake");
     const previousWebSocket = (globalThis as any).WebSocket;
 
-    const socketInstances: Array<{ emitOpen(): void; emitClose(): void; sent: string[] }> = [];
+    const socketInstances: Array<{
+      emitOpen(): void;
+      emitMessage(data: string): void;
+      emitClose(code?: number): void;
+      sent: string[];
+    }> = [];
 
     class FakeWebSocket {
       private listeners = new Map<string, Array<(event?: any) => void>>();
@@ -704,8 +908,11 @@ describe("BridgeDaemon – D1 WS reconnect with exponential back-off", () => {
       emitOpen(): void {
         for (const l of this.listeners.get("open") ?? []) l();
       }
-      emitClose(): void {
-        for (const l of this.listeners.get("close") ?? []) l();
+      emitMessage(data: string): void {
+        for (const l of this.listeners.get("message") ?? []) l({ data });
+      }
+      emitClose(code = 1000): void {
+        for (const l of this.listeners.get("close") ?? []) l({ code });
       }
     }
 
@@ -729,13 +936,33 @@ describe("BridgeDaemon – D1 WS reconnect with exponential back-off", () => {
       // First socket created by openEventStream()
       expect(socketInstances).toHaveLength(1);
 
-      // Opening the first socket: triggers resync
+      // Opening sends authentication; only the acknowledgement triggers resync.
       socketInstances[0].emitOpen();
+      socketInstances[0].emitMessage(JSON.stringify({
+        type: "authenticated",
+        payload: { audience: "bridge_service", bridge_id: daemon.bridgeId },
+      }));
+      socketInstances[0].emitMessage(JSON.stringify({
+        type: "caught_up",
+        payload: { cursor: "cursor:1" },
+      }));
       await new Promise(resolve => setTimeout(resolve, 10));
 
       expect(attachCalls.length).toBeGreaterThanOrEqual(1);
       expect(processCalls.length).toBeGreaterThanOrEqual(1);
       const callsAfterFirstOpen = attachCalls.length;
+
+      socketInstances[0].emitMessage(JSON.stringify({
+        type: "bridge_test_signal",
+        payload: {},
+        at: new Date().toISOString(),
+        cursor: "cursor:live",
+      }));
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(JSON.parse(socketInstances[0].sent.at(-1) ?? "{}")).toEqual({
+        type: "acknowledge_cursor",
+        cursor: "cursor:live",
+      });
 
       // Simulate socket close → should schedule a reconnect
       socketInstances[0].emitClose();
@@ -747,8 +974,22 @@ describe("BridgeDaemon – D1 WS reconnect with exponential back-off", () => {
       // Second socket should have been created
       expect(socketInstances.length).toBeGreaterThanOrEqual(2);
 
-      // Opening the second socket: triggers another resync
-      socketInstances[socketInstances.length - 1].emitOpen();
+      // Opening the second socket authenticates with the retained cursor.
+      const reconnected = socketInstances[socketInstances.length - 1];
+      reconnected.emitOpen();
+      expect(JSON.parse(reconnected.sent[0])).toEqual({
+        type: "authenticate",
+        bearer_token: bridgeServiceToken,
+        after_cursor: "cursor:live",
+      });
+      reconnected.emitMessage(JSON.stringify({
+        type: "authenticated",
+        payload: { audience: "bridge_service", bridge_id: daemon.bridgeId },
+      }));
+      reconnected.emitMessage(JSON.stringify({
+        type: "caught_up",
+        payload: { cursor: "cursor:2" },
+      }));
       await new Promise(resolve => setTimeout(resolve, 10));
 
       expect(attachCalls.length).toBeGreaterThan(callsAfterFirstOpen);
@@ -889,6 +1130,11 @@ describe("BridgeDaemon – D2 direct bundle consumption from WS payload", () => 
       };
 
       await daemon.start();
+      socket?.emitMessage(JSON.stringify({
+        type: "authenticated",
+        payload: { audience: "bridge_service", bridge_id: daemon.bridgeId, cursor: "cursor:direct" },
+      }));
+      await new Promise(resolve => setTimeout(resolve, 0));
       const claimsAfterStart = claimCalls.length;
 
       const bundle = {
@@ -960,6 +1206,11 @@ describe("BridgeDaemon – D2 direct bundle consumption from WS payload", () => 
       };
 
       await daemon.start();
+      socket?.emitMessage(JSON.stringify({
+        type: "authenticated",
+        payload: { audience: "bridge_service", bridge_id: daemon.bridgeId, cursor: "cursor:fallback" },
+      }));
+      await new Promise(resolve => setTimeout(resolve, 0));
       const claimsAfterStart = claimCalls.length;
 
       // endpoint NOT in endpointRuntime → fallback path
@@ -989,11 +1240,11 @@ describe("BridgeDaemon – D2 direct bundle consumption from WS payload", () => 
 });
 
 // ---------------------------------------------------------------------------
-// D4 — bridge_hello handshake: bridge sends hello on connect
+// Authenticated WS handshake: the credential is the first frame
 // ---------------------------------------------------------------------------
 
-describe("BridgeDaemon – D4 bridge_hello sent on WS open", () => {
-  it("sends bridge_hello as first message on WS connect", async () => {
+describe("BridgeDaemon – authenticated WS first frame", () => {
+  it("sends only the credential and retained cursor, not caller identity", async () => {
     withoutAdapterEnv();
     const made = makeConfig("fake");
     const previousWebSocket = (globalThis as any).WebSocket;
@@ -1034,188 +1285,18 @@ describe("BridgeDaemon – D4 bridge_hello sent on WS open", () => {
       openListener?.();
       await new Promise(resolve => setTimeout(resolve, 10));
 
-      // A bridge_hello message should have been sent
-      const helloMsg = sentMessages
-        .map(m => { try { return JSON.parse(m); } catch { return null; } })
-        .find(m => m?.type === "bridge_hello");
-      expect(helloMsg).toBeDefined();
-      expect(helloMsg?.bridge_id).toBe(daemon.bridgeId);
+      expect(sentMessages).toHaveLength(1);
+      const authMessage = JSON.parse(sentMessages[0]);
+      expect(authMessage).toEqual({
+        type: "authenticate",
+        bearer_token: bridgeServiceToken,
+      });
+      expect(authMessage).not.toHaveProperty("bridge_id");
+      expect(authMessage).not.toHaveProperty("workspace_id");
 
       await daemon.stop();
     } finally {
       (globalThis as any).WebSocket = previousWebSocket;
-      made.cleanup();
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Command node delivery routing (#156) — a delivery destined to a command
-// node's endpoint runs the shell command instead of the LLM adapter. The
-// substrate never learns the difference: this is bridge-local runtime
-// embodiment substitution, exactly as `@invariant` at the top of this file
-// describes.
-// ---------------------------------------------------------------------------
-
-describe("BridgeDaemon – command node delivery routing", () => {
-  it("runs the command and emits its result instead of calling the adapter", async () => {
-    withoutAdapterEnv();
-    const made = makeConfig("fake");
-    const emitted: any[] = [];
-    const statuses: string[] = [];
-    const adapterCalls: number[] = [];
-
-    try {
-      const daemon = new BridgeDaemon(made.configPath, made.config);
-      (daemon as any).adapter = {
-        name: "test-adapter",
-        async handleBundle() { adapterCalls.push(1); }
-      };
-      (daemon as any).bus = {
-        async reportDeliveryStatus(_bridgeId: string, _deliveryId: string, state: string) { statuses.push(state); },
-        async emit(event: any) { emitted.push(event); },
-        async reportTurnEnd() {},
-        async updateEndpointStatus() {}
-      };
-      (daemon as any).commandNodes.set("endpoint:check", {
-        graph_id: "graph_1",
-        node_id: "check_node",
-        context_id: "ctx_1",
-        endpoint_id: "endpoint:check",
-        command: `node -e "process.exit(0)"`,
-        inputs: [],
-        outputs: [{ name: "passed", from: "passed" }],
-        result_event_type: "command.result",
-        workspace_locator: process.cwd()
-      });
-
-      await (daemon as any).handleDelivery({
-        delivery_id: "del-cmd-1",
-        endpoint_id: "endpoint:check",
-        workspace_id: "workspace:test",
-        trigger_event_id: "evt:1",
-        events: [{ content: {} }],
-        delivered_at: new Date().toISOString()
-      });
-
-      expect(adapterCalls).toHaveLength(0);
-      expect(emitted).toHaveLength(1);
-      expect(emitted[0].destination).toEqual({ kind: "context", context_id: "ctx_1" });
-      expect(emitted[0].source_endpoint_id).toBe("endpoint:check");
-      expect(emitted[0].content).toEqual({ command: `node -e "process.exit(0)"`, passed: true });
-      expect(emitted[0].metadata).toEqual({
-        command_node: true,
-        graph_id: "graph_1",
-        node_id: "check_node",
-        cause_event_id: "evt:1",
-        delivery_id: "del-cmd-1"
-      });
-      expect(emitted[0].idempotency_key).toBe("command-result:endpoint:check:evt:1");
-      expect(statuses).toEqual(["injected_to_runtime", "acknowledged"]);
-    } finally {
-      made.cleanup();
-    }
-  });
-
-  it("emits a terminal command result when a required input is missing", async () => {
-    withoutAdapterEnv();
-    const made = makeConfig("fake");
-    const statuses: Array<{ state: string; error: string | null }> = [];
-    const emitted: any[] = [];
-    const adapterCalls: number[] = [];
-
-    try {
-      const daemon = new BridgeDaemon(made.configPath, made.config);
-      (daemon as any).adapter = {
-        name: "test-adapter",
-        async handleBundle() { adapterCalls.push(1); }
-      };
-      (daemon as any).bus = {
-        async reportDeliveryStatus(_bridgeId: string, _deliveryId: string, state: string, error?: string) {
-          statuses.push({ state, error: error ?? null });
-        },
-        async emit(event: any) { emitted.push(event); },
-        async reportTurnEnd() {},
-        async updateEndpointStatus() {}
-      };
-      (daemon as any).commandNodes.set("endpoint:check", {
-        graph_id: "graph_1",
-        node_id: "check_node",
-        context_id: "ctx_1",
-        endpoint_id: "endpoint:check",
-        command: `node -e "process.exit(process.argv[1] === 'true' ? 0 : 1)" {{should_pass}}`,
-        inputs: [{ name: "should_pass", content_key: "should_pass", required: true }],
-        outputs: [],
-        result_event_type: "command.result",
-        workspace_locator: process.cwd()
-      });
-
-      await (daemon as any).handleDelivery({
-        delivery_id: "del-cmd-2",
-        endpoint_id: "endpoint:check",
-        workspace_id: "workspace:test",
-        trigger_event_id: "evt:2",
-        events: [{ content: {} }],
-        delivered_at: new Date().toISOString()
-      });
-
-      expect(adapterCalls).toHaveLength(0);
-      const failed = statuses.find(s => s.state === "dead_lettered");
-      expect(failed).toBeDefined();
-      expect(failed?.error).toContain("missing required input 'should_pass'");
-      expect(emitted).toEqual([expect.objectContaining({
-        type: "command.result",
-        destination: { kind: "context", context_id: "ctx_1" },
-        content: expect.objectContaining({ outcome: "failed", passed: false })
-      })]);
-    } finally {
-      made.cleanup();
-    }
-  });
-
-  it("keeps an acknowledged command successful when turn-end reporting fails", async () => {
-    withoutAdapterEnv();
-    const made = makeConfig("fake");
-    const statuses: string[] = [];
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-
-    try {
-      const daemon = new BridgeDaemon(made.configPath, made.config);
-      (daemon as any).adapter = { name: "test-adapter", async handleBundle() {} };
-      (daemon as any).bus = {
-        async reportDeliveryStatus(_bridgeId: string, _deliveryId: string, state: string) { statuses.push(state); },
-        async emit() {},
-        async reportTurnEnd() { throw new Error("lifecycle route unavailable"); },
-        async updateEndpointStatus() {}
-      };
-      (daemon as any).commandNodes.set("endpoint:check", {
-        graph_id: "graph_1",
-        node_id: "check_node",
-        context_id: "ctx_1",
-        endpoint_id: "endpoint:check",
-        command: `node -e "process.exit(0)"`,
-        inputs: [],
-        outputs: [],
-        result_event_type: "command.result",
-        workspace_locator: process.cwd()
-      });
-
-      await expect((daemon as any).handleDelivery({
-        delivery_id: "del-cmd-reporting",
-        endpoint_id: "endpoint:check",
-        workspace_id: "workspace:test",
-        trigger_event_id: "evt:3",
-        events: [{ content: {} }],
-        delivered_at: new Date().toISOString()
-      })).resolves.toBeUndefined();
-
-      expect(statuses).toEqual(["injected_to_runtime", "acknowledged"]);
-      expect(consoleError).toHaveBeenCalledWith(
-        "[bridge] turn end report failed",
-        expect.objectContaining({ endpoint_id: "endpoint:check", error: "lifecycle route unavailable" })
-      );
-    } finally {
-      consoleError.mockRestore();
       made.cleanup();
     }
   });

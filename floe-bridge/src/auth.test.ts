@@ -2,7 +2,13 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { BridgeAuthStorage, resolveRuntimeAuth, RuntimeAuthError } from "./auth.js";
+import {
+  BridgeAuthStorage,
+  BrokeredDeliveryCredentialStore,
+  resolveBrokeredRuntimeAuth,
+  resolveRuntimeAuth,
+  RuntimeAuthError,
+} from "./auth.js";
 import type { BridgeAuthRuntime, ModelThinkingCapability } from "./auth.js";
 
 // ---------------------------------------------------------------------------
@@ -400,5 +406,132 @@ describe("BridgeAuthStorage – reload-before-use picks up external writes", () 
 
     const apiKey = await storage.getApiKey("openai");
     expect(apiKey).toBe("sk-NEW");
+  });
+});
+
+describe("Delivery-scoped credential brokering", () => {
+  it("reads only the exact provider credential and clears the transport bytes", async () => {
+    const material = Buffer.from(JSON.stringify({ type: "api_key", key: "brokered-key" }), "utf8");
+    const bus = {
+      async readRuntimeCredential(deliveryId: string, secretRefId: string) {
+        expect(deliveryId).toBe("delivery:1");
+        expect(secretRefId).toBe("secret:1");
+        return material;
+      },
+      async replaceRuntimeCredential() {
+        throw new Error("not expected");
+      },
+    };
+    const store = new BrokeredDeliveryCredentialStore(
+      bus as any,
+      "delivery:1",
+      "secret:1",
+      "openai",
+    );
+
+    await expect(store.read("anthropic")).rejects.toMatchObject({
+      code: "runtime_credential_unresolved",
+    });
+    await expect(store.read("openai")).resolves.toMatchObject({
+      type: "api_key",
+      key: "brokered-key",
+    });
+    expect([...material].every((byte) => byte === 0)).toBe(true);
+  });
+
+  it("persists OAuth refresh only through the exact Delivery channel", async () => {
+    const farFuture = Date.now() + 3_600_000;
+    let stored = Buffer.from(JSON.stringify({
+      type: "oauth",
+      access: "old-access",
+      refresh: "old-refresh",
+      expires: farFuture,
+    }), "utf8");
+    const writes: Uint8Array[] = [];
+    const bus = {
+      async readRuntimeCredential() {
+        return Buffer.from(stored);
+      },
+      async replaceRuntimeCredential(deliveryId: string, secretRefId: string, material: Uint8Array) {
+        expect(deliveryId).toBe("delivery:refresh");
+        expect(secretRefId).toBe("secret:oauth");
+        writes.push(Uint8Array.from(material));
+        stored.fill(0);
+        stored = Buffer.from(material);
+      },
+    };
+    const store = new BrokeredDeliveryCredentialStore(
+      bus as any,
+      "delivery:refresh",
+      "secret:oauth",
+      "openai-codex",
+    );
+
+    const result = await store.modify("openai-codex", async () => ({
+      type: "oauth",
+      access: "new-access",
+      refresh: "new-refresh",
+      expires: farFuture + 1_000,
+    }));
+
+    expect(result).toMatchObject({ type: "oauth", access: "new-access" });
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(Buffer.from(writes[0]).toString("utf8"))).toMatchObject({
+      type: "oauth",
+      access: "new-access",
+    });
+  });
+
+  it("resolves a pinned provider without consulting legacy or ambient auth", async () => {
+    const runtime = makeAuthRuntime(
+      [],
+      { openai: "legacy-key-must-not-be-read" },
+      { openai: { "gpt-5.4-mini": makeModel("openai", "gpt-5.4-mini") } },
+    );
+    const reads: string[] = [];
+    const credentialStore = {
+      async read(providerId: string) {
+        reads.push(providerId);
+        return { type: "api_key" as const, key: "delivery-key" };
+      },
+      async list() { return []; },
+      async modify(_providerId: string, fn: any) {
+        return fn({ type: "api_key", key: "delivery-key" });
+      },
+      async delete() {},
+    };
+
+    const result = await resolveBrokeredRuntimeAuth(runtime, {
+      provider: "openai",
+      model: "gpt-5.4-mini",
+      auth_profile: "legacy-profile-must-be-ignored",
+    }, credentialStore);
+
+    expect(result.apiKey).toBe("delivery-key");
+    expect(result.authProfileId).toBeNull();
+    expect(result.usedEnvFallback).toBe(false);
+    await expect(result.getApiKey()).resolves.toBe("delivery-key");
+    expect(reads).toEqual(["openai", "openai"]);
+  });
+
+  it("blocks when the Delivery credential is absent instead of falling back", async () => {
+    const runtime = makeAuthRuntime(
+      [],
+      { openai: "legacy-key-must-not-be-read" },
+      { openai: { "gpt-5.4-mini": makeModel("openai", "gpt-5.4-mini") } },
+    );
+    const unavailableStore = {
+      async read() { throw new Error("missing"); },
+      async list() { return []; },
+      async modify() { return undefined; },
+      async delete() {},
+    };
+
+    await expect(resolveBrokeredRuntimeAuth(runtime, {
+      provider: "openai",
+      model: "gpt-5.4-mini",
+    }, unavailableStore as any)).rejects.toMatchObject({
+      code: "runtime_credential_unresolved",
+    });
   });
 });

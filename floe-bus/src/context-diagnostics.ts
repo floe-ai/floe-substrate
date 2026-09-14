@@ -1,6 +1,5 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { listActorCapabilities } from "./actor-capabilities.js";
 import type { BusStore } from "./store.js";
 
 type RuntimeStatus = {
@@ -180,11 +179,15 @@ export function registerContextDiagnosticRoutes(
         created_at: record.created_at,
       })),
       runtime: getRuntimeStatus(),
-      capabilities: listActorCapabilities({ limit: 100 }).map((capability) => ({
-        capability_id: capability.capability_id,
-        category: capability.category,
-        title: capability.title,
-        effect: capability.effect,
+      operations: store.operationRegistry.listCurrentOperationMetadata({
+        interaction_mode: "unattended",
+        boundary_kind: "workspace",
+      }).map((operation) => ({
+        operation_id: operation.operation_id,
+        operation_version: operation.operation_version,
+        category: operation.category,
+        title: operation.title,
+        effects: operation.effects,
       })),
       limits: {
         events: query.event_limit,

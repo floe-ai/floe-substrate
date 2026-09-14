@@ -22,6 +22,7 @@ const REGISTERED: Record<string, string> = {
   "CONTEXT.md": "canonical",
   "PRODUCT.md": "canonical",
   "README.md": "operational",
+  "THIRD_PARTY_NOTICES.md": "operational (dependency licence notices)",
   "docs/ROADMAP.md": "working",
   "docs/tech-debt.md": "working (removal queue)",
   "docs/floe_thought_log.md": "working (owner's direction log)",

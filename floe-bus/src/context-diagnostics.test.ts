@@ -22,7 +22,7 @@ describe("context diagnostic projection", () => {
     const configPath = join(root, "config.yaml");
     const config: LocalConfig = defaultConfig(root);
     writeFileSync(configPath, YAML.stringify(config), "utf8");
-    handle = await createBusServer(configPath, config);
+    handle = await createBusServer(configPath, config, { allow_unauthenticated_test_requests: true });
     await handle.app.ready();
     const registered = handle.store.registerWorkspace({
       locator: workspace,
@@ -147,8 +147,8 @@ describe("context diagnostic projection", () => {
     expect(body.telemetry.some((record: any) => record.kind === "visible_output")).toBe(false);
     expect(body.context.endpoints[0]).not.toHaveProperty("metadata_json");
     expect(JSON.stringify(body.context.endpoints)).not.toContain("must-not-leave-endpoint-storage");
-    expect(body.capabilities).toEqual(expect.arrayContaining([
-      expect.objectContaining({ capability_id: "scope.compose", effect: "write" }),
+    expect(body.operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation_id: "scope.composition.draft.create", effects: expect.objectContaining({ mode: "write" }) }),
     ]));
   });
 

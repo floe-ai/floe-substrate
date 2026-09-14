@@ -9,6 +9,7 @@ export type ScopeRecord = {
   title: string;
   description: string | null;
   status: "active" | "retired";
+  published_revision_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -75,6 +76,9 @@ export function applyScopeSchema(db: DatabaseSync): void {
   const columns = db.prepare("PRAGMA table_info(scopes)").all() as Array<{ name: string }>;
   if (!columns.some((column) => column.name === "status")) {
     db.exec("ALTER TABLE scopes ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+  }
+  if (!columns.some((column) => column.name === "published_revision_id")) {
+    db.exec("ALTER TABLE scopes ADD COLUMN published_revision_id TEXT");
   }
 }
 
@@ -176,6 +180,7 @@ export class ScopeStore {
       title: String(row.title),
       description: row.description ?? null,
       status: row.status === "retired" ? "retired" : "active",
+      published_revision_id: row.published_revision_id ?? null,
       created_at: String(row.created_at),
       updated_at: String(row.updated_at)
     };

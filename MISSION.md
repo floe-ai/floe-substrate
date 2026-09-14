@@ -2,13 +2,15 @@
 
 ## North Star
 
-Floe exists so a person can express an outcome and an autonomous organisation can form around it, work toward it continuously, evolve what it needs, and involve the person only where their judgement adds value.
+Floe exists so people and their agent counterparts can express outcomes, organise themselves, and achieve useful work together in a durable shared environment.
 
-The operator does not design the system. The operator experiences it.
+Actors can form and change the organisation, capabilities, and ways of working an outcome needs. This may be a conversation, a repeatable process, a creative collaboration, or a continuing organisation. No one arrangement defines Floe.
 
-Floe provides the smallest durable set of mechanisms necessary for actors to organise work across models, sessions, tools, and time. It does not prescribe the organisation that must be built from them.
+Floe supplies the smallest durable set of mechanisms that makes this possible across models, sessions, tools, people, and time: dependable identity, authority, context, coordination, history, and continuity.
 
-**Models are labour. The substrate is the company.**
+The substrate provides the environment. Actors choose and evolve the work within it. A company, pipeline, or management structure is something they may build, never the identity of the substrate.
+
+The operator can work alongside other actors or delegate an outcome and steer by exception. They should not need to understand or design the substrate to do either.
 
 ## The proving experience
 
@@ -19,6 +21,8 @@ The only proving loop that matters is:
 Every product or substrate change must make that loop materially more possible, reliable, legible, or autonomous.
 
 A change that merely makes Floe more theoretically complete is not progress.
+
+The development agent must attempt this experience through the actual app, observe what Floe does, correct the proven obstacle, and repeat the attempt. The operator supplies intent and judgement; they must not be the only person discovering broken or confusing behaviour. Onboarding, useful feedback, inspection, correction, and recovery are part of the outcome.
 
 ## How Floe is developed
 
@@ -64,6 +68,12 @@ Progress is measured by:
 - operator understanding without substrate expertise;
 - corrections that improve future behaviour.
 
+## Efficient intelligence
+
+Use model capability where judgement is needed and existing deterministic mechanisms where it is not. Keep shared instructions compact, discover capabilities when needed, retrieve relevant Context history in bounded portions, and retain useful evidence so work is not repeatedly rediscovered.
+
+Measure tokens, time, repeated work, and human interventions per successful outcome. Lower token use is an improvement only when usefulness, correctness, continuity, and clarity are preserved. A short failed attempt followed by repeated repair is not efficient.
+
 ## Redundancy test
 
 For every proposed substrate feature ask:
@@ -79,6 +89,8 @@ If better models make it more valuable because it provides durable identity, coo
 A substrate mechanism should remain valuable to an actor that never opens a human UI.
 
 Human interfaces are clients of the substrate, not the substrate itself.
+
+People and models are different ways to participate as actors, not different classes of substrate authority. Actors with equivalent grants and required evidence must have equivalent semantic capabilities, validation, consequences, and audit. Responsibilities and explicit policy may differ; human or model backing cannot itself confer a privilege or prohibition.
 
 ## First-principles restraint
 
@@ -96,4 +108,4 @@ The goal is not to finish the architecture.
 
 The goal is for the operator to be able to say:
 
-> I gave Floe something important to achieve. It organised itself around the goal, kept working, and only interrupted me when my judgement mattered.
+> I gave Floe something important to achieve. It formed what it needed, kept working, and made the result easy to understand and steer. I could join the work or leave it running, and it involved me when my judgement mattered.

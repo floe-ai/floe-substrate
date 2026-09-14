@@ -50,6 +50,7 @@ New to floe? Read these five in order:
 - [[Models and thinking level]]
 - [[Substrate settings]]
 - [[Workspace config]]
+- [[Portable Workspace transfer]]
 
 ## Terminal
 

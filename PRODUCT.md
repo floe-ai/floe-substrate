@@ -10,6 +10,8 @@ Floe determines what organisation, actors, capabilities, contexts, tools, and co
 
 The operator should not need to understand how Floe is implemented in order to use it.
 
+Floe is the shared environment; the default Floe actor helps the operator use it. The operator may collaborate directly, delegate an outcome, or change their involvement as the work evolves. The default actor's coordinating role is behaviour built on the substrate, not a privileged actor class or a mandatory organisation.
+
 ## Complete product direction
 
 Floe is one provider-neutral substrate with multiple clients. The desktop app,
@@ -38,6 +40,13 @@ The complete product includes:
 These are end-state capabilities. They need not ship in one release, but release
 boundaries must not redefine them as speculative or design foundations that make
 them harder to deliver later.
+
+Human and model clients use the same semantic capabilities under equivalent authority and evidence. Presentation and authentication may differ; backing does not grant extra rights.
+
+Opening Floe locally requires no browser pairing step. The local app establishes
+access automatically. Remote access may require pairing before that session can
+use the approved Workspace. Connection mechanics should not become work for the
+operator when Floe already runs on the same computer.
 
 ## Operator contract
 
@@ -131,6 +140,22 @@ The appropriate representation should be discovered through use. It may be conve
 
 No universal visualisation architecture is assumed.
 
+### Approved pipeline presentation
+
+The existing pipeline and Work presentation must visually match the
+[approved pipeline focus prototype](docs/design/approved-pipeline-focus/README.md).
+The operator approved its appearance and progressive navigation on 2026-09-02
+and explicitly reaffirmed visual fidelity for the next revision on 2026-09-06.
+Preserve the image and output cards, actor labels, visible branch connections,
+focused step with neighbouring layers, conversation access, spacing, contrast,
+and responsive behaviour. Similar navigation alone does not satisfy approval.
+
+Use current canonical plan, execution, Context and Artefact records to populate
+that presentation. The prototype's example content and proposed Context split
+are not live facts or a replacement for ADR-0010. Technical details and history
+remain available through deliberate inspection. Visual comparison in the actual
+app is required before the next revision is declared ready.
+
 ## Self-describing representation
 
 Prefer a substrate whose objects, relationships, references, state, and available actions are self-describing enough that clients can provide a safe generic representation without bespoke UI code for each concept.
@@ -163,6 +188,12 @@ evidence or a projection, but not a competing identity ledger.
 ## Product development
 
 Product needs are discovered from real use.
+
+The development agent must use the actual app as an operator: begin with onboarding, express an outcome in conversation, inspect useful results, make a correction, and verify continuation and stopping across interruptions. Use an isolated workspace when the attempt could create unwanted state or effects. Preserve the operator's credentials and work.
+
+Record the observed behaviour, relevant app views, result references, and remaining gaps. A passing component check or a convincing conversation is insufficient without the expected work and usable controls. Verify the running version being exercised.
+
+Assess efficiency over the complete outcome, including input, output, cached and reasoning tokens where available, elapsed time, repeated attempts, and human interventions. Keep quality and UX acceptance fixed when comparing changes; record unavailable measurements as unavailable. Rich model capability and efficient use of it are compatible goals.
 
 A user observation such as "I cannot tell what happened" is evidence of a legibility problem. It is not an instruction to build a universal visualiser.
 

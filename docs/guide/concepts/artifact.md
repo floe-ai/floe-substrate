@@ -29,6 +29,21 @@ ArtefactVersion references. Arbitrary Event content is not automatically an
 Artefact. A Delivery transports those references; it does not create a competing
 identity.
 
+## Exporting an exact saved version
+
+**Export saved version** (`artefact.version.export`) saves a verified
+ArtefactVersion to a relative file path in its Workspace. It creates missing
+folders, reuses an identical existing file, and refuses to overwrite different
+content. The exported file is a mutable copy; the retained version and its
+history remain unchanged. This action does not publish on the internet.
+
+App, Actor and API callers use the same operation, grants and Policy checks.
+When Policy requires approval, Floe retains the exact version, destination-bound
+input digest and a readable description before touching the destination. A
+changed destination or version requires its own decision. The local resolver
+currently supports Workspace-relative content up to 20 MiB; unresolved content
+is reported rather than replaced with another source.
+
 ## Provenance is not topology
 
 Artefact lineage records exact version relationships. A [[Scope]] Edge records

@@ -1,28 +1,18 @@
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { request } from "node:http";
 import {
   getSupportedThinkingLevels,
   type AuthEvent,
   type AuthPrompt,
-  type Credential,
-  type CredentialInfo,
-  type CredentialStore,
   type Model,
 } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import YAML from "yaml";
+import { EphemeralCredentialStore } from "../../floe-bus/src/pi-provider-login.ts";
+export { EphemeralCredentialStore } from "../../floe-bus/src/pi-provider-login.ts";
 
-type Profile = {
-  id: string;
-  provider: string;
-  model?: string;
-  label?: string;
-  created_at?: string;
-  updated_at?: string;
-};
-
-type ProfileDocument = { version: 1; profiles: Profile[] };
+const BUS_HOST = "127.0.0.1";
+const BUS_PORT = 5377;
+const MAX_INGRESS_TOKEN_BYTES = 4096;
 
 type ProviderModel = {
   id: string;
@@ -31,7 +21,7 @@ type ProviderModel = {
   reasoning_efforts: string[];
 };
 
-type ProviderStatus = {
+export type ProviderStatus = {
   type: "provider_status";
   provider: string;
   name: string;
@@ -42,53 +32,6 @@ type ProviderStatus = {
 };
 
 type HelperEvent = AuthEvent | { type: "provider_statuses"; providers: ProviderStatus[] } | ProviderStatus;
-
-class FloeCredentialStore implements CredentialStore {
-  constructor(private readonly path: string) {}
-
-  async read(providerId: string): Promise<Credential | undefined> {
-    return this.load()[providerId];
-  }
-
-  async list(): Promise<readonly CredentialInfo[]> {
-    return Object.entries(this.load()).map(([providerId, credential]) => ({ providerId, type: credential.type }));
-  }
-
-  async modify(
-    providerId: string,
-    fn: (current: Credential | undefined) => Promise<Credential | undefined>,
-  ): Promise<Credential | undefined> {
-    const data = this.load();
-    const next = await fn(data[providerId]);
-    if (next !== undefined) {
-      data[providerId] = next;
-      this.save(data);
-    }
-    return next;
-  }
-
-  async delete(providerId: string): Promise<void> {
-    const data = this.load();
-    delete data[providerId];
-    this.save(data);
-  }
-
-  private load(): Record<string, Credential> {
-    try {
-      return JSON.parse(readFileSync(this.path, "utf8")) as Record<string, Credential>;
-    } catch {
-      return {};
-    }
-  }
-
-  private save(data: Record<string, Credential>): void {
-    const temporary = `${this.path}.tmp`;
-    writeFileSync(temporary, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-    chmodSafe(temporary, 0o600);
-    renameSync(temporary, this.path);
-    chmodSafe(this.path, 0o600);
-  }
-}
 
 function emit(message: HelperEvent): void {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -102,68 +45,24 @@ function displayName(providerId: string, fallback: string): string {
   return fallback;
 }
 
-function readProfiles(path: string): ProfileDocument {
-  try {
-    const parsed = YAML.parse(readFileSync(path, "utf8")) as Partial<ProfileDocument>;
-    return { version: 1, profiles: Array.isArray(parsed?.profiles) ? parsed.profiles : [] };
-  } catch {
-    return { version: 1, profiles: [] };
-  }
-}
-
-function saveProfiles(path: string, document: ProfileDocument): void {
-  const temporary = `${path}.tmp`;
-  writeFileSync(temporary, YAML.stringify(document), "utf8");
-  chmodSafe(temporary, 0o600);
-  renameSync(temporary, path);
-  chmodSafe(path, 0o600);
-}
-
-function upsertSubscriptionProfile(authDir: string, providerId: string, label: string, model?: string): Profile {
-  const path = join(authDir, "profiles.yaml");
-  const document = readProfiles(path);
-  const now = new Date().toISOString();
-  const existing = document.profiles.find(profile => profile.provider === providerId);
-  const profile: Profile = existing
-    ? { ...existing, label, model: existing.model || model, updated_at: now }
-    : {
-        id: `${providerId}-subscription`,
-        provider: providerId,
-        label,
-        model,
-        created_at: now,
-        updated_at: now,
-      };
-  const index = document.profiles.findIndex(item => item.id === profile.id);
-  if (index >= 0) document.profiles[index] = profile;
-  else document.profiles.push(profile);
-  document.profiles.sort((left, right) => left.id.localeCompare(right.id));
-  saveProfiles(path, document);
-  return profile;
-}
-
-async function statuses(authDir: string): Promise<ProviderStatus[]> {
-  const storage = new FloeCredentialStore(join(authDir, "auth.json"));
+async function statuses(): Promise<ProviderStatus[]> {
+  const storage = new EphemeralCredentialStore();
   const models = builtinModels({ credentials: storage });
-  const credentials = new Set((await storage.list()).filter(item => item.type === "oauth").map(item => item.providerId));
-  const profiles = readProfiles(join(authDir, "profiles.yaml"));
-
-  const result: ProviderStatus[] = [];
-  for (const provider of models.getProviders().filter(item => item.auth.oauth?.isSubscription === true)) {
-      const profile = profiles.profiles.find(item => item.provider === provider.id);
-      const credential = await storage.read(provider.id);
-      const available = provider.filterModels?.(provider.getModels(), credential) ?? provider.getModels();
-      result.push({
+  try {
+    return models.getProviders()
+      .filter(provider => provider.auth.oauth?.isSubscription === true)
+      .map(provider => ({
         type: "provider_status" as const,
         provider: provider.id,
         name: displayName(provider.id, provider.name),
         auth_name: provider.auth.oauth?.name ?? provider.name,
-        connected: credentials.has(provider.id),
-        profile_id: profile?.id ?? `${provider.id}-subscription`,
-        models: available.map((model, index) => modelStatus(model, profile?.model, index)),
-      });
+        connected: false,
+        profile_id: `${provider.id}-subscription`,
+        models: provider.getModels().map((model, index) => modelStatus(model, undefined, index)),
+      }));
+  } finally {
+    storage.clear();
   }
-  return result;
 }
 
 function modelStatus(model: Model<any>, selected: string | undefined, index: number): ProviderModel {
@@ -175,33 +74,120 @@ function modelStatus(model: Model<any>, selected: string | undefined, index: num
   };
 }
 
-async function login(authDir: string, providerId: string): Promise<ProviderStatus> {
-  const storage = new FloeCredentialStore(join(authDir, "auth.json"));
+async function login(
+  providerId: string,
+  ingressSessionId: string,
+  audience: string,
+  purpose: string,
+): Promise<ProviderStatus> {
+  if (audience !== `provider-auth:${providerId}`) throw new Error("The provider sign-in audience is invalid");
+  if (purpose !== "account-connection") throw new Error("The provider sign-in purpose is invalid");
+  const ingressToken = await readIngressToken();
+  const storage = new EphemeralCredentialStore();
   const models = builtinModels({ credentials: storage });
-  const provider = models.getProviders().find(item => item.id === providerId && item.auth.oauth?.isSubscription === true);
+  const provider = models.getProviders()
+    .find(item => item.id === providerId && item.auth.oauth?.isSubscription === true);
   if (!provider) throw new Error(`Unsupported subscription provider: ${providerId}`);
 
-  await models.login(providerId, "oauth", {
-    notify: event => {
-      emit(event);
-      if (event.type === "auth_url") openExternal(event.url);
-      if (event.type === "device_code") openExternal(event.verificationUri);
-    },
-    prompt: prompt => answerDesktopPrompt(prompt),
-  });
+  try {
+    await models.login(providerId, "oauth", {
+      notify: event => {
+        emit(event);
+        if (event.type === "auth_url") openExternal(event.url);
+        if (event.type === "device_code") openExternal(event.verificationUri);
+      },
+      prompt: prompt => answerDesktopPrompt(prompt),
+    });
 
-  const available = await models.getAvailable(providerId);
-  const fallbackModels = available.length > 0 ? available : provider.getModels();
-  upsertSubscriptionProfile(authDir, providerId, displayName(provider.id, provider.name), fallbackModels[0]?.id);
-  const status = (await statuses(authDir)).find(item => item.provider === providerId);
-  if (!status) throw new Error(`Provider disappeared after login: ${providerId}`);
-  return status;
+    const available = await models.getAvailable(providerId);
+    const fallbackModels = available.length > 0 ? available : provider.getModels();
+    const credential = await storage.read(providerId);
+    if (!credential) throw new Error("Provider sign-in completed without a credential");
+    const material = Buffer.from(JSON.stringify(credential), "utf8");
+    try {
+      await uploadCredential({
+        ingressSessionId,
+        ingressToken,
+        audience,
+        purpose,
+        material,
+      });
+    } finally {
+      material.fill(0);
+    }
+    return {
+      type: "provider_status",
+      provider: provider.id,
+      name: displayName(provider.id, provider.name),
+      auth_name: provider.auth.oauth?.name ?? provider.name,
+      connected: true,
+      profile_id: `${provider.id}-subscription`,
+      models: fallbackModels.map((model, index) => modelStatus(model, undefined, index)),
+    };
+  } finally {
+    storage.clear();
+  }
+}
+
+async function readIngressToken(): Promise<string> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of process.stdin) {
+    const buffer = Buffer.from(chunk);
+    bytes += buffer.byteLength;
+    if (bytes > MAX_INGRESS_TOKEN_BYTES) throw new Error("The provider sign-in session is invalid");
+    chunks.push(buffer);
+    if (buffer.includes(0x0a)) break;
+  }
+  const combined = Buffer.concat(chunks);
+  try {
+    const newline = combined.indexOf(0x0a);
+    const token = combined.subarray(0, newline >= 0 ? newline : combined.byteLength).toString("utf8").trim();
+    if (token.length < 32) throw new Error("The provider sign-in session is invalid");
+    return token;
+  } finally {
+    combined.fill(0);
+    chunks.forEach(chunk => chunk.fill(0));
+  }
+}
+
+async function uploadCredential(input: Readonly<{
+  ingressSessionId: string;
+  ingressToken: string;
+  audience: string;
+  purpose: string;
+  material: Buffer;
+}>): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const upload = request({
+      hostname: BUS_HOST,
+      port: BUS_PORT,
+      method: "PUT",
+      path: `/v1/credential-ingress-sessions/${encodeURIComponent(input.ingressSessionId)}/material`,
+      headers: {
+        authorization: `Bearer ${input.ingressToken}`,
+        "content-type": "application/octet-stream",
+        "content-length": input.material.byteLength,
+        "x-floe-credential-ingress-audience": input.audience,
+        "x-floe-credential-ingress-purpose": input.purpose,
+      },
+    }, response => {
+      response.resume();
+      response.once("end", () => {
+        if (response.statusCode && response.statusCode >= 200 && response.statusCode < 300) resolve();
+        else reject(new Error("Floe refused the protected provider credential transfer"));
+      });
+    });
+    upload.setTimeout(15_000, () => upload.destroy(new Error("The protected provider credential transfer timed out")));
+    upload.once("error", () => reject(new Error("Floe could not complete the protected provider credential transfer")));
+    upload.end(input.material);
+  });
 }
 
 async function answerDesktopPrompt(prompt: AuthPrompt): Promise<string> {
   if (prompt.type === "select") return prompt.options[0]?.id ?? "";
   if (prompt.type === "text") return "";
-  if (prompt.type === "secret") throw new Error("This desktop flow supports subscriptions; API keys remain in advanced settings");
+  if (prompt.type === "secret") throw new Error("This provider flow supports subscriptions only");
   return new Promise<string>((_resolve, reject) => {
     const signal = prompt.signal;
     const abort = () => reject(signal?.reason ?? new Error("Browser sign-in completed"));
@@ -221,27 +207,15 @@ function openExternal(value: string): void {
   child.unref();
 }
 
-function chmodSafe(path: string, mode: number): void {
-  try { chmodSync(path, mode); } catch { /* Windows does not implement POSIX modes. */ }
-}
-
 export async function runAuthHelper(args: string[]): Promise<void> {
-  const [command, authDirArgument, providerId] = args;
-  if (!authDirArgument) throw new Error("Floe auth directory is required");
-  const authDir = authDirArgument;
-  mkdirSync(authDir, { recursive: true });
-  const authPath = join(authDir, "auth.json");
-  if (!existsSync(authPath)) writeFileSync(authPath, "{}\n", "utf8");
-  const profilesPath = join(authDir, "profiles.yaml");
-  if (!existsSync(profilesPath)) saveProfiles(profilesPath, { version: 1, profiles: [] });
-
+  const [command, providerId, ingressSessionId, audience, purpose] = args;
   if (command === "providers") {
-    emit({ type: "provider_statuses", providers: await statuses(authDir) });
+    emit({ type: "provider_statuses", providers: await statuses() });
     return;
   }
-  if (command === "login" && providerId) {
-    emit(await login(authDir, providerId));
+  if (command === "login" && providerId && ingressSessionId && audience && purpose) {
+    emit(await login(providerId, ingressSessionId, audience, purpose));
     return;
   }
-  throw new Error("Usage: floe-desktop auth <providers AUTH_DIR|login AUTH_DIR PROVIDER>");
+  throw new Error("Usage: floe-desktop auth <providers|login PROVIDER INGRESS_SESSION AUDIENCE PURPOSE>");
 }

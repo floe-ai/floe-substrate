@@ -72,8 +72,8 @@ describe("SubstrateSettingsView — browser mode (isTauri = false)", () => {
   it("shows note directing user to CLI or desktop app", async () => {
     render(<SubstrateSettingsView />);
     await waitFor(() => {
-      // The ADR-0005 note section is unique and always present in browser mode
-      expect(screen.getByText(/ADR-0005/)).toBeTruthy();
+      // The current native credential-broker decision is named in browser mode.
+      expect(screen.getByText(/ADR-0012/)).toBeTruthy();
     });
   });
 
@@ -143,17 +143,19 @@ describe("SubstrateSettingsView — desktop mode (isTauri = true)", () => {
     });
   });
 
-  it("shows Add Profile write affordance", async () => {
+  it("keeps credential mutation out of the developer observatory", async () => {
     render(<SubstrateSettingsView />);
     await waitFor(() => {
-      expect(screen.getByText("+ Add Profile")).toBeTruthy();
+      expect(screen.getByText("Read-only diagnostics")).toBeTruthy();
     });
+    expect(screen.queryByText("+ Add Profile")).toBeNull();
+    expect(screen.queryByText(/Delete/)).toBeNull();
   });
 
   it("keeps normal provider sign-in outside the developer observatory", async () => {
     render(<SubstrateSettingsView />);
     await waitFor(() => {
-      expect(screen.getByText(/Normal subscription connections.*are managed from the main Floe settings/i)).toBeTruthy();
+      expect(screen.getByText(/Connect or disconnect an account from the normal Provider settings flow/i)).toBeTruthy();
     });
     expect(screen.queryByRole("button", { name: "Sign in with ChatGPT" })).toBeNull();
   });

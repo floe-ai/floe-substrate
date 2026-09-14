@@ -72,6 +72,8 @@ export type DeliveredEvent = {
   source_endpoint_id: string;
   thread_id: string;
   correlation_id: string | null;
+  /** Exact immutable ArtefactVersion inputs carried by the Event. */
+  artefact_version_ids: string[];
   content: Record<string, unknown>;
   metadata: Record<string, unknown>;
   created_at: string;

@@ -39,6 +39,13 @@ Direct `request(actor, work)` remains non-graph delegation. Floe owns the exact
 return path and resumes the same NodeExecution, Context, and pinned revision
 with the result or terminal failure.
 
+For work on saved inputs, `request` accepts optional `artefact_version_ids`.
+These exact published versions become the request Event's immutable input
+references and are delivered to the requested Actor. The accepted Event confirms
+the references. Omission means no attached input; unrelated versions are never
+inherited automatically. Recipients can inspect saved content with `read_artefact`
+and continue a long text using its `next_offset`.
+
 ## Implementation
 
 - `floe-bus/src/transport-push-stream.ts` — durable cursor and filtered replay

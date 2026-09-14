@@ -11,7 +11,9 @@ unauthenticated shortcut around authority or validation.
 
 - `floe setup`, `floe start`, `floe stop`, `floe restart`, `floe status`,
   and `floe logs`
-- `floe login`, `floe auth list`, `floe auth doctor`, and `floe logout`
+- `floe login`, `floe logout`, `floe auth list`, and `floe auth doctor`; login
+  and logout use the packaged native authority broker and logout presents the
+  same Bus-authored confirmation as the app
 - `floe config path` and `floe config edit`
 - `floe autostart on|off`
 - `floe doctor`, `floe reset`, `floe uninstall`, `floe open`, and

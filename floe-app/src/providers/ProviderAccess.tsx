@@ -1,7 +1,10 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { isTauri } from "../fs/workspaceFs.ts";
 import { tk } from "../theme.ts";
 import {
   connectModelProvider,
+  answerProviderPrompt,
+  disconnectModelProvider,
   getModelProviders,
   preferredModel,
   type ModelProviderAuthEvent,
@@ -21,8 +24,16 @@ export function ProviderAccess({ compact = false, initialProviders = null, onRea
   const [model, setModel] = useState(initialModel(initialProviders ?? [], purpose));
   const [loading, setLoading] = useState(initialProviders === null);
   const [connecting, setConnecting] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   const [authEvent, setAuthEvent] = useState<ModelProviderAuthEvent | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [authLink, setAuthLink] = useState<string | null>(null);
+  const [authPrompt, setAuthPrompt] = useState<Extract<ModelProviderAuthEvent, { type: "prompt" }> | null>(null);
+  const [deviceCode, setDeviceCode] = useState<string | null>(null);
+  const [promptAnswer, setPromptAnswer] = useState("");
+  const [answering, setAnswering] = useState(false);
+  const login = useRef<AbortController | null>(null);
+  useEffect(() => () => login.current?.abort(), []);
 
   useEffect(() => {
     if (initialProviders !== null) return;
@@ -50,6 +61,9 @@ export function ProviderAccess({ compact = false, initialProviders = null, onRea
     setProviderId(nextProviderId);
     setModel(next ? preferredModel(next) : "");
     setAuthEvent(null);
+    setAuthLink(null);
+    setAuthPrompt(null);
+    setDeviceCode(null);
     setError(null);
   }
 
@@ -62,17 +76,48 @@ export function ProviderAccess({ compact = false, initialProviders = null, onRea
 
     setConnecting(true);
     setAuthEvent(null);
+    setAuthLink(null);
+    setAuthPrompt(null);
+    setDeviceCode(null);
+    setPromptAnswer("");
     setError(null);
+    const controller = new AbortController();
+    login.current = controller;
     try {
-      const next = await connectModelProvider(status.provider, setAuthEvent);
+      const next = await connectModelProvider(status.provider, event => {
+        setAuthEvent(event);
+        if (event.type === "prompt") { setAuthPrompt(event); setPromptAnswer(""); }
+        if (event.type === "device_code") setDeviceCode(event.userCode);
+        const link = event.type === "auth_url" ? event.url : event.type === "device_code" ? event.verificationUri : null;
+        if (link && /^https?:\/\//i.test(link)) setAuthLink(link);
+      }, controller.signal);
       setProviders(current => current.map(item => item.provider === next.provider ? next : item));
       const selected = next.models.some(item => item.id === model) ? model : preferredModel(next);
       setModel(selected);
       onReady?.(next, selected);
     } catch (err) {
+      if (!controller.signal.aborted) setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (login.current === controller) login.current = null;
+      setConnecting(false);
+    }
+  }
+
+  async function disconnect() {
+    if (!status?.connected) return;
+    setDisconnecting(true);
+    setError(null);
+    try {
+      const result = await disconnectModelProvider(status);
+      if (!result.confirmed) return;
+      setProviders(current => current.map(item => (
+        item.provider === result.status.provider ? result.status : item
+      )));
+      setAuthEvent({ type: "info", message: `${status.name} was disconnected.` });
+    } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setConnecting(false);
+      setDisconnecting(false);
     }
   }
 
@@ -98,7 +143,7 @@ export function ProviderAccess({ compact = false, initialProviders = null, onRea
           aria-label="Subscription provider"
           value={status.provider}
           onChange={event => selectProvider(event.target.value)}
-          disabled={connecting}
+          disabled={connecting || disconnecting}
           style={selectStyle}
         >
           {providers.map(item => (
@@ -137,7 +182,7 @@ export function ProviderAccess({ compact = false, initialProviders = null, onRea
             aria-label="Provider default model"
             value={model}
             onChange={event => setModel(event.target.value)}
-            disabled={connecting || status.models.length === 0}
+            disabled={connecting || disconnecting || status.models.length === 0}
             style={selectStyle}
           >
             {status.models.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
@@ -145,9 +190,9 @@ export function ProviderAccess({ compact = false, initialProviders = null, onRea
         </label>
       )}
 
-      {authEvent?.type === "device_code" && (
+      {connecting && deviceCode && (
         <div role="status" style={{ marginTop: 14, padding: 12, borderRadius: tk.r2, background: "rgba(255,255,255,0.04)", color: tk.ink2 }}>
-          Enter this code in the provider page: <strong style={{ letterSpacing: "0.12em", color: tk.ink }}>{authEvent.userCode}</strong>
+          Enter this code in the provider page: <strong style={{ letterSpacing: "0.12em", color: tk.ink }}>{deviceCode}</strong>
         </div>
       )}
       {(authEvent?.type === "progress" || authEvent?.type === "info") && (
@@ -158,17 +203,35 @@ export function ProviderAccess({ compact = false, initialProviders = null, onRea
           {authEvent.instructions ?? "Complete sign-in in the browser window."}
         </p>
       )}
+      {connecting && authLink && <p><a href={authLink} target="_blank" rel="noopener noreferrer" style={{ color: tk.accent }}>Open {status.name} sign-in</a></p>}
+      {connecting && authPrompt && <form onSubmit={event => {
+        event.preventDefault();
+        if (answering) return;
+        const submitted = authPrompt;
+        setAnswering(true);
+        setError(null);
+        void answerProviderPrompt(submitted, promptAnswer).then(() => {
+          setAuthPrompt(current => current?.prompt_id === submitted.prompt_id ? null : current);
+        }).catch(err => setError(err instanceof Error ? err.message : "Floe could not send this sign-in answer.")).finally(() => setAnswering(false));
+      }} style={{ display: "grid", gap: 8, marginTop: 12 }}>
+        <label>{authPrompt.message}
+          {authPrompt.kind === "select" ? <select aria-label="Sign-in answer" disabled={answering} value={promptAnswer} onChange={event => setPromptAnswer(event.target.value)} style={selectStyle}>
+            <option value="">Choose…</option>{authPrompt.options?.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+          </select> : <input aria-label="Sign-in answer" disabled={answering} autoComplete="off" placeholder={authPrompt.placeholder} value={promptAnswer} onChange={event => setPromptAnswer(event.target.value)} style={{ ...selectStyle, width: "100%", boxSizing: "border-box" }} />}
+        </label>
+        <button type="submit" disabled={!promptAnswer || answering}>{answering ? "Sending…" : "Continue sign-in"}</button>
+      </form>}
       {error && <p role="alert" style={{ margin: "14px 0 0", color: tk.danger, fontSize: 12.5 }}>{error}</p>}
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 16 }}>
         <button
           type="button"
           onClick={() => void connect()}
-          disabled={connecting || (purpose === "choose" && !model) || (purpose === "add" && status.connected)}
+          disabled={connecting || disconnecting || (purpose === "choose" && !model) || (purpose === "add" && status.connected)}
           style={{
             border: "none", borderRadius: tk.r2, padding: "8px 14px",
             background: tk.accent, color: "#0c1714", fontWeight: 590, fontSize: 12.5,
-            opacity: connecting || (purpose === "choose" && !model) || (purpose === "add" && status.connected) ? 0.55 : 1,
+            opacity: connecting || disconnecting || (purpose === "choose" && !model) || (purpose === "add" && status.connected) ? 0.55 : 1,
           }}
         >
           {connecting
@@ -177,7 +240,27 @@ export function ProviderAccess({ compact = false, initialProviders = null, onRea
               ? purpose === "add" ? "Connected" : "Use this account"
               : `Continue with ${status.name}`}
         </button>
+        {status.connected && isTauri() && (
+          <button
+            type="button"
+            onClick={() => void disconnect()}
+            disabled={connecting || disconnecting}
+            style={{
+              border: `1px solid ${tk.border}`,
+              borderRadius: tk.r2,
+              padding: "8px 14px",
+              background: "transparent",
+              color: tk.ink2,
+              fontWeight: 540,
+              fontSize: 12.5,
+              opacity: connecting || disconnecting ? 0.55 : 1,
+            }}
+          >
+            {disconnecting ? `Disconnecting ${status.name}…` : "Disconnect"}
+          </button>
+        )}
         {connecting && <span style={{ color: tk.ink3, fontSize: 12 }}>Complete the sign-in in your browser.</span>}
+        {connecting && !isTauri() && <button type="button" onClick={() => { login.current?.abort(); setAuthEvent(null); setAuthLink(null); }}>Cancel sign-in</button>}
       </div>
     </section>
   );

@@ -6,10 +6,12 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, extname, resolve } from "node:path";
 import { z } from "zod";
 import type { LocalConfig } from "./config.js";
+import type { WorkspaceConfigurationPolicyProvider } from "./workspace-config-import.js";
 import { parseListen } from "./config.js";
 import { BROADCAST_TARGETS, BusStore, ContextAnchorError, ContextNotFoundError, ContextParticipantError, ContextScopeAssignmentError, EndpointRetirementBlockedError, PulseNotFoundError, ScopeRequiredError, ScopeRetiredError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
 import { PulseScheduler } from "./pulse-scheduler.js";
@@ -25,18 +27,111 @@ import {
   ScopeGraphNotFoundError,
   type ScopeGraphNode
 } from "./scope-graphs.js";
+import {
+  ScopeCompositionConflictError,
+  ScopeCompositionImmutableError,
+  ScopeCompositionInvalidError,
+  ScopeCompositionNotFoundError,
+  type ScopeCompositionContent,
+} from "./scope-compositions.js";
 import { encodeEventCursor, InvalidEventCursorError } from "./event-cursor.js";
 import { buildScopeProjection } from "./scopes/projection.js";
 import { listAuthModels, listAuthProfiles } from "./auth.js";
 import { browseDir } from "./fs/browseDir.js";
 import { listAgentFiles } from "./fs/agentFiles.js";
 import { PathEscapesRootError, resolveWithinRoot, RootNotFoundError } from "./fs/resolveWithinRoot.js";
-import { registerActorCapabilityRoutes } from "./actor-capabilities.js";
 import { registerContextDiagnosticRoutes } from "./context-diagnostics.js";
+import { createCorsOriginPolicy, trustedBrowserOrigins } from "./cors-policy.js";
+import { BrowserConnections, BrowserConnectionError, localBrowserOrigins } from "./browser-connections.js";
+import { registerBrowserProviderRoutes } from "./browser-provider-routes.js";
+import { PiProviderLogin, type ProviderLoginAdapter } from "./pi-provider-login.js";
+import {
+  ArtefactContentMismatchError,
+  ArtefactContentNotFoundError,
+  ArtefactContentTooLargeError,
+  ArtefactContentUnresolvedError,
+  resolveArtefactVersionContent,
+} from "./artefact-content-resolver.js";
+import { INSPECT_ARTEFACT_OPERATION_ID } from "./artefact-operations.js";
+import { HTML_PREVIEW_CSP, HTML_PREVIEW_HOST_DOCUMENT, HTML_PREVIEW_HOST_PATH } from "./html-preview-host.js";
+import { OperationInvocationSchema, registerHostOperationRoutes, registerOperationRoutes } from "./operation-routes.js";
+import { workspaceOperationRefusal } from "./workspace-operations.js";
+import {
+  COPY_WORKSPACE_OPERATION_ID,
+  FORK_WORKSPACE_OPERATION_ID,
+  HOST_LOCAL_WORKSPACE_OPERATION_IDS,
+  REBIND_WORKSPACE_OPERATION_ID,
+  REGISTER_WORKSPACE_OPERATION_ID,
+  RESTORE_WORKSPACE_OPERATION_ID,
+} from "./workspace-operations.js";
+import type {
+  OperationAuthorityBoundary,
+  OperationInvocationProvenance,
+  OperationInvocationRequest,
+  OperationResourceIdentity,
+} from "./operations.js";
+import { createOperationAuthorityContext } from "./operations.js";
+import {
+  ARCHIVE_CONTEXT_OPERATION_ID,
+  CREATE_CONTEXT_OPERATION_ID,
+  EMIT_CONTEXT_COMMUNICATION_OPERATION_ID,
+  REMOVE_CONTEXT_PARTICIPANT_OPERATION_ID,
+  SET_CONTEXT_PARTICIPANT_ACCESS_OPERATION_ID,
+} from "./context-operations.js";
+import {
+  BusTransportAuthenticator,
+  parseBearerHeader,
+  type BridgeServiceAuthority,
+  type BusTransportAuthority,
+  type HostControlAuthority,
+  type WorkspaceOperationAuthority,
+} from "./transport-auth.js";
+import {
+  decodeTransportPushCursor,
+  InvalidTransportPushCursorError,
+  TransportPushStreamStore,
+  type TransportPushEntry,
+} from "./transport-push-stream.js";
+import type {
+  IssuedBridgeServiceCredential,
+} from "./transport-credentials.js";
+import {
+  ACCOUNT_CONNECTION_PURPOSE,
+  BIND_CREDENTIAL_OPERATION_ID,
+  CREDENTIAL_MAINTENANCE_PURPOSE,
+  HEALTH_CREDENTIAL_OPERATION_ID,
+  LIST_PROVIDER_ACCOUNTS_OPERATION_ID,
+  PREPARE_PROVIDER_ACCOUNT_OPERATION_ID,
+  REVOKE_CREDENTIAL_OPERATION_ID,
+  ROTATE_CREDENTIAL_OPERATION_ID,
+} from "./credential-operations.js";
+import { WINDOWS_DPAPI_CREDENTIAL_BROKER_ID } from "./windows-dpapi-credential-protector.js";
+import { WorkspacePortabilityError } from "./workspace-portability.js";
+import {
+  AttachmentIngressError,
+  MAX_ATTACHMENT_INGRESS_BYTES,
+} from "./attachment-ingress.js";
 
 const ThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]);
 const BRIDGE_LIVENESS_MS = 90_000;
 const MAX_WORKSPACE_MEDIA_BYTES = 20 * 1024 * 1024;
+const MAX_RUNTIME_CREDENTIAL_BYTES = 1024 * 1024;
+const ConfirmedOperationInvocationSchema = z.object({
+  interaction_session_id: z.string().min(1),
+  invocation: OperationInvocationSchema.strict(),
+}).strict();
+const OPERATOR_CREDENTIAL_OPERATION_IDS = Object.freeze([
+  BIND_CREDENTIAL_OPERATION_ID,
+  HEALTH_CREDENTIAL_OPERATION_ID,
+  ROTATE_CREDENTIAL_OPERATION_ID,
+  REVOKE_CREDENTIAL_OPERATION_ID,
+]);
+const HOST_CREDENTIAL_OPERATION_IDS = new Set([
+  PREPARE_PROVIDER_ACCOUNT_OPERATION_ID,
+  "credential.runtime-access.grant",
+  "credential.runtime-access.revoke",
+  ...OPERATOR_CREDENTIAL_OPERATION_IDS,
+]);
 
 function workspaceMediaType(path: string): string | null {
   switch (extname(path).toLowerCase()) {
@@ -75,6 +170,7 @@ const EventCommandSchema = z.object({
   scope_id: z.string().min(1).nullable().optional(),
   correlation_id: z.string().nullable().optional(),
   content: z.record(z.unknown()),
+  artefact_version_ids: z.array(z.string().min(1)).optional(),
   response: z.object({
     expected: z.boolean(),
     mode: z.enum(["open", "thread_affine", "correlated"]).optional(),
@@ -90,6 +186,7 @@ const RuntimeBindingUpsertSchema = z.object({
   workspace_id: z.string().nullable().optional(),
   endpoint_id: z.string().nullable().optional(),
   auth_profile: z.string().min(1),
+  provider: z.string().min(1),
   model: z.string().nullable().optional(),
   thinking_level: ThinkingLevelSchema.nullable().optional()
 });
@@ -115,52 +212,543 @@ const RuntimeBindingClearSchema = z.object({
 type SocketLike = {
   readyState: number;
   send(data: string): void;
-  close(): void;
+  close(code?: number, reason?: string): void;
   on(event: "close" | "error", listener: () => void): void;
   on(event: "message", listener: (data: Buffer | string) => void): void;
 };
 
-export async function createBusServer(configPath: string, config: LocalConfig): Promise<{
+export type BusServerOptions = Readonly<{
+  workspace_configuration_policy?: WorkspaceConfigurationPolicyProvider;
+  /** Supplied out-of-band by the trusted native owner. Never logged or returned over HTTP. */
+  host_control_token?: string;
+  host_control_expires_at?: string;
+  /** Local product policy: the configured loopback frontend opens without pairing. */
+  local_browser_access?: boolean;
+  provider_login_adapter?: ProviderLoginAdapter;
+  /** Existing tests may omit credentials; production runtime never enables this. */
+  allow_unauthenticated_test_requests?: boolean;
+}>;
+
+export async function createBusServer(
+  configPath: string,
+  config: LocalConfig,
+  options: BusServerOptions = {},
+): Promise<{
   app: ReturnType<typeof Fastify>;
   store: BusStore;
+  /** Trusted process hand-off only. Never exposed by an HTTP response or log. */
+  localControlToken: string;
+  issueBridgeServiceCredential: (bridgeId: string, expiresAt?: string) => IssuedBridgeServiceCredential;
+  replaceBridgeServiceCredential: (bridgeId: string, expiresAt?: string) => IssuedBridgeServiceCredential;
+  rotateBridgeServiceCredential: (
+    credentialId: string,
+    bridgeId: string,
+    expiresAt?: string,
+  ) => IssuedBridgeServiceCredential;
+  revokeBridgeServiceCredential: (credentialId: string, bridgeId: string) => boolean;
   broadcast: (type: string, payload?: Record<string, unknown>) => void;
   listen: () => Promise<void>;
 }> {
-  // Endpoint ids are opaque substrate identifiers. Command-node endpoints can
-  // legitimately include workspace, Scope, node, and graph ids in one route
-  // segment, which exceeds Fastify's 100-character default. Keep the HTTP
-  // router aligned with the identifiers the substrate itself creates.
+  // Resource ids are opaque substrate identifiers. Exact revisions and legacy
+  // retained ids can exceed Fastify's 100-character default, so keep the HTTP
+  // router aligned with identifiers the substrate itself creates.
   const app = Fastify({ logger: true, routerOptions: { maxParamLength: 2_048 } });
-  const store = new BusStore(configPath, config);
-  const sockets = new Set<SocketLike>();
+  app.addContentTypeParser(
+    "application/octet-stream",
+    { parseAs: "buffer", bodyLimit: Math.max(MAX_RUNTIME_CREDENTIAL_BYTES, MAX_ATTACHMENT_INGRESS_BYTES) },
+    (_request, body, done) => done(null, body),
+  );
+  const store = new BusStore(configPath, config, { workspace_configuration_policy: options.workspace_configuration_policy });
+  const testCompatibility = options.allow_unauthenticated_test_requests ?? false;
+  const localControlToken = options.host_control_token
+    ?? (testCompatibility
+      ? `floe_test_host_${createHash("sha256").update(configPath).digest("base64url")}`
+      : "");
+  if (!localControlToken) {
+    store.close();
+    throw new Error("A host-control credential must be supplied by the trusted native owner.");
+  }
+  const hostControlCredential = store.transportCredentialStore.installHostControlCredential({
+    host_id: store.localHostId,
+    bearer_token: localControlToken,
+    expires_at: options.host_control_expires_at ?? oneYearFromNow(),
+  });
+  const transportAuthenticator = new BusTransportAuthenticator(store);
+  const localOrigins = options.local_browser_access ? localBrowserOrigins(config.app.listen) : new Set<string>();
+  const browserOrigins = new Set([...trustedBrowserOrigins(), ...localOrigins]);
+  const browserConnections = new BrowserConnections(browserOrigins, id => {
+    store.operationAuthoritySessions.revokeSession(id);
+  }, Date.now, options.local_browser_access ? {
+    origins: localOrigins,
+    issueSession: workspaceId => {
+      const host = transportAuthenticator.authenticateHostControl(localControlToken);
+      if (!host.verified || host.authority.audience !== "host_control") throw new BrowserConnectionError(401, "The local Floe app needs to restart.");
+      const workspaces = store.listRemoteWorkspaces();
+      const workspace = workspaceId ? workspaces.find(item => item.workspace_id === workspaceId) : workspaces[0];
+      if (!workspace) {
+        if (workspaceId) throw new BrowserConnectionError(404, "This workspace is not available on this computer.");
+        return null;
+      }
+      return issueWorkspaceOperationSession(host.authority, workspace.workspace_id, {
+        interaction_session_id: `browser:local:${randomUUID()}`, expires_in_seconds: 3_600,
+      }, "floe-local-browser-session");
+    },
+  } : undefined);
+  const pushStream = new TransportPushStreamStore(store.db);
+  const socketAuthorities = new Map<SocketLike, BusTransportAuthority>();
+  const requestAuthorities = new WeakMap<object, BusTransportAuthority>();
+  const testBypassedRequests = new WeakSet<object>();
   /** Maps bridge_id → the WS socket it opened; used for socket-presence liveness (D4). */
   const bridgeSockets = new Map<string, SocketLike>();
 
   function broadcast(type: string, payload: Record<string, unknown> = {}): void {
-    const message = JSON.stringify({
+    const entry = pushStream.append({
+      workspace_id: resolveBroadcastWorkspaceId(store, payload),
       type,
       payload,
-      at: new Date().toISOString()
     });
-    for (const socket of sockets) {
+    const message = serializePushEntry(entry);
+    for (const [socket, authority] of socketAuthorities) {
       try {
-        if (socket.readyState === 1) socket.send(message);
+        if (socket.readyState === 1 && mayReceivePushEntry(authority, entry, store)) socket.send(message);
       } catch {
-        sockets.delete(socket);
+        socketAuthorities.delete(socket);
       }
     }
+  }
+
+  function requireLocalControl(request: object, reply: any): HostControlAuthority | null {
+    if (testBypassedRequests.has(request)) {
+      return {
+        audience: "host_control",
+        host_id: store.localHostId,
+        credential_id: "test-bypass",
+      };
+    }
+    const authority = requestAuthorities.get(request);
+    if (authority?.audience === "host_control") return authority;
+    sendTransportDenied(reply);
+    return null;
+  }
+
+  function requireBridgeService(request: object, reply: any): BridgeServiceAuthority | null {
+    if (testBypassedRequests.has(request)) {
+      return {
+        audience: "bridge_service",
+        bridge_id: bridgeIdentityFromRequest(request) ?? "bridge:test-bypass",
+        host_id: store.localHostId,
+        credential_id: "test-bypass",
+      };
+    }
+    const authority = requestAuthorities.get(request);
+    if (authority?.audience === "bridge_service") return authority;
+    sendTransportDenied(reply);
+    return null;
+  }
+
+  function requireWorkspaceOperation(
+    request: object,
+    reply: any,
+    workspaceId: string,
+  ): WorkspaceOperationAuthority | null {
+    if (testBypassedRequests.has(request)) {
+      return null;
+    }
+    const authority = requestAuthorities.get(request);
+    if (authority?.audience === "workspace_operation" && authority.workspace_id === workspaceId) {
+      return authority;
+    }
+    sendTransportDenied(reply);
+    return null;
+  }
+
+  function sendWorkspaceOperationError(error: unknown, reply: any) {
+    const candidate = error as { code?: string; retryable?: boolean } | null;
+    const refusal = candidate && typeof candidate.retryable === "boolean"
+      ? error as ReturnType<typeof workspaceOperationRefusal>
+      : workspaceOperationRefusal(error);
+    const status = refusal.code === "workspace_locator_invalid" || refusal.code === "workspace_directory_not_found"
+      ? 400
+      : refusal.code === "workspace_operation_failed" || !refusal.code
+        ? 500
+        : 409;
+    return reply.code(status).send({ error: refusal.code ?? "workspace_operation_failed", ...refusal });
+  }
+
+  function sendAttachmentIngressError(error: unknown, reply: any) {
+    const code = error instanceof AttachmentIngressError
+      ? error.code
+      : "attachment_ingress_refused";
+    const status = code === "attachment_ingress_not_found" ? 404
+      : code === "attachment_ingress_capacity_exceeded" ? 429
+      : code === "attachment_ingress_content_invalid" ? 400
+        : 409;
+    return reply.code(status).send({
+      error: code,
+      message: code === "attachment_ingress_capacity_exceeded"
+        ? "Floe's temporary upload storage is busy. Retry after pending uploads complete or expire."
+        : "The attachment transfer was refused.",
+    });
+  }
+
+  const emptyOperationProvenance: OperationInvocationProvenance = {
+    cause_event_id: null,
+    delivery_ids: [],
+    execution_attempt_id: null,
+    node_execution_id: null,
+    scope_execution_id: null,
+  };
+  const hostPrincipalId = store.localOperatorPrincipalId;
+  const hostBoundary = { kind: "host" as const, host_id: store.localHostId };
+  const hostOperationIds = store.operationRegistry.listCurrentOperationIds({
+    interaction_mode: "interactive",
+    boundary_kind: "host",
+  }).filter((operationId) =>
+    HOST_LOCAL_WORKSPACE_OPERATION_IDS.has(operationId)
+    || operationId === PREPARE_PROVIDER_ACCOUNT_OPERATION_ID
+    || operationId === LIST_PROVIDER_ACCOUNTS_OPERATION_ID);
+  const hostPolicyRevision = createHash("sha256").update(JSON.stringify({
+    host_id: store.localHostId,
+    principal_id: hostPrincipalId,
+    operation_ids: hostOperationIds,
+    transport_credential_id: hostControlCredential.transport_credential_id,
+    expires_at: hostControlCredential.expires_at,
+  })).digest("hex");
+  const { grant: hostOperationGrant } = store.capabilityGrantStore.activateHostPolicyGrant({
+    host_id: store.localHostId,
+    principal_id: hostPrincipalId,
+    purpose: "local_host_operations",
+    policy_revision: hostPolicyRevision,
+    operation_ids: hostOperationIds,
+    expires_at: hostControlCredential.expires_at,
+    issuer_id: `transport:${hostControlCredential.transport_credential_id}`,
+    evidence: [{
+      kind: "authenticated_host_control",
+      ref: hostControlCredential.transport_credential_id,
+    }],
+  });
+
+  function resolveHostOperationAuthority(
+    request: object,
+    reply: any,
+    target: OperationResourceIdentity | null,
+  ) {
+    const transport = requireLocalControl(request, reply);
+    if (!transport) return null;
+    try { return hostOperationAuthority(transport, target); }
+    catch (error) {
+      if (!(error instanceof BrowserConnectionError)) throw error;
+      reply.code(error.status).send({ error: "operation_target_not_found", target });
+      return null;
+    }
+  }
+
+  function hostOperationAuthority(transport: HostControlAuthority, target: OperationResourceIdentity | null, sessionId?: string) {
+    const grantIds = [hostOperationGrant.grant_id];
+    if (target?.kind === "secret_ref") {
+      const ref = store.secretRefStore.getSecretRef(target.id);
+      if (!ref || ref.owner.kind !== "host" || ref.owner.host_id !== store.localHostId) {
+        throw new BrowserConnectionError(404, "This provider account is unavailable.");
+      }
+      const operationIds = store.operationRegistry.listCurrentOperationIds({
+        interaction_mode: "interactive",
+        boundary_kind: "host",
+      }).filter((operationId) => HOST_CREDENTIAL_OPERATION_IDS.has(operationId));
+      const policyRevision = createHash("sha256").update(JSON.stringify({
+        host_id: store.localHostId,
+        secret_ref_id: ref.secret_ref_id,
+        generation: ref.generation,
+        operation_ids: operationIds,
+        expires_at: hostControlCredential.expires_at,
+      })).digest("hex");
+      const { grant } = store.capabilityGrantStore.activateHostPolicyGrant({
+        host_id: store.localHostId,
+        principal_id: hostPrincipalId,
+        purpose: `local_host_credential:${ref.secret_ref_id}`,
+        policy_revision: policyRevision,
+        operation_ids: operationIds,
+        targets: [
+          { kind: "secret_ref", id: ref.secret_ref_id },
+          { kind: ref.resource.kind, id: ref.resource.id },
+        ],
+        expires_at: hostControlCredential.expires_at,
+        issuer_id: `transport:${hostControlCredential.transport_credential_id}`,
+        evidence: [{ kind: "authenticated_host_control", ref: hostControlCredential.transport_credential_id }],
+      });
+      if (!store.secretRefStore.getGrantConstraint(grant.grant_id)) {
+        store.secretRefStore.attachGrantConstraint({
+          grant_id: grant.grant_id,
+          secret_ref_id: ref.secret_ref_id,
+          authority_boundary: hostBoundary,
+          purposes: [ACCOUNT_CONNECTION_PURPOSE, CREDENTIAL_MAINTENANCE_PURPOSE],
+        }, store.capabilityGrantStore);
+      }
+      grantIds.push(grant.grant_id);
+    }
+    const resolved = store.capabilityGrantStore.resolveSessionAuthority({
+      principal_id: hostPrincipalId,
+      boundary: hostBoundary,
+      grant_ids: grantIds,
+      interaction: {
+        mode: "interactive",
+        session_id: sessionId ?? `host-control:${transport.credential_id}`,
+        broker_id: WINDOWS_DPAPI_CREDENTIAL_BROKER_ID,
+        confirmed_prompts: [],
+        approval_refs: [],
+      },
+    }, target);
+    return { authority: resolved.authority, provenance: emptyOperationProvenance };
+  }
+
+  async function invokeHostWorkspaceCompatibility(
+    request: any,
+    reply: any,
+    operationId: string,
+    target: OperationResourceIdentity | null,
+    input: unknown,
+    successStatus: number,
+  ) {
+    const verified = resolveHostOperationAuthority(request, reply, target);
+    if (!verified) return reply;
+    const headerKey = request.headers?.["idempotency-key"];
+    const invocation: OperationInvocationRequest = {
+      operation_id: operationId,
+      operation_version: "1",
+      input_schema_version: "1",
+      target,
+      expected_resource_revision: null,
+      idempotency_key: typeof headerKey === "string" && headerKey.trim()
+        ? headerKey.trim()
+        : `legacy-http:${randomUUID()}`,
+      input,
+    };
+    const response = await store.operationRegistry.invoke({
+      authority: verified.authority,
+      provenance: verified.provenance,
+      resolve_resource: (resource) => store.resolveOperationResource(resource, verified.authority.boundary),
+    }, invocation);
+    if (response.kind === "rejected" || response.kind === "conflict") {
+      return sendWorkspaceOperationError(response.refusal, reply);
+    }
+    if (response.receipt.state === "refused") {
+      return sendWorkspaceOperationError(response.receipt.refusal, reply);
+    }
+    const result = response.receipt.result as { workspace?: { workspace_id?: string } } | null;
+    const workspaceId = result?.workspace?.workspace_id;
+    const workspace = workspaceId ? store.getWorkspace(workspaceId) : null;
+    if (!workspace) {
+      return reply.code(500).send({
+        error: "workspace_operation_result_unavailable",
+        message: "The Workspace operation completed without a readable local projection.",
+        receipt_id: response.receipt.receipt_id,
+      });
+    }
+    return reply.code(successStatus).send({ workspace, receipt_id: response.receipt.receipt_id });
+  }
+
+  function resolveWorkspaceSemanticAuthority(
+    request: any,
+    reply: any,
+    workspaceId: string,
+  ): { authority: import("./operations.js").OperationAuthorityContext; provenance: OperationInvocationProvenance } | null {
+    if (testBypassedRequests.has(request)) {
+      return {
+        authority: createOperationAuthorityContext({
+          principal_id: "principal:test-bypass",
+          boundary: { kind: "workspace", workspace_id: workspaceId },
+          grants: new Set(store.operationRegistry.listCurrentOperationIds({
+            interaction_mode: "interactive",
+            boundary_kind: "workspace",
+          })),
+          interaction: {
+            mode: "interactive",
+            session_id: "test-bypass",
+            confirmed_prompts: new Set(),
+            approval_refs: new Set(),
+          },
+        }),
+        provenance: emptyOperationProvenance,
+      };
+    }
+    const transport = requireWorkspaceOperation(request, reply, workspaceId);
+    if (!transport) return null;
+    return {
+      authority: transport.verification.authority,
+      provenance: emptyOperationProvenance,
+    };
+  }
+
+  async function invokeWorkspaceCompatibility(
+    request: any,
+    reply: any,
+    input: Readonly<{
+      workspace_id: string;
+      operation_id: string;
+      target?: OperationResourceIdentity | null;
+      expected_revision?: string | null;
+      value: unknown;
+    }>,
+  ) {
+    const verified = resolveWorkspaceSemanticAuthority(request, reply, input.workspace_id);
+    if (!verified) return null;
+    const headerKey = request.headers?.["idempotency-key"];
+    const invocation: OperationInvocationRequest = {
+      operation_id: input.operation_id,
+      operation_version: "1",
+      input_schema_version: "1",
+      target: input.target ?? null,
+      expected_resource_revision: input.expected_revision ?? null,
+      idempotency_key: typeof headerKey === "string" && headerKey.trim()
+        ? headerKey.trim()
+        : `legacy-http:${input.operation_id}:${randomUUID()}`,
+      input: input.value,
+    };
+    const response = await store.operationRegistry.invoke({
+      authority: verified.authority,
+      provenance: verified.provenance,
+      resolve_resource: (resource) => store.resolveOperationResource(resource, verified.authority.boundary),
+    }, invocation);
+    if (response.kind === "rejected" || response.kind === "conflict") {
+      const code = response.refusal.code;
+      const status = code.includes("not_found") ? 404
+        : code.includes("grant_required") ? 403
+          : code.includes("invalid") || code.includes("schema") || code === "context_parent_cycle" || code === "scope_id_reserved" ? 400
+            : 409;
+      reply.code(status).send({ error: code, ...response.refusal });
+      return null;
+    }
+    if (response.receipt.state === "refused") {
+      const refusal = response.receipt.refusal!;
+      const status = refusal.code.includes("not_found") ? 404
+        : refusal.code.includes("grant_required") ? 403
+          : refusal.code.includes("invalid") || refusal.code.includes("schema") || refusal.code === "context_parent_cycle" || refusal.code === "scope_id_reserved" ? 400
+            : 409;
+      reply.code(status).send({ error: refusal.code, ...refusal, receipt_id: response.receipt.receipt_id });
+      return null;
+    }
+    return response.receipt;
   }
 
   // Inject broadcast into the store so lease-expiry requeue can self-schedule (D5).
   store.setBroadcast(broadcast);
 
-  await app.register(cors, { origin: true });
+  await app.register(cors, { origin: createCorsOriginPolicy(browserOrigins) });
   await app.register(websocket);
+  app.addHook("preHandler", async (request, reply) => {
+    // Static sandbox bootstrap only: no Workspace, content or authority. An
+    // opaque iframe must not acquire a browser session to load this document.
+    if (request.routeOptions.url === HTML_PREVIEW_HOST_PATH) return;
+    // A browser cookie is only a transport handle to a canonical Workspace
+    // bearer. The same verifier and operation routes still decide authority.
+    try {
+      const workspace = resolveRequestWorkspace(request, store);
+      const session = workspace.conflicted ? null : browserConnections.session(request, workspace.workspace_id ?? undefined);
+      if (session && !request.headers.authorization) request.headers.authorization = `Bearer ${session.bearer_token}`;
+    } catch (error) {
+      if (error instanceof BrowserConnectionError) return reply.code(error.status).send({ error: "browser_origin_refused", message: error.message });
+      throw error;
+    }
+    const requirement = resolveTransportRequirement(request, store);
+    if (
+      requirement.kind === "public"
+      || requirement.kind === "websocket"
+      || requirement.kind === "credential_ingress"
+      || requirement.kind === "attachment_ingress"
+    ) return;
+
+    const bearer = parseBearerHeader(request.headers.authorization);
+    if (!bearer && testCompatibility) {
+      testBypassedRequests.add(request);
+      return;
+    }
+
+    const authenticated = requirement.kind === "host_control"
+      ? transportAuthenticator.authenticateHostControl(bearer)
+      : requirement.kind === "bridge_service"
+        ? transportAuthenticator.authenticateBridgeService(bearer)
+        : requirement.kind === "workspace_operation"
+          ? transportAuthenticator.authenticateWorkspaceOperation(bearer, requirement.workspace_id)
+          : requirement.kind === "bridge_or_workspace"
+            ? authenticateBridgeOrWorkspace(
+                transportAuthenticator,
+                bearer,
+                requirement.workspace_id,
+              )
+            : requirement.kind === "bridge_workspace_or_host"
+              ? authenticateBridgeWorkspaceOrHost(
+                  transportAuthenticator,
+                  bearer,
+                  requirement.workspace_id,
+                )
+              : requirement.kind === "workspace_conflict"
+                ? authenticateConflictedWorkspaceRequest(
+                    transportAuthenticator,
+                    bearer,
+                    requirement.workspace_ids,
+                  )
+                : authenticateBridgeOrHost(transportAuthenticator, bearer);
+    if (!authenticated.verified) {
+      // Old HTTP route tests can opt into one explicit compatibility seam.
+      // This is never inferred from process environment and production always
+      // leaves it disabled. Strict transport tests exercise the real boundary.
+      if (testCompatibility) {
+        const trustedTestHost = transportAuthenticator.authenticateHostControl(bearer);
+        if (trustedTestHost.verified) {
+          testBypassedRequests.add(request);
+          return;
+        }
+      }
+      sendTransportDenied(reply);
+      return reply;
+    }
+    if (requirement.kind === "workspace_conflict") {
+      sendTransportForbidden(reply);
+      return reply;
+    }
+    if (
+      !testBypassedRequests.has(request)
+      && authenticated.authority.audience === "bridge_service"
+      && (
+        (requirement.kind === "bridge_service"
+          && requirement.workspace_id !== null
+          && !bridgeMayUseWorkspace(store, authenticated.authority, requirement.workspace_id))
+        || (requirement.kind === "bridge_or_workspace"
+          && !bridgeMayUseWorkspace(store, authenticated.authority, requirement.workspace_id))
+        || (requirement.kind === "bridge_workspace_or_host"
+          && !bridgeMayUseWorkspace(store, authenticated.authority, requirement.workspace_id))
+        || (requirement.kind === "bridge_or_host"
+          && authenticated.authority.host_id !== store.localHostId)
+      )
+    ) {
+      sendTransportForbidden(reply);
+      return reply;
+    }
+    requestAuthorities.set(request, authenticated.authority);
+  });
+  registerOperationRoutes(app, store, resolveHostOperationAuthority);
+  registerHostOperationRoutes(app, store, (request, reply, target) => {
+    try {
+      // Only the installed host's origin-bound local cookie can use this
+      // adapter. A paired remote Workspace session never becomes host authority.
+      const owner = browserConnections.localOwner(request);
+      const host = transportAuthenticator.authenticateHostControl(localControlToken);
+      if (!host.verified || host.authority.audience !== "host_control") {
+        throw new BrowserConnectionError(401, "Restart the local Floe app to restore access.");
+      }
+      reply.header("cache-control", "no-store");
+      return hostOperationAuthority(host.authority, target, `browser-local-host:${owner}`);
+    } catch (error) {
+      browserFailure(error, reply);
+      return null;
+    }
+  }, "/v1/browser/host");
 
   app.addHook("onClose", async () => {
     clearInterval(timer);
-    for (const socket of sockets) socket.close();
+    for (const socket of socketAuthorities.keys()) socket.close();
+    socketAuthorities.clear();
     bridgeSockets.clear();
+    browserConnections.close();
     store.close();
   });
 
@@ -201,63 +789,914 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     time: new Date().toISOString()
   }));
 
-  app.get("/v1/local-config/status", async () => ({
+  app.get(HTML_PREVIEW_HOST_PATH, async (_request, reply) => reply
+    .header("content-security-policy", HTML_PREVIEW_CSP)
+    .header("cache-control", "no-store")
+    .header("x-content-type-options", "nosniff")
+    .header("referrer-policy", "no-referrer")
+    .header("permissions-policy", "camera=(), microphone=(), geolocation=(), clipboard-read=(), clipboard-write=(), payment=(), usb=()")
+    .type("text/html; charset=utf-8")
+    .send(HTML_PREVIEW_HOST_DOCUMENT));
+
+  app.get("/v1/local-config/status", async (request, reply) => {
+    if (!requireLocalControl(request, reply)) return reply;
+    return {
     ok: true,
     config_path: configPath,
     home: config.home,
     bus: config.bus,
     app: config.app,
     bridge: config.bridge
-  }));
+    };
+  });
 
   app.get("/v1/runtime/status", async () => getRuntimeStatus());
 
-  app.get("/v1/events/stream", { websocket: true }, (socket) => {
-    const client = socket as unknown as SocketLike;
-    sockets.add(client);
-    let connectedBridgeId: string | null = null;
-    client.send(JSON.stringify({
-      type: "hello",
-      payload: { service: "floe-bus" },
-      at: new Date().toISOString()
-    }));
-    // D4: handle bridge_hello from the connecting bridge to establish WS-based liveness.
-    client.on("message", (raw) => {
+  function browserFailure(error: unknown, reply: any) {
+    if (error instanceof BrowserConnectionError) {
+      return reply.code(error.status).send({ error: "browser_connection_refused", message: error.message });
+    }
+    throw error;
+  }
+
+  app.post("/v1/browser/session/local", async (request, reply) => {
+    try {
+      if (!z.object({}).strict().safeParse(request.body ?? {}).success) return reply.code(400).send({ error: "browser_connection_request_invalid" });
+      reply.header("cache-control", "no-store").header("set-cookie", browserConnections.connectLocal(request));
+      return { connected: true, mode: "local" };
+    } catch (error) { return browserFailure(error, reply); }
+  });
+  async function invokeProviderOperation(operationId: string, input: unknown, target: OperationResourceIdentity | null = null, expectedRevision?: string) {
+    const host = transportAuthenticator.authenticateHostControl(localControlToken);
+    if (!host.verified || host.authority.audience !== "host_control") throw new BrowserConnectionError(401, "Restart the local Floe app to restore provider access.");
+    const verified = hostOperationAuthority(host.authority, target, `browser-provider:${randomUUID()}`);
+    const resource = target ? store.resolveOperationResource(target, verified.authority.boundary) : null;
+    const descriptor = (await store.operationRegistry.project({ authority: verified.authority, target: resource, query: operationId }))
+      .find(item => item.operation_id === operationId);
+    if (!descriptor) throw new BrowserConnectionError(403, "Provider account access is unavailable.");
+    if (!descriptor.availability.available) throw new BrowserConnectionError(403, descriptor.availability.refusal.message);
+    const response = await store.operationRegistry.invoke({
+      ...verified, resolve_resource: ref => store.resolveOperationResource(ref, verified.authority.boundary),
+    }, {
+      operation_id: descriptor.operation_id, operation_version: descriptor.operation_version,
+      input_schema_version: descriptor.input.version, input, target,
+      expected_resource_revision: expectedRevision ?? null, idempotency_key: `browser-provider:${randomUUID()}`,
+    });
+    if (response.kind === "rejected" || response.kind === "conflict") throw new BrowserConnectionError(409, response.refusal.message);
+    if (response.receipt.state !== "completed") throw new BrowserConnectionError(409, response.receipt.refusal?.message ?? "The provider operation has not completed.");
+    return response.receipt.result as any;
+  }
+  registerBrowserProviderRoutes(app, browserConnections, options.provider_login_adapter ?? new PiProviderLogin(), {
+    list: async () => (await invokeProviderOperation(LIST_PROVIDER_ACCOUNTS_OPERATION_ID, {})).accounts,
+    grant: async (providerId, input) => {
+      const accounts = (await invokeProviderOperation(LIST_PROVIDER_ACCOUNTS_OPERATION_ID, {})).accounts as Array<{ resource: { id: string }; secret_ref_id: string; generation: number; resolution: string }>;
+      const account = accounts.find(item => item.resource.id === providerId);
+      if (!account) throw new BrowserConnectionError(404, "Connect this provider account first.");
+      return invokeProviderOperation("credential.runtime-access.grant", input, { kind: "secret_ref", id: account.secret_ref_id }, `generation:${account.generation}:${account.resolution}`);
+    },
+    connect: async (providerId, login) => {
+      const prepared = await invokeProviderOperation(PREPARE_PROVIDER_ACCOUNT_OPERATION_ID, { provider_id: providerId });
+      const ref = prepared.credential;
+      if (ref.resolution !== "unresolved") throw new BrowserConnectionError(409, "This provider account is already connected.");
+      const ingress = store.credentialIngressStore.issue({
+        secret_ref_id: ref.secret_ref_id, authority_boundary: hostBoundary, principal_id: hostPrincipalId,
+        provider_id: providerId, audience: `provider-auth:${providerId}`, purpose: ACCOUNT_CONNECTION_PURPOSE, ttl_ms: 600_000,
+      });
+      let account: any;
       try {
-        const msg = JSON.parse(typeof raw === "string" ? raw : raw.toString()) as Record<string, unknown>;
-        if (msg.type === "bridge_hello" && typeof msg.bridge_id === "string") {
-          const bridgeId = msg.bridge_id;
-          connectedBridgeId = bridgeId;
-          bridgeSockets.set(bridgeId, client);
-          // Also update the DB last_seen_at so stored timestamps stay fresh.
-          store.reportBridgeLiveness(bridgeId);
-          broadcast("bridge_connected", { bridge_id: bridgeId });
+        await login(async material => {
+          store.credentialIngressStore.upload({
+            ingress_session_id: ingress.session.ingress_session_id, bearer_token: ingress.bearer_token,
+            audience: ingress.session.audience, purpose: ACCOUNT_CONNECTION_PURPOSE, material,
+          });
+          account = (await invokeProviderOperation("credential.bind", {
+            source: { kind: "credential_ingress", ingress_session_id: ingress.session.ingress_session_id },
+          }, { kind: "secret_ref", id: ref.secret_ref_id }, `generation:${ref.generation}:unresolved`)).credential;
+        });
+        if (!account || account.resolution !== "resolved") throw new Error("Provider connection did not complete");
+        return account;
+      } finally { store.credentialIngressStore.revoke(ingress.session.ingress_session_id); }
+    },
+  });
+  app.post("/v1/browser/connections", async (request, reply) => {
+    try {
+      if (!z.object({}).strict().safeParse(request.body ?? {}).success) return reply.code(400).send({ error: "browser_connection_request_invalid" });
+      const started = browserConnections.start(request);
+      reply.header("cache-control", "no-store");
+      if (started.cookie) reply.header("set-cookie", started.cookie);
+      return reply.code(201).send(started.connection);
+    } catch (error) { return browserFailure(error, reply); }
+  });
+  app.post("/v1/browser/connections/claim", async (request, reply) => {
+    try {
+      reply.header("cache-control", "no-store").header("set-cookie", browserConnections.claim(request));
+      return { connected: true };
+    } catch (error) { return browserFailure(error, reply); }
+  });
+  app.delete("/v1/browser/session", async (request, reply) => {
+    try {
+      reply.header("cache-control", "no-store").header("set-cookie", browserConnections.disconnect(request));
+      return { connected: false };
+    } catch (error) { return browserFailure(error, reply); }
+  });
+  app.get("/v1/browser/session", async (request, reply) => {
+    try {
+      const mode = browserConnections.mode(request);
+      const query = z.object({ workspace_id: z.string().min(1).optional() }).strict().safeParse(request.query);
+      if (!mode || !query.success) return sendTransportDenied(reply);
+      const session = browserConnections.session(request, query.data.workspace_id);
+      if (session && !transportAuthenticator.authenticateWorkspaceOperation(session.bearer_token, session.workspace_id).verified) return sendTransportDenied(reply);
+      const workspaces = store.listRemoteWorkspaces().filter(item => mode === "local" || item.workspace_id === session?.workspace_id);
+      if (!session && (mode !== "local" || workspaces.length > 0)) return sendTransportDenied(reply);
+      const bindings = workspaces.flatMap(workspace => store.listRuntimeBindings(workspace.workspace_id).filter(item => item.workspace_id === workspace.workspace_id));
+      const profileIds = new Set(bindings.map(item => item.auth_profile));
+      const profiles = listAuthProfiles(configPath, config).filter(item => profileIds.has(item.id));
+      reply.header("cache-control", "no-store");
+      return { mode, workspaces, profiles, bindings, runtime: getRuntimeStatus(), expires_at: session?.expires_at ?? null };
+    } catch (error) { return browserFailure(error, reply); }
+  });
+  app.get("/v1/local/browser-connections", async (request, reply) => {
+    if (!requireLocalControl(request, reply)) return reply;
+    return { connections: browserConnections.list() };
+  });
+  app.get("/v1/browser/session/models", async (request, reply) => {
+    try {
+      const session = browserConnections.session(request);
+      if (!session || !transportAuthenticator.authenticateWorkspaceOperation(session.bearer_token, session.workspace_id).verified) return sendTransportDenied(reply);
+      const query = z.object({ provider: z.string().min(1) }).strict().safeParse(request.query);
+      const workspaces = store.listRemoteWorkspaces().filter(item => browserConnections.mode(request) === "local" || item.workspace_id === session.workspace_id);
+      const bindings = workspaces.flatMap(workspace => store.listRuntimeBindings(workspace.workspace_id).filter(item => item.workspace_id === workspace.workspace_id));
+      if (!query.success || !bindings.some(item => item.provider === query.data.provider)) return sendTransportForbidden(reply);
+      reply.header("cache-control", "no-store");
+      return { models: await listAuthModels(configPath, config, query.data.provider) };
+    } catch (error) { return browserFailure(error, reply); }
+  });
+  app.post("/v1/local/browser-connections/:code/approve", async (request, reply) => {
+    const authority = requireLocalControl(request, reply);
+    if (!authority) return reply;
+    const params = z.object({ code: z.string().regex(/^[A-F0-9]{8}$/) }).safeParse(request.params);
+    const body = z.object({ workspace_id: z.string().min(1) }).strict().safeParse(request.body);
+    if (!params.success || !body.success) return reply.code(400).send({ error: "browser_connection_request_invalid" });
+    if (!store.getWorkspace(body.data.workspace_id)) return reply.code(404).send({ error: "workspace_not_found" });
+    try {
+      browserConnections.approve(params.data.code, () => issueWorkspaceOperationSession(
+        authority, body.data.workspace_id,
+        { interaction_session_id: `browser:${params.data.code}`, expires_in_seconds: 3_600 },
+        "floe-browser-session",
+      ));
+      return { approved: true };
+    } catch (error) { return browserFailure(error, reply); }
+  });
+
+  app.get("/v1/events/stream", { websocket: true }, (socket, request) => {
+    const client = socket as unknown as SocketLike;
+    let connectedBridgeId: string | null = null;
+    let authenticated = false;
+    let socketAuthority: BusTransportAuthority | null = null;
+    let sessionExpiryTimeout: ReturnType<typeof setTimeout> | undefined;
+    const authenticationTimeout = setTimeout(() => {
+      if (!authenticated) client.close(4401, "Authentication required");
+    }, 5_000);
+
+    client.on("message", (raw) => {
+      if (authenticated) {
+        if (socketAuthority?.audience !== "bridge_service") return;
+        try {
+          const acknowledgement = z.object({
+            type: z.literal("acknowledge_cursor"),
+            cursor: z.string().min(1),
+          }).strict().parse(JSON.parse(typeof raw === "string" ? raw : raw.toString()));
+          const cursor = pushStream.acknowledgeBridge(
+            socketAuthority.bridge_id,
+            acknowledgement.cursor,
+          );
+          client.send(JSON.stringify({
+            type: "cursor_acknowledged",
+            payload: { cursor },
+            at: new Date().toISOString(),
+          }));
+        } catch (error) {
+          client.close(
+            error instanceof InvalidTransportPushCursorError ? 4400 : 4400,
+            "Invalid cursor acknowledgement",
+          );
         }
+        return;
+      }
+      let message: unknown;
+      try {
+        message = JSON.parse(typeof raw === "string" ? raw : raw.toString());
       } catch {
-        // ignore malformed frames
+        clearTimeout(authenticationTimeout);
+        client.close(4400, "Invalid authentication frame");
+        return;
+      }
+      const parsed = z.object({
+        type: z.literal("authenticate"),
+        bearer_token: z.string().min(1).optional(),
+        browser_session: z.literal(true).optional(),
+        workspace_id: z.string().min(1).optional(),
+        after_cursor: z.string().min(1).nullable().optional(),
+        start_at: z.literal("current").optional(),
+      }).strict().safeParse(message);
+      if (!parsed.success) {
+        clearTimeout(authenticationTimeout);
+        client.close(4401, "Authentication required");
+        return;
+      }
+
+      let socketBearer = parsed.data.bearer_token ?? "";
+      if (parsed.data.browser_session) {
+        try {
+          const session = browserConnections.session(request, parsed.data.workspace_id);
+          if (socketBearer || !session || parsed.data.workspace_id !== session.workspace_id) throw new Error("Invalid browser session");
+          socketBearer = session.bearer_token;
+        } catch {
+          clearTimeout(authenticationTimeout);
+          client.close(4401, "Authentication required");
+          return;
+        }
+      }
+
+      const verified = parsed.data.workspace_id
+        ? transportAuthenticator.authenticateWorkspaceOperation(
+            socketBearer,
+            parsed.data.workspace_id,
+          )
+        : authenticatePrivilegedSocket(transportAuthenticator, socketBearer);
+      if (!verified.verified) {
+        clearTimeout(authenticationTimeout);
+        client.close(4401, "Authentication required");
+        return;
+      }
+
+      const authority = verified.authority;
+      const highWater = pushStream.latestSequence();
+      let afterSequence: number;
+      try {
+        if (parsed.data.start_at && (parsed.data.after_cursor !== undefined || authority.audience === "bridge_service")) {
+          throw new InvalidTransportPushCursorError();
+        }
+        const requestedSequence = decodeTransportPushCursor(parsed.data.after_cursor ?? null);
+        if (requestedSequence > highWater) throw new InvalidTransportPushCursorError();
+        if (authority.audience === "bridge_service") {
+          const durableSequence = decodeTransportPushCursor(
+            pushStream.getBridgeCheckpoint(authority.bridge_id),
+          );
+          afterSequence = parsed.data.after_cursor
+            ? Math.min(requestedSequence, durableSequence)
+            : durableSequence;
+        } else {
+          afterSequence = parsed.data.start_at === "current" ? highWater : requestedSequence;
+        }
+      } catch (error) {
+        clearTimeout(authenticationTimeout);
+        client.close(
+          error instanceof InvalidTransportPushCursorError ? 4400 : 1011,
+          error instanceof InvalidTransportPushCursorError ? "Invalid cursor" : "Stream unavailable",
+        );
+        return;
+      }
+
+      authenticated = true;
+      socketAuthority = authority;
+      if (authority.audience === "workspace_operation") {
+        sessionExpiryTimeout = setTimeout(() => client.close(4401, "Session expired"), Math.max(0, Date.parse(authority.verification.expires_at) - Date.now()));
+      }
+      clearTimeout(authenticationTimeout);
+      client.send(JSON.stringify({
+        type: "authenticated",
+        payload: {
+          ...socketAuthenticationProjection(authority),
+          cursor: pushStream.cursorForSequence(afterSequence),
+        },
+        at: new Date().toISOString(),
+      }));
+
+      let replaySequence = afterSequence;
+      while (replaySequence < highWater) {
+        const replay = pushStream.listAfter({
+          after_cursor: pushStream.cursorForSequence(replaySequence),
+          workspace_id: authority.audience === "workspace_operation" ? authority.workspace_id : null,
+          through_sequence: highWater,
+          limit: 1_000,
+        });
+        for (const entry of replay) {
+          if (mayReceivePushEntry(authority, entry, store)) {
+            client.send(serializePushEntry(entry));
+          }
+        }
+        if (replay.length === 0) break;
+        replaySequence = replay.at(-1)?.sequence ?? replaySequence;
+      }
+      client.send(JSON.stringify({
+        type: "caught_up",
+        payload: { cursor: pushStream.cursorForSequence(highWater) },
+        at: new Date().toISOString(),
+      }));
+      socketAuthorities.set(client, authority);
+
+      if (authority.audience === "bridge_service") {
+        connectedBridgeId = authority.bridge_id;
+        const previous = bridgeSockets.get(authority.bridge_id);
+        if (previous && previous !== client) previous.close(4409, "Bridge connection replaced");
+        bridgeSockets.set(authority.bridge_id, client);
+        store.reportBridgeLiveness(authority.bridge_id);
+        broadcast("bridge_connected", { bridge_id: authority.bridge_id });
       }
     });
-    client.on("close", () => {
-      sockets.delete(client);
+
+    const removeSocket = () => {
+      clearTimeout(authenticationTimeout);
+      socketAuthorities.delete(client);
+      clearTimeout(sessionExpiryTimeout);
       if (connectedBridgeId !== null && bridgeSockets.get(connectedBridgeId) === client) {
         bridgeSockets.delete(connectedBridgeId);
         broadcast("bridge_disconnected", { bridge_id: connectedBridgeId });
       }
-    });
-    client.on("error", () => {
-      sockets.delete(client);
-      if (connectedBridgeId !== null && bridgeSockets.get(connectedBridgeId) === client) {
-        bridgeSockets.delete(connectedBridgeId);
-        broadcast("bridge_disconnected", { bridge_id: connectedBridgeId });
-      }
-    });
+    };
+    client.on("close", removeSocket);
+    client.on("error", removeSocket);
   });
 
   app.get("/v1/workspaces", async () => ({
-    workspaces: store.listWorkspaces()
+    workspaces: store.listRemoteWorkspaces()
   }));
 
-  registerActorCapabilityRoutes(app, store, broadcast);
+  app.get("/v1/local/workspaces", async (request, reply) => {
+    if (!requireLocalControl(request, reply)) return reply;
+    return { workspaces: store.listWorkspaces() };
+  });
+
+  app.post("/v1/local/credential-ingress-sessions", async (request, reply) => {
+    if (!requireLocalControl(request, reply)) return reply;
+    const parsed = z.object({
+      secret_ref_id: z.string().min(1),
+      purpose: z.enum([ACCOUNT_CONNECTION_PURPOSE, CREDENTIAL_MAINTENANCE_PURPOSE]),
+      expires_in_seconds: z.number().int().min(30).max(600).optional(),
+    }).strict().safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: "credential_ingress_request_invalid",
+        message: "The credential transfer request is invalid.",
+      });
+    }
+    const ref = store.secretRefStore.getSecretRef(parsed.data.secret_ref_id);
+    if (!ref || ref.owner.kind !== "host" || ref.owner.host_id !== store.localHostId
+      || ref.resource.kind !== "provider_account") {
+      return reply.code(404).send({
+        error: "credential_reference_not_found",
+        message: "The provider account is not available on this host.",
+      });
+    }
+    const issued = store.credentialIngressStore.issue({
+      secret_ref_id: ref.secret_ref_id,
+      authority_boundary: ref.owner,
+      principal_id: store.localOperatorPrincipalId,
+      provider_id: ref.resource.id,
+      audience: `provider-auth:${ref.resource.id}`,
+      purpose: parsed.data.purpose,
+      ttl_ms: (parsed.data.expires_in_seconds ?? 300) * 1_000,
+    });
+    return reply
+      .header("cache-control", "no-store")
+      .code(201)
+      .send(issued);
+  });
+
+  app.put("/v1/credential-ingress-sessions/:ingress_session_id/material", async (request, reply) => {
+    const parsedParams = z.object({ ingress_session_id: z.string().min(1) }).safeParse(request.params);
+    const audience = request.headers["x-floe-credential-ingress-audience"];
+    const purpose = request.headers["x-floe-credential-ingress-purpose"];
+    if (!parsedParams.success || typeof audience !== "string"
+      || !audience.startsWith("provider-auth:")
+      || (purpose !== ACCOUNT_CONNECTION_PURPOSE && purpose !== CREDENTIAL_MAINTENANCE_PURPOSE)
+      || !Buffer.isBuffer(request.body) || request.body.byteLength === 0) {
+      return reply.code(400).send({
+        error: "credential_ingress_request_invalid",
+        message: "The credential transfer request is invalid.",
+      });
+    }
+    const material = new Uint8Array(request.body);
+    try {
+      const status = store.credentialIngressStore.upload({
+        ingress_session_id: parsedParams.data.ingress_session_id,
+        bearer_token: parseBearerHeader(request.headers.authorization),
+        audience: audience as `provider-auth:${string}`,
+        purpose,
+        material,
+      });
+      return reply.header("cache-control", "no-store").send({ session: status });
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error
+        ? String((error as { code: unknown }).code)
+        : "credential_ingress_refused";
+      return reply.code(409).send({ error: code, message: "The credential transfer was refused." });
+    } finally {
+      material.fill(0);
+      request.body.fill(0);
+    }
+  });
+
+  app.post("/v1/local/credential-ingress-sessions/:ingress_session_id/revoke", async (request, reply) => {
+    if (!requireLocalControl(request, reply)) return reply;
+    const parsed = z.object({ ingress_session_id: z.string().min(1) }).safeParse(request.params);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: "credential_ingress_request_invalid",
+        message: "The credential transfer request is invalid.",
+      });
+    }
+    return { revoked: store.credentialIngressStore.revoke(parsed.data.ingress_session_id) };
+  });
+
+  app.post("/v1/workspaces/:workspace_id/attachment-ingress-sessions", async (request, reply) => {
+    const parsedParams = z.object({ workspace_id: z.string().min(1) }).safeParse(request.params);
+    const parsedBody = z.object({
+      context_id: z.string().min(1),
+      name: z.string().min(1).max(255),
+      media_type: z.string().min(1).max(255),
+      size_bytes: z.number().int().positive().max(MAX_ATTACHMENT_INGRESS_BYTES),
+    }).strict().safeParse(request.body ?? {});
+    if (!parsedParams.success || !parsedBody.success) {
+      return reply.code(400).send({
+        error: "attachment_ingress_request_invalid",
+        message: "The attachment transfer request is invalid.",
+      });
+    }
+    const verified = resolveWorkspaceSemanticAuthority(request, reply, parsedParams.data.workspace_id);
+    if (!verified) return reply;
+    if (!verified.authority.grants.has(EMIT_CONTEXT_COMMUNICATION_OPERATION_ID)) {
+      return reply.code(403).send({
+        error: "operation_grant_required",
+        message: "The current principal is not authorised to communicate in this Context.",
+      });
+    }
+    const context = store.contextStore.getContext(parsedBody.data.context_id);
+    if (!context
+      || context.workspace_id !== parsedParams.data.workspace_id
+      || context.lifecycle_state !== "active") {
+      return reply.code(404).send({
+        error: "context_not_active",
+        message: "This Context is not available for an attachment.",
+      });
+    }
+    try {
+      const issued = store.attachmentIngressStore.issue({
+        workspace_id: parsedParams.data.workspace_id,
+        context_id: parsedBody.data.context_id,
+        principal_id: verified.authority.principal_id,
+        name: parsedBody.data.name,
+        media_type: parsedBody.data.media_type,
+        size_bytes: parsedBody.data.size_bytes,
+      });
+      return reply.header("cache-control", "no-store").code(201).send(issued);
+    } catch (error) {
+      return sendAttachmentIngressError(error, reply);
+    }
+  });
+
+  app.put("/v1/attachment-ingress-sessions/:ingress_session_id/content", async (request, reply) => {
+    const parsedParams = z.object({ ingress_session_id: z.string().min(1) }).safeParse(request.params);
+    if (!parsedParams.success || !Buffer.isBuffer(request.body) || request.body.byteLength === 0) {
+      return reply.code(400).send({
+        error: "attachment_ingress_request_invalid",
+        message: "The attachment transfer request is invalid.",
+      });
+    }
+    const bytes = new Uint8Array(request.body);
+    try {
+      const status = store.attachmentIngressStore.upload({
+        ingress_session_id: parsedParams.data.ingress_session_id,
+        bearer_token: parseBearerHeader(request.headers.authorization),
+        bytes,
+      });
+      return reply.header("cache-control", "no-store").send({ session: status });
+    } catch (error) {
+      return sendAttachmentIngressError(error, reply);
+    } finally {
+      bytes.fill(0);
+      request.body.fill(0);
+    }
+  });
+
+  app.post("/v1/workspaces/:workspace_id/attachment-ingress-sessions/:ingress_session_id/revoke", async (request, reply) => {
+    const parsedParams = z.object({
+      workspace_id: z.string().min(1),
+      ingress_session_id: z.string().min(1),
+    }).safeParse(request.params);
+    const parsedBody = z.object({ context_id: z.string().min(1) }).strict().safeParse(request.body ?? {});
+    if (!parsedParams.success || !parsedBody.success) {
+      return reply.code(400).send({
+        error: "attachment_ingress_request_invalid",
+        message: "The attachment transfer request is invalid.",
+      });
+    }
+    const verified = resolveWorkspaceSemanticAuthority(request, reply, parsedParams.data.workspace_id);
+    if (!verified) return reply;
+    try {
+      return {
+        revoked: store.attachmentIngressStore.revoke({
+          ingress_session_id: parsedParams.data.ingress_session_id,
+          workspace_id: parsedParams.data.workspace_id,
+          context_id: parsedBody.data.context_id,
+          principal_id: verified.authority.principal_id,
+        }),
+      };
+    } catch (error) {
+      return sendAttachmentIngressError(error, reply);
+    }
+  });
+
+  app.get("/v1/bridge/workspace-bindings", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
+    return {
+      bridge_id: bridgeAuthority.bridge_id,
+      host_id: bridgeAuthority.host_id,
+      workspaces: store.workspaceIdentityStore
+        .listLocalProjections(bridgeAuthority.host_id)
+        .filter((workspace) => workspace.binding !== null),
+    };
+  });
+
+  app.get("/v1/bridge/workspaces/:workspace_id/runtime-endpoints", async (request, reply) => {
+    const authority = requireBridgeService(request, reply);
+    if (!authority) return reply;
+    const { workspace_id } = z.object({ workspace_id: z.string().min(1) }).parse(request.params);
+    const { binding_id } = z.object({ binding_id: z.string().min(1) }).parse(request.query);
+    const binding = store.workspaceIdentityStore.getCurrentBinding(workspace_id, authority.host_id);
+    if (!binding || binding.binding_id !== binding_id) {
+      return reply.code(409).send({ error: "workspace_binding_mismatch", retryable: false });
+    }
+    if (!binding.init_authorized) return sendTransportForbidden(reply);
+    return { endpoints: store.listRuntimeEndpoints(workspace_id) };
+  });
+
+  app.post("/v1/local/workspaces/:workspace_id/operation-sessions", async (request, reply) => {
+    const hostAuthority = requireLocalControl(request, reply);
+    if (!hostAuthority) return reply;
+    const parsedParams = z.object({ workspace_id: z.string().min(1) }).safeParse(request.params);
+    const parsedBody = z.object({
+      interaction_session_id: z.string().min(1).optional(),
+      expires_in_seconds: z.number().int().min(60).max(86_400).optional(),
+    }).strict().safeParse(request.body ?? {});
+    if (!parsedParams.success || !parsedBody.success) {
+      return reply.code(400).send({
+        error: "workspace_operation_session_request_invalid",
+        message: "The Workspace session request is invalid.",
+      });
+    }
+    const params = parsedParams.data;
+    const body = parsedBody.data;
+    if (!store.getWorkspace(params.workspace_id)) {
+      return reply.code(404).send({
+        error: "workspace_not_found",
+        workspace_id: params.workspace_id,
+      });
+    }
+
+    return reply.code(201).send(issueWorkspaceOperationSession(hostAuthority, params.workspace_id, body));
+  });
+
+  // Both native and browser transports use the same durable grants and session issuer.
+  function issueWorkspaceOperationSession(
+    hostAuthority: HostControlAuthority,
+    workspaceId: string,
+    body: { expires_in_seconds?: number; interaction_session_id?: string },
+    brokerId = WINDOWS_DPAPI_CREDENTIAL_BROKER_ID,
+  ) {
+    const expiresAt = new Date(Date.now() + (body.expires_in_seconds ?? 3_600) * 1_000).toISOString();
+    const principalId = store.localOperatorPrincipalId;
+    const operationIds = store.operationRegistry
+      .listCurrentOperationIds({ interaction_mode: "interactive", boundary_kind: "workspace" });
+    if (operationIds.length === 0) {
+      throw new Error("No interactive semantic operations are currently registered.");
+    }
+    const ordinaryOperationIds = operationIds.filter((operationId) =>
+      !OPERATOR_CREDENTIAL_OPERATION_IDS.includes(operationId as typeof OPERATOR_CREDENTIAL_OPERATION_IDS[number]));
+    const grantIds: string[] = [];
+    if (ordinaryOperationIds.length > 0) {
+      grantIds.push(store.capabilityGrantStore.issueGrant({
+        principal_id: principalId,
+        boundary: { kind: "workspace", workspace_id: workspaceId },
+        operation_ids: ordinaryOperationIds,
+        expires_at: expiresAt,
+        issuer_id: `transport:${hostAuthority.credential_id}`,
+        evidence: [{
+          kind: "authenticated_host_control",
+          ref: hostAuthority.credential_id,
+        }],
+      }).grant_id);
+    }
+    const workspaceBoundary = { kind: "workspace" as const, workspace_id: workspaceId };
+    for (const ref of store.secretRefStore.listSecretRefs().filter((candidate) =>
+      candidate.owner.kind === "host"
+      || (candidate.owner.kind === "workspace" && candidate.owner.workspace_id === workspaceId))) {
+      const grant = store.capabilityGrantStore.issueGrant({
+        principal_id: principalId,
+        boundary: { kind: "workspace", workspace_id: workspaceId },
+        operation_ids: OPERATOR_CREDENTIAL_OPERATION_IDS,
+        targets: [
+          { kind: "secret_ref", id: ref.secret_ref_id },
+          { kind: ref.resource.kind, id: ref.resource.id },
+        ],
+        expires_at: expiresAt,
+        issuer_id: `transport:${hostAuthority.credential_id}`,
+        evidence: [{
+          kind: "authenticated_host_control",
+          ref: hostAuthority.credential_id,
+        }],
+      });
+      store.secretRefStore.attachGrantConstraint({
+        grant_id: grant.grant_id,
+        authority_boundary: workspaceBoundary,
+        secret_ref_id: ref.secret_ref_id,
+        purposes: [ACCOUNT_CONNECTION_PURPOSE, CREDENTIAL_MAINTENANCE_PURPOSE],
+      }, store.capabilityGrantStore);
+      grantIds.push(grant.grant_id);
+    }
+    const issued = store.operationAuthoritySessions.issueSession({
+      principal_id: principalId,
+      workspace_id: workspaceId,
+      grant_ids: grantIds,
+      interaction: {
+        mode: "interactive",
+        session_id: body.interaction_session_id ?? `interaction_${randomUUID()}`,
+        broker_id: brokerId,
+      },
+      provenance: emptyOperationProvenance,
+      expires_at: expiresAt,
+    });
+    return {
+      bearer_token: issued.bearer_token,
+      authority_session_id: issued.session.authority_session_id,
+      principal_id: issued.session.principal_id,
+      workspace_id: issued.session.workspace_id,
+      expires_at: issued.session.expires_at,
+    };
+  }
+
+  async function invokeConfirmedOperatorOperation(input: Readonly<{
+    host_authority: HostControlAuthority;
+    boundary: OperationAuthorityBoundary;
+    interaction_session_id: string;
+    invocation: OperationInvocationRequest;
+  }>): Promise<Readonly<{ status: number; body: unknown }>> {
+    const currentOperationIds = store.operationRegistry.listCurrentOperationIds({
+      interaction_mode: "interactive",
+      boundary_kind: input.boundary.kind,
+    });
+    if (!currentOperationIds.includes(input.invocation.operation_id)) {
+      return {
+        status: 404,
+        body: {
+          error: "confirmed_operation_not_found",
+          message: "The requested interactive operation is not currently registered.",
+        },
+      };
+    }
+
+    const target = input.invocation.target
+      ? store.resolveOperationResource(input.invocation.target, input.boundary)
+      : null;
+    if (input.invocation.target && !target) {
+      return { status: 404, body: { error: "operation_target_not_found", target: input.invocation.target } };
+    }
+    const discoveryAuthority = createOperationAuthorityContext({
+      principal_id: store.localOperatorPrincipalId,
+      boundary: input.boundary,
+      grants: new Set([input.invocation.operation_id]),
+      interaction: {
+        mode: "interactive",
+        session_id: input.interaction_session_id,
+        broker_id: WINDOWS_DPAPI_CREDENTIAL_BROKER_ID,
+        confirmed_prompts: new Set(),
+        approval_refs: new Set(),
+      },
+    });
+    const descriptor = (await store.operationRegistry.project({
+      authority: discoveryAuthority,
+      target,
+      query: input.invocation.operation_id,
+    })).find((candidate) =>
+      candidate.operation_id === input.invocation.operation_id
+      && candidate.operation_version === input.invocation.operation_version);
+    const confirmation = descriptor?.interaction_constraints.confirmation;
+    if (!descriptor || !confirmation?.required) {
+      return {
+        status: 400,
+        body: {
+          error: "operation_confirmation_not_required",
+          message: "The requested operation does not declare this trusted confirmation step.",
+        },
+      };
+    }
+
+    const credentialRef = OPERATOR_CREDENTIAL_OPERATION_IDS.includes(
+      descriptor.operation_id as typeof OPERATOR_CREDENTIAL_OPERATION_IDS[number],
+    ) && input.invocation.target?.kind === "secret_ref"
+      ? store.secretRefStore.getSecretRef(input.invocation.target.id)
+      : null;
+    const credentialVisible = !credentialRef
+      || (credentialRef.owner.kind === "host"
+        ? credentialRef.owner.host_id === store.localHostId
+        : input.boundary.kind === "workspace"
+          && credentialRef.owner.workspace_id === input.boundary.workspace_id);
+    if (!credentialVisible) {
+      return { status: 404, body: { error: "operation_target_not_found", target: input.invocation.target } };
+    }
+
+    const grant = store.capabilityGrantStore.issueGrant({
+      principal_id: store.localOperatorPrincipalId,
+      boundary: input.boundary,
+      operation_ids: [descriptor.operation_id],
+      ...(credentialRef
+        ? {
+            targets: [
+              { kind: "secret_ref", id: credentialRef.secret_ref_id },
+              { kind: credentialRef.resource.kind, id: credentialRef.resource.id },
+            ],
+          }
+        : {}),
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+      issuer_id: `transport:${input.host_authority.credential_id}`,
+      evidence: [{
+        kind: "native_operator_confirmation",
+        ref: `${input.host_authority.credential_id}:${confirmation.prompt_id}`,
+      }],
+    });
+    try {
+      if (credentialRef) {
+        store.secretRefStore.attachGrantConstraint({
+          grant_id: grant.grant_id,
+          authority_boundary: input.boundary,
+          secret_ref_id: credentialRef.secret_ref_id,
+          purposes: [CREDENTIAL_MAINTENANCE_PURPOSE],
+        }, store.capabilityGrantStore);
+      }
+      const resolved = store.capabilityGrantStore.resolveSessionAuthority({
+        principal_id: store.localOperatorPrincipalId,
+        boundary: input.boundary,
+        grant_ids: [grant.grant_id],
+        interaction: {
+          mode: "interactive",
+          session_id: input.interaction_session_id,
+          broker_id: WINDOWS_DPAPI_CREDENTIAL_BROKER_ID,
+          confirmed_prompts: [confirmation.prompt_id],
+          approval_refs: [],
+        },
+      }, input.invocation.target ?? null);
+      return {
+        status: 200,
+        body: await store.operationRegistry.invoke({
+          authority: resolved.authority,
+          provenance: emptyOperationProvenance,
+          resolve_resource: (resource) => store.resolveOperationResource(resource, input.boundary),
+        }, input.invocation),
+      };
+    } finally {
+      store.capabilityGrantStore.revokeGrant(grant.grant_id);
+    }
+  }
+
+  app.post("/v1/local/operations/confirm-and-invoke", async (request, reply) => {
+    const hostAuthority = requireLocalControl(request, reply);
+    if (!hostAuthority) return reply;
+    const parsedBody = ConfirmedOperationInvocationSchema.safeParse(request.body ?? {});
+    if (!parsedBody.success) {
+      return reply.code(400).send({
+        error: "confirmed_operation_request_invalid",
+        message: "The confirmed operation request is invalid.",
+      });
+    }
+    const outcome = await invokeConfirmedOperatorOperation({
+      host_authority: hostAuthority,
+      boundary: { kind: "host", host_id: store.localHostId },
+      interaction_session_id: parsedBody.data.interaction_session_id,
+      invocation: parsedBody.data.invocation as OperationInvocationRequest,
+    });
+    return reply.code(outcome.status).send(outcome.body);
+  });
+
+  /**
+   * Atomic trusted confirmation boundary for native operator clients.
+   *
+   * The caller names only the unchanged semantic invocation. The Bus derives
+   * confirmation, principal, grants, and target authority from its registered
+   * operation contract and the authenticated host. No reusable elevated
+   * bearer is issued.
+   */
+  app.post("/v1/local/workspaces/:workspace_id/operations/confirm-and-invoke", async (request, reply) => {
+    const hostAuthority = requireLocalControl(request, reply);
+    if (!hostAuthority) return reply;
+    const parsedParams = z.object({ workspace_id: z.string().min(1) }).safeParse(request.params);
+    const parsedBody = ConfirmedOperationInvocationSchema.safeParse(request.body ?? {});
+    if (!parsedParams.success || !parsedBody.success) {
+      return reply.code(400).send({
+        error: "confirmed_operation_request_invalid",
+        message: "The confirmed operation request is invalid.",
+      });
+    }
+    const { workspace_id: workspaceId } = parsedParams.data;
+    if (!store.getWorkspace(workspaceId)) {
+      return reply.code(404).send({ error: "workspace_not_found", workspace_id: workspaceId });
+    }
+
+    const boundary = { kind: "workspace" as const, workspace_id: workspaceId };
+    const { interaction_session_id: interactionSessionId, invocation } = parsedBody.data;
+    const target = invocation.target
+      ? store.resolveOperationResource(invocation.target, boundary)
+      : null;
+    if (invocation.target && !target) {
+      return reply.code(404).send({ error: "operation_target_not_found", target: invocation.target });
+    }
+    const discoveryAuthority = createOperationAuthorityContext({
+      principal_id: store.localOperatorPrincipalId,
+      boundary,
+      grants: new Set([invocation.operation_id]),
+      interaction: {
+        mode: "interactive",
+        session_id: interactionSessionId,
+        broker_id: WINDOWS_DPAPI_CREDENTIAL_BROKER_ID,
+        confirmed_prompts: new Set(),
+        approval_refs: new Set(),
+      },
+    });
+    const descriptor = (await store.operationRegistry.project({
+      authority: discoveryAuthority,
+      target,
+      query: invocation.operation_id,
+    })).find((candidate) =>
+      candidate.operation_id === invocation.operation_id
+      && candidate.operation_version === invocation.operation_version);
+    const confirmation = descriptor?.interaction_constraints.confirmation;
+    if (!descriptor || !confirmation?.required) {
+      return reply.code(400).send({
+        error: "operation_confirmation_not_required",
+        message: "The requested operation does not declare this trusted confirmation step.",
+      });
+    }
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const credentialRef = OPERATOR_CREDENTIAL_OPERATION_IDS.includes(
+      descriptor.operation_id as typeof OPERATOR_CREDENTIAL_OPERATION_IDS[number],
+    ) && invocation.target?.kind === "secret_ref"
+      ? store.secretRefStore.getSecretRef(invocation.target.id)
+      : null;
+    if (credentialRef && credentialRef.owner.kind === "workspace"
+      && credentialRef.owner.workspace_id !== workspaceId) {
+      return reply.code(404).send({ error: "operation_target_not_found", target: invocation.target });
+    }
+    const grant = store.capabilityGrantStore.issueGrant({
+      principal_id: store.localOperatorPrincipalId,
+      boundary,
+      operation_ids: [descriptor.operation_id],
+      ...(credentialRef
+        ? {
+            targets: [
+              { kind: "secret_ref", id: credentialRef.secret_ref_id },
+              { kind: credentialRef.resource.kind, id: credentialRef.resource.id },
+            ],
+          }
+        : {}),
+      expires_at: expiresAt,
+      issuer_id: `transport:${hostAuthority.credential_id}`,
+      evidence: [{
+        kind: "native_operator_confirmation",
+        ref: `${hostAuthority.credential_id}:${confirmation.prompt_id}`,
+      }],
+    });
+    try {
+      if (credentialRef) {
+        store.secretRefStore.attachGrantConstraint({
+          grant_id: grant.grant_id,
+          authority_boundary: boundary,
+          secret_ref_id: credentialRef.secret_ref_id,
+          purposes: [CREDENTIAL_MAINTENANCE_PURPOSE],
+        }, store.capabilityGrantStore);
+      }
+      const resolved = store.capabilityGrantStore.resolveSessionAuthority({
+        principal_id: store.localOperatorPrincipalId,
+        boundary,
+        grant_ids: [grant.grant_id],
+        interaction: {
+          mode: "interactive",
+          session_id: interactionSessionId,
+          broker_id: WINDOWS_DPAPI_CREDENTIAL_BROKER_ID,
+          confirmed_prompts: [confirmation.prompt_id],
+          approval_refs: [],
+        },
+      }, invocation.target ?? null);
+      return await store.operationRegistry.invoke({
+        authority: resolved.authority,
+        provenance: emptyOperationProvenance,
+        resolve_resource: (resource) => store.resolveOperationResource(resource, boundary),
+      }, invocation as OperationInvocationRequest);
+    } finally {
+      store.capabilityGrantStore.revokeGrant(grant.grant_id);
+    }
+  });
+
   registerContextDiagnosticRoutes(app, store, getRuntimeStatus);
 
   app.get("/v1/workspaces/:workspace_id/scopes", async (request, reply) => {
@@ -284,6 +1723,99 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       });
     }
     return { projection: buildScopeProjection(store, params.workspace_id, params.scope_id) };
+  });
+
+  function encodeScopeExecutionCursor(row: { created_at: string; execution_id: string }): string {
+    return Buffer.from(JSON.stringify({ created_at: row.created_at, execution_id: row.execution_id }), "utf8")
+      .toString("base64url");
+  }
+
+  function decodeScopeExecutionCursor(
+    value: string | undefined,
+  ): { created_at: string; execution_id: string } | undefined {
+    if (!value) return undefined;
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    return z.object({
+      created_at: z.string().datetime(),
+      execution_id: z.string().min(1),
+    }).parse(parsed);
+  }
+
+  app.get("/v1/workspaces/:workspace_id/scopes/:scope_id/executions", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string().min(1),
+      scope_id: z.string().min(1),
+    }).parse(request.params);
+    const query = z.object({
+      limit: z.coerce.number().int().positive().max(200).optional().default(50),
+      before: z.string().min(1).optional(),
+    }).parse(request.query);
+    if (!store.getScope(params.workspace_id, params.scope_id)) {
+      return reply.code(404).send({ error: "scope_not_found", ...params });
+    }
+    let before: { created_at: string; execution_id: string } | undefined;
+    try {
+      before = decodeScopeExecutionCursor(query.before);
+    } catch {
+      return reply.code(400).send({ error: "invalid_scope_execution_cursor" });
+    }
+    const rows = store.listScopeExecutionsPage({
+      workspace_id: params.workspace_id,
+      scope_id: params.scope_id,
+      limit: query.limit + 1,
+      before,
+    });
+    const hasMore = rows.length > query.limit;
+    const page = rows.slice(0, query.limit);
+    return {
+      executions: page,
+      next_cursor: hasMore && page.length > 0 ? encodeScopeExecutionCursor(page.at(-1)!) : null,
+    };
+  });
+
+  app.get("/v1/workspaces/:workspace_id/scope-executions/:execution_id", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string().min(1),
+      execution_id: z.string().min(1),
+    }).parse(request.params);
+    const projection = store.getScopeExecutionProjection(params.execution_id);
+    if (!projection || projection.execution.workspace_id !== params.workspace_id) {
+      return reply.code(404).send({ error: "scope_execution_not_found", ...params });
+    }
+    return { projection };
+  });
+
+  app.get("/v1/workspaces/:workspace_id/contexts/:context_id/scope-executions", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string().min(1),
+      context_id: z.string().min(1),
+    }).parse(request.params);
+    const query = z.object({
+      limit: z.coerce.number().int().positive().max(200).optional().default(50),
+      before: z.string().min(1).optional(),
+    }).parse(request.query);
+    const context = store.contextStore.getContext(params.context_id);
+    if (!context || context.workspace_id !== params.workspace_id) {
+      return reply.code(404).send({ error: "context_not_found", ...params });
+    }
+    let before: { created_at: string; execution_id: string } | undefined;
+    try {
+      before = decodeScopeExecutionCursor(query.before);
+    } catch {
+      return reply.code(400).send({ error: "invalid_scope_execution_cursor" });
+    }
+    const rows = store.listScopeExecutionsPage({
+      workspace_id: params.workspace_id,
+      caused_by_context_id: params.context_id,
+      limit: query.limit + 1,
+      before,
+    });
+    const hasMore = rows.length > query.limit;
+    const page = rows.slice(0, query.limit);
+    return {
+      executions: page,
+      next_cursor: hasMore && page.length > 0 ? encodeScopeExecutionCursor(page.at(-1)!) : null,
+    };
   });
 
   const ScopeGraphNodeSchema = z.union([
@@ -329,6 +1861,162 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       })).optional()
     })
   ]);
+
+  const ScopeNodePlacementSchema = z.object({
+    node_id: z.string().min(1),
+    kind: z.enum(["event", "actor", "command", "context", "scope", "capability", "connector"]),
+    label: z.string().optional(),
+    resource_id: z.string().min(1).nullable().optional(),
+    config: z.record(z.unknown()).optional(),
+    bindings: z.array(z.object({
+      kind: z.literal("instructions"),
+      text: z.string().min(1),
+    })).optional(),
+    activation: z.record(z.unknown()).optional(),
+    context_policy: z.record(z.unknown()).optional(),
+  });
+  const ScopePortSchema = z.object({
+    port_id: z.string().min(1),
+    node_id: z.string().min(1),
+    name: z.string().min(1),
+    direction: z.enum(["input", "output"]),
+    event_types: z.array(z.string().min(1)).optional(),
+    artefact_types: z.array(z.string().min(1)).optional(),
+    schema_ref: z.string().min(1).nullable().optional(),
+    min_count: z.number().int().min(0).optional(),
+    max_count: z.number().int().min(0).nullable().optional(),
+  });
+  const ScopeEdgeSchema = z.object({
+    edge_id: z.string().min(1),
+    source_port_id: z.string().min(1),
+    target_port_id: z.string().min(1),
+    enabled: z.boolean().optional(),
+    priority: z.number().int().optional(),
+    policy: z.record(z.unknown()).optional(),
+  });
+  const ScopeCompositionContentSchema = z.object({
+    nodes: z.array(ScopeNodePlacementSchema).min(1),
+    ports: z.array(ScopePortSchema),
+    edges: z.array(ScopeEdgeSchema),
+  });
+
+  function sendCompositionError(reply: any, error: unknown) {
+    if (error instanceof ScopeCompositionNotFoundError) {
+      return reply.code(404).send({ error: "scope_composition_not_found", revision_id: error.revision_id });
+    }
+    if (error instanceof ScopeCompositionInvalidError) {
+      return reply.code(400).send({ error: "scope_composition_invalid", reason: error.reason });
+    }
+    if (error instanceof ScopeCompositionImmutableError) {
+      return reply.code(409).send({ error: "scope_composition_immutable", revision_id: error.revision_id });
+    }
+    if (error instanceof ScopeCompositionConflictError) {
+      return reply.code(409).send({
+        error: "scope_composition_conflict",
+        scope_id: error.scope_id,
+        expected_revision_id: error.expected_revision_id,
+        actual_revision_id: error.actual_revision_id,
+      });
+    }
+    throw error;
+  }
+
+  app.get("/v1/workspaces/:workspace_id/scopes/:scope_id/compositions", async (request, reply) => {
+    const params = z.object({ workspace_id: z.string(), scope_id: z.string().min(1) }).parse(request.params);
+    if (!store.getScope(params.workspace_id, params.scope_id)) {
+      return reply.code(404).send({ error: "scope_not_found", ...params });
+    }
+    return {
+      published_revision_id: store.getScope(params.workspace_id, params.scope_id)?.published_revision_id ?? null,
+      revisions: store.listScopeCompositionRevisions(params.workspace_id, params.scope_id),
+    };
+  });
+
+  app.post("/v1/workspaces/:workspace_id/scopes/:scope_id/compositions", async (request, reply) => {
+    const params = z.object({ workspace_id: z.string(), scope_id: z.string().min(1) }).parse(request.params);
+    const body = z.object({
+      content: ScopeCompositionContentSchema,
+      based_on_revision_id: z.string().min(1).nullable().optional(),
+      created_by_endpoint_id: z.string().min(1).nullable().optional(),
+    }).parse(request.body);
+    try {
+      const revision = store.createScopeCompositionDraft({
+        workspace_id: params.workspace_id,
+        scope_id: params.scope_id,
+        based_on_revision_id: body.based_on_revision_id ?? null,
+        created_by_endpoint_id: body.created_by_endpoint_id ?? null,
+        content: body.content as ScopeCompositionContent,
+      }, broadcast);
+      return reply.code(201).send({ revision });
+    } catch (error) {
+      if (error instanceof ScopeNotFoundError) {
+        return reply.code(404).send({ error: "scope_not_found", ...params });
+      }
+      return sendCompositionError(reply, error);
+    }
+  });
+
+  app.patch("/v1/workspaces/:workspace_id/scopes/:scope_id/compositions/:revision_id", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string(),
+      scope_id: z.string().min(1),
+      revision_id: z.string().min(1),
+    }).parse(request.params);
+    const body = z.object({
+      content: ScopeCompositionContentSchema,
+      expected_digest: z.string().min(1).optional(),
+    }).parse(request.body);
+    const existing = store.getScopeCompositionRevision(params.revision_id);
+    if (existing && (existing.workspace_id !== params.workspace_id || existing.scope_id !== params.scope_id)) {
+      return reply.code(404).send({ error: "scope_composition_not_found", revision_id: params.revision_id });
+    }
+    try {
+      const revision = store.replaceScopeCompositionDraft(
+        params.revision_id,
+        body.content as ScopeCompositionContent,
+        broadcast,
+        body.expected_digest,
+      );
+      return { revision };
+    } catch (error) {
+      return sendCompositionError(reply, error);
+    }
+  });
+
+  app.post("/v1/workspaces/:workspace_id/scopes/:scope_id/compositions/:revision_id/publish", async (request, reply) => {
+    const params = z.object({
+      workspace_id: z.string(),
+      scope_id: z.string().min(1),
+      revision_id: z.string().min(1),
+    }).parse(request.params);
+    const body = z.object({
+      expected_published_revision_id: z.string().min(1).nullable().optional(),
+    }).parse(request.body ?? {});
+    const existing = store.getScopeCompositionRevision(params.revision_id);
+    if (!existing || existing.workspace_id !== params.workspace_id || existing.scope_id !== params.scope_id) {
+      return reply.code(404).send({ error: "scope_composition_not_found", revision_id: params.revision_id });
+    }
+    try {
+      const revision = store.publishScopeComposition({
+        revision_id: params.revision_id,
+        ...(body.expected_published_revision_id !== undefined
+          ? { expected_published_revision_id: body.expected_published_revision_id }
+          : {}),
+      }, broadcast);
+      return { revision };
+    } catch (error) {
+      return sendCompositionError(reply, error);
+    }
+  });
+
+  app.get("/v1/workspaces/:workspace_id/compositions/:revision_id", async (request, reply) => {
+    const params = z.object({ workspace_id: z.string(), revision_id: z.string().min(1) }).parse(request.params);
+    const revision = store.getScopeCompositionRevision(params.revision_id);
+    if (!revision || revision.workspace_id !== params.workspace_id) {
+      return reply.code(404).send({ error: "scope_composition_not_found", revision_id: params.revision_id });
+    }
+    return { revision };
+  });
 
   app.get("/v1/workspaces/:workspace_id/scopes/:scope_id/graphs", async (request, reply) => {
     const params = z.object({
@@ -473,33 +2161,12 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     if (!store.getWorkspace(params.workspace_id)) {
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
     }
-    try {
-      const scope = store.createScope({
-        workspace_id: params.workspace_id,
-        scope_id: body.scope_id,
-        title: body.title,
-        description: body.description ?? null
-      }, broadcast);
-      return reply.code(201).send({ scope });
-    } catch (err) {
-      if (err instanceof ScopeAlreadyExistsError) {
-        return reply.code(409).send({
-          error: "scope_already_exists",
-          workspace_id: err.workspace_id,
-          scope_id: err.scope_id
-        });
-      }
-      if (err instanceof ScopeReservedIdError) {
-        return reply.code(400).send({
-          error: "scope_id_reserved",
-          workspace_id: err.workspace_id,
-          scope_id: err.scope_id
-        });
-      }
-      throw err;
-    }
+    const receipt = await invokeWorkspaceCompatibility(request, reply, {
+      workspace_id: params.workspace_id, operation_id: "scope.create", value: body,
+    });
+    if (!receipt) return reply;
+    return reply.code(201).send({ ...(receipt.result as { scope: unknown }), receipt_id: receipt.receipt_id });
   });
-
   app.patch("/v1/workspaces/:workspace_id/scopes/:scope_id", async (request, reply) => {
     const params = z.object({
       workspace_id: z.string(),
@@ -588,13 +2255,13 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   });
 
   function resolveWorkspaceLocator(workspaceId: string, reply: any): string | null {
-    const ws = store.getWorkspace(workspaceId) as { locator?: string } | undefined;
-    if (!ws?.locator) {
+    const locator = store.getWorkspaceLocator(workspaceId);
+    if (!locator) {
       reply.code(404);
-      reply.send({ error: "workspace_not_found" });
+      reply.send({ error: "workspace_local_binding_not_found" });
       return null;
     }
-    return ws.locator;
+    return locator;
   }
 
   function mapScopeProjectionLayoutError(err: unknown, reply: any): { error: string; message: string } | null {
@@ -615,6 +2282,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   }
 
   app.get("/v1/workspaces/:workspace_id/scopes/:scope_id/projection/layout/:renderer", async (request, reply) => {
+    if (!requireLocalControl(request, reply)) return reply;
     const params = z.object({
       workspace_id: z.string(),
       scope_id: z.string(),
@@ -651,6 +2319,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   });
 
   app.put("/v1/workspaces/:workspace_id/scopes/:scope_id/projection/layout/:renderer", async (request, reply) => {
+    if (!requireLocalControl(request, reply)) return reply;
     const params = z.object({
       workspace_id: z.string(),
       scope_id: z.string(),
@@ -695,20 +2364,77 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       init_authorized: z.boolean().optional(),
       create_directory: z.boolean().optional()
     }).parse(request.body);
-    const resolved = resolve(input.locator);
-    if (!existsSync(resolved)) {
-      if (!input.create_directory) {
-        return reply.code(400).send({
-          error: "directory_not_found",
-          message: `Directory does not exist: ${resolved}`,
-          locator: resolved
-        });
-      }
-      mkdirSync(resolved, { recursive: true });
-    }
-    const workspace = store.registerWorkspace(input, broadcast);
-    return reply.code(201).send({ workspace });
+    return invokeHostWorkspaceCompatibility(
+      request,
+      reply,
+      REGISTER_WORKSPACE_OPERATION_ID,
+      null,
+      input,
+      201,
+    );
   });
+
+  const WorkspaceIdentitySnapshotSchema = z.object({
+    workspace_id: z.string().min(1),
+    name: z.string().min(1),
+    creation_kind: z.enum(["created", "legacy_retained", "copied", "forked"]),
+    source_workspace_id: z.string().min(1).nullable(),
+    created_at: z.string().min(1),
+    updated_at: z.string().min(1),
+  });
+
+  app.post("/v1/local/workspaces/:workspace_id/rebind", async (request, reply) => {
+    const params = z.object({ workspace_id: z.string().min(1) }).parse(request.params);
+    const input = z.object({
+      locator: z.string().min(1),
+      expected_binding_id: z.string().min(1),
+      init_authorized: z.boolean().optional(),
+    }).parse(request.body);
+    return invokeHostWorkspaceCompatibility(
+      request,
+      reply,
+      REBIND_WORKSPACE_OPERATION_ID,
+      { kind: "workspace", id: params.workspace_id },
+      input,
+      200,
+    );
+  });
+
+  app.post("/v1/local/workspaces/restore", async (request, reply) => {
+    const input = z.object({
+      snapshot: WorkspaceIdentitySnapshotSchema,
+      locator: z.string().min(1),
+      init_authorized: z.boolean().optional(),
+    }).parse(request.body);
+    return invokeHostWorkspaceCompatibility(
+      request,
+      reply,
+      RESTORE_WORKSPACE_OPERATION_ID,
+      null,
+      input,
+      201,
+    );
+  });
+
+  for (const kind of ["copied", "forked"] as const) {
+    const route = kind === "copied" ? "copy-identity" : "fork-identity";
+    app.post(`/v1/local/workspaces/:workspace_id/${route}`, async (request, reply) => {
+      const params = z.object({ workspace_id: z.string().min(1) }).parse(request.params);
+      const input = z.object({
+        name: z.string().min(1),
+        locator: z.string().min(1),
+        init_authorized: z.boolean().optional(),
+      }).parse(request.body);
+      return invokeHostWorkspaceCompatibility(
+        request,
+        reply,
+        kind === "copied" ? COPY_WORKSPACE_OPERATION_ID : FORK_WORKSPACE_OPERATION_ID,
+        { kind: "workspace", id: params.workspace_id },
+        input,
+        201,
+      );
+    });
+  }
 
   // ---------------------------------------------------------------------------
   // Workspace filesystem surface
@@ -753,12 +2479,14 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
 
   /** GET /v1/fs/browse?path=<abs> — directory browser for the register-workspace folder picker. */
   app.get("/v1/fs/browse", async (request, reply) => {
+    if (!requireLocalControl(request, reply)) return reply;
     if (!fsAccessEnabled()) return sendFsDisabled(reply);
     const query = z.object({ path: z.string().optional() }).parse(request.query);
     return browseDir(query.path);
   });
 
   app.get("/v1/workspaces/:workspace_id/fs/agents", async (request, reply) => {
+    if (!requireLocalControl(request, reply)) return reply;
     if (!fsAccessEnabled()) return sendFsDisabled(reply);
     const params = z.object({ workspace_id: z.string() }).parse(request.params);
     const locator = resolveWorkspaceLocator(params.workspace_id, reply);
@@ -767,6 +2495,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   });
 
   app.get("/v1/workspaces/:workspace_id/fs/file", async (request, reply) => {
+    if (!requireLocalControl(request, reply)) return reply;
     if (!fsAccessEnabled()) return sendFsDisabled(reply);
     const params = z.object({ workspace_id: z.string() }).parse(request.params);
     const query = z.object({ path: z.string().min(1) }).parse(request.query);
@@ -803,7 +2532,70 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     }
   });
 
+  /**
+   * Exact canonical ArtefactVersion content. The stored path never reaches the
+   * client through this transport, and mutable bytes are refused unless they
+   * still match the immutable version digest.
+   */
+  app.get("/v1/workspaces/:workspace_id/artefact-versions/:artefact_version_id/content", async (request, reply) => {
+    if (!fsAccessEnabled()) return sendFsDisabled(reply);
+    const params = z.object({
+      workspace_id: z.string().min(1),
+      artefact_version_id: z.string().min(1),
+    }).parse(request.params);
+    const transport = requireWorkspaceOperation(request, reply, params.workspace_id);
+    if (!transport && !testBypassedRequests.has(request)) return reply;
+    if (transport && !transport.verification.authority.grants.has(INSPECT_ARTEFACT_OPERATION_ID)) {
+      return reply.code(403).send({
+        error: "operation_grant_required",
+        message: "The current principal is not authorised to inspect Artefact content.",
+      });
+    }
+    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
+    if (locator === null) return reply;
+    try {
+      const content = resolveArtefactVersionContent({
+        store: store.artefactStore,
+        workspace_id: params.workspace_id,
+        workspace_locator: locator,
+        artefact_version_id: params.artefact_version_id,
+      });
+      reply.header("cache-control", "no-store");
+      reply.header("etag", `"sha256:${content.digest.value}"`);
+      reply.header("x-content-type-options", "nosniff");
+      reply.header("x-floe-artefact-version-id", content.artefact_version_id);
+      if (content.media_type === "text/html") {
+        // Reading HTML does not grant it execution in the authenticated origin.
+        reply.header("content-disposition", "attachment");
+        reply.header("content-security-policy", "default-src 'none'; sandbox; base-uri 'none'; form-action 'none'");
+      }
+      return reply.type(content.media_type).send(content.bytes);
+    } catch (error) {
+      if (error instanceof ArtefactContentNotFoundError) {
+        return reply.code(404).send({ error: error.code, message: error.message });
+      }
+      if (error instanceof ArtefactContentUnresolvedError) {
+        return reply.code(409).send({
+          error: error.code,
+          message: error.message,
+          resolver_id: error.resolver_id,
+        });
+      }
+      if (error instanceof ArtefactContentMismatchError) {
+        return reply.code(409).send({ error: error.code, message: error.message, reason: error.reason });
+      }
+      if (error instanceof ArtefactContentTooLargeError) {
+        return reply.code(413).send({ error: error.code, message: error.message });
+      }
+      return reply.code(500).send({
+        error: "artefact_content_resolution_failed",
+        message: "Floe could not resolve the exact ArtefactVersion content.",
+      });
+    }
+  });
+
   app.put("/v1/workspaces/:workspace_id/fs/file", async (request, reply) => {
+    if (!requireLocalControl(request, reply)) return reply;
     if (!fsAccessEnabled()) return sendFsDisabled(reply);
     const params = z.object({ workspace_id: z.string() }).parse(request.params);
     const body = z.object({
@@ -822,13 +2614,15 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     }
   });
 
-  app.post("/v1/workspaces/:workspace_id/select", async (request) => {
+  app.post("/v1/workspaces/:workspace_id/select", async (request, reply) => {
+    if (!requireLocalControl(request, reply)) return reply;
     const params = z.object({ workspace_id: z.string() }).parse(request.params);
     const workspace = store.selectWorkspace(params.workspace_id, broadcast);
     return { workspace };
   });
 
-  app.post("/v1/workspaces/:workspace_id/delete", async (request) => {
+  app.post("/v1/workspaces/:workspace_id/delete", async (request, reply) => {
+    if (!requireLocalControl(request, reply)) return reply;
     const params = z.object({ workspace_id: z.string() }).parse(request.params);
     const body = z.object({
       delete_locator: z.boolean().optional()
@@ -836,45 +2630,63 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return store.deleteWorkspace(params.workspace_id, { delete_locator: body.delete_locator ?? false }, broadcast);
   });
 
-  app.post("/v1/workspaces/:workspace_id/attachment-result", async (request) => {
+  app.post("/v1/workspaces/:workspace_id/attachment-result", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
     const params = z.object({ workspace_id: z.string() }).parse(request.params);
     const body = z.object({
-      bridge_id: z.string(),
+      bridge_id: z.string().optional(),
+      binding_id: z.string().min(1),
       status: z.string(),
       config_hash: z.string().nullable().optional(),
       error_code: z.string().nullable().optional(),
       validation: z.unknown().optional()
     }).parse(request.body);
-    return {
-      workspace: store.reportAttachment({
-        workspace_id: params.workspace_id,
-        bridge_id: body.bridge_id,
-        status: body.status,
-        config_hash: body.config_hash ?? null,
-        error_code: body.error_code ?? null,
-        validation: body.validation
-      }, broadcast)
-    };
+    if (body.bridge_id && body.bridge_id !== bridgeAuthority.bridge_id) {
+      return sendTransportForbidden(reply);
+    }
+    try {
+      return {
+        workspace: store.reportAttachment({
+          workspace_id: params.workspace_id,
+          binding_id: body.binding_id,
+          bridge_id: bridgeAuthority.bridge_id,
+          status: body.status,
+          config_hash: body.config_hash ?? null,
+          error_code: body.error_code ?? null,
+          validation: body.validation
+        }, broadcast)
+      };
+    } catch (error) {
+      return sendWorkspaceOperationError(error, reply);
+    }
   });
 
   app.get("/v1/workspaces/:workspace_id/config-status", async (request) => {
     const params = z.object({ workspace_id: z.string() }).parse(request.params);
-    return { workspace: store.getWorkspace(params.workspace_id) };
+    return { workspace: store.getRemoteWorkspace(params.workspace_id) };
   });
 
-  app.post("/v1/workspaces/:workspace_id/config-snapshot", async (request) => {
+  app.post("/v1/workspaces/:workspace_id/config-snapshot", async (request, reply) => {
+    if (!requireLocalControl(request, reply)) return reply;
     const params = z.object({ workspace_id: z.string() }).parse(request.params);
     return store.requestConfigSnapshot(params.workspace_id, broadcast);
   });
 
-  app.post("/v1/workspaces/:workspace_id/import-config", async (request) => {
+  app.post("/v1/workspaces/:workspace_id/import-config", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
     const params = z.object({ workspace_id: z.string() }).parse(request.params);
-    return {
-      workspace: store.importConfigSnapshot(params.workspace_id, request.body as Record<string, unknown>, broadcast)
-    };
+    const body = z.object({ binding_id: z.string().min(1) }).passthrough().parse(request.body);
+    try {
+      return store.importWorkspaceConfiguration(params.workspace_id, body.binding_id, body, broadcast);
+    } catch (error) {
+      return sendWorkspaceOperationError(error, reply);
+    }
   });
 
-  app.post("/v1/workspaces/:workspace_id/apply-config", async (request) => {
+  app.post("/v1/workspaces/:workspace_id/apply-config", async (request, reply) => {
+    if (!requireLocalControl(request, reply)) return reply;
     const params = z.object({ workspace_id: z.string() }).parse(request.params);
     const body = z.object({ config_id: z.string().nullable().optional() }).parse(request.body ?? {});
     return store.requestApplyConfig(params.workspace_id, body.config_id ?? null, broadcast);
@@ -892,6 +2704,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       workspace_id: body.workspace_id ?? null,
       endpoint_id: body.endpoint_id ?? null,
       auth_profile: body.auth_profile,
+      provider: body.provider,
       model: body.model ?? null,
       thinking_level: body.thinking_level ?? null
     }, broadcast);
@@ -961,34 +2774,151 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   });
 
   app.post("/v1/bridges/register", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
     const body = z.object({
-      bridge_id: z.string().min(1),
+      bridge_id: z.string().min(1).optional(),
       capabilities: z.record(z.unknown()).optional()
     }).parse(request.body);
-    return reply.code(201).send({ bridge: store.registerBridge(body, broadcast) });
+    if (body.bridge_id && body.bridge_id !== bridgeAuthority.bridge_id) {
+      return sendTransportForbidden(reply);
+    }
+    return reply.code(201).send({
+      bridge: store.registerBridge({
+        bridge_id: bridgeAuthority.bridge_id,
+        capabilities: body.capabilities,
+      }, broadcast),
+    });
   });
 
-  app.post("/v1/bridges/:bridge_id/liveness", async (request) => {
+  app.post("/v1/bridges/:bridge_id/liveness", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
     const params = z.object({ bridge_id: z.string() }).parse(request.params);
-    store.reportBridgeLiveness(params.bridge_id);
+    if (params.bridge_id !== bridgeAuthority.bridge_id) return sendTransportForbidden(reply);
+    store.reportBridgeLiveness(bridgeAuthority.bridge_id);
     return { ok: true };
   });
 
-  app.post("/v1/delivery/:delivery_id/status", async (request) => {
+  app.post("/v1/bridges/liveness", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
+    store.reportBridgeLiveness(bridgeAuthority.bridge_id);
+    return { ok: true };
+  });
+
+  app.post("/v1/delivery/:delivery_id/status", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
     const params = z.object({ delivery_id: z.string() }).parse(request.params);
     const body = z.object({
-      bridge_id: z.string(),
+      bridge_id: z.string().optional(),
       state: z.enum(["injected_to_runtime", "acknowledged", "failed", "dead_lettered", "deferred"]),
       error: z.string().nullable().optional()
     }).parse(request.body);
+    if (body.bridge_id && body.bridge_id !== bridgeAuthority.bridge_id) {
+      return sendTransportForbidden(reply);
+    }
+    if (
+      !testBypassedRequests.has(request)
+      && !bridgeOwnsDelivery(store, bridgeAuthority.bridge_id, params.delivery_id)
+    ) {
+      return sendTransportForbidden(reply);
+    }
     return {
       delivery: store.reportDeliveryStatus({
         delivery_id: params.delivery_id,
-        bridge_id: body.bridge_id,
+        bridge_id: bridgeAuthority.bridge_id,
         state: body.state,
         error: body.error ?? null
       }, broadcast)
     };
+  });
+
+  app.post("/v1/delivery/:delivery_id/runtime-prepare", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
+    const params = z.object({ delivery_id: z.string().min(1) }).parse(request.params);
+    if (
+      !testBypassedRequests.has(request)
+      && !bridgeOwnsDelivery(store, bridgeAuthority.bridge_id, params.delivery_id)
+    ) {
+      return sendTransportForbidden(reply);
+    }
+    try {
+      return store.prepareRuntimeDelivery({
+        delivery_id: params.delivery_id,
+        bridge_id: bridgeAuthority.bridge_id,
+      }, broadcast);
+    } catch (error) {
+      return reply.code(409).send({
+        error: "runtime_processing_contract_unavailable",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.get("/v1/delivery/:delivery_id/runtime-credentials/:secret_ref_id", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
+    const params = z.object({
+      delivery_id: z.string().min(1),
+      secret_ref_id: z.string().min(1),
+    }).parse(request.params);
+    try {
+      const payload = await store.withRuntimeCredential({
+        bridge_id: bridgeAuthority.bridge_id,
+        delivery_id: params.delivery_id,
+        secret_ref_id: params.secret_ref_id,
+        operation_id: "credential.use",
+        operation: (material) => Buffer.from(material),
+      });
+      const clear = () => payload.fill(0);
+      reply.raw.once("finish", clear);
+      reply.raw.once("close", clear);
+      return reply
+        .header("cache-control", "no-store")
+        .header("content-type", "application/octet-stream")
+        .send(payload);
+    } catch {
+      return reply.code(409).send({
+        error: "runtime_credential_unavailable",
+        message: "The pinned runtime credential is unavailable for this Delivery.",
+      });
+    }
+  });
+
+  app.put("/v1/delivery/:delivery_id/runtime-credentials/:secret_ref_id", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
+    const params = z.object({
+      delivery_id: z.string().min(1),
+      secret_ref_id: z.string().min(1),
+    }).parse(request.params);
+    if (!Buffer.isBuffer(request.body) || request.body.byteLength === 0) {
+      return reply.code(400).send({
+        error: "runtime_credential_refresh_invalid",
+        message: "The refreshed runtime credential is invalid.",
+      });
+    }
+    const material = request.body;
+    try {
+      await store.withRuntimeCredential({
+        bridge_id: bridgeAuthority.bridge_id,
+        delivery_id: params.delivery_id,
+        secret_ref_id: params.secret_ref_id,
+        operation_id: "credential.refresh",
+        refresh: () => Uint8Array.from(material),
+      });
+      return reply.code(204).send();
+    } catch {
+      return reply.code(409).send({
+        error: "runtime_credential_refresh_failed",
+        message: "The protected runtime credential could not be refreshed.",
+      });
+    } finally {
+      material.fill(0);
+    }
   });
 
   app.get("/v1/endpoints", async (request) => {
@@ -1010,6 +2940,8 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   });
 
   app.post("/v1/endpoints/register", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
     const body = z.object({
       endpoint_id: z.string().min(1),
       workspace_id: z.string().min(1),
@@ -1019,7 +2951,18 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       status: z.string().optional(),
       metadata: z.record(z.unknown()).optional(),
     }).parse(request.body);
-    return reply.code(201).send({ endpoint: store.registerEndpoint(body, broadcast) });
+    if (body.bridge_id && body.bridge_id !== bridgeAuthority.bridge_id) {
+      return sendTransportForbidden(reply);
+    }
+    if (
+      !testBypassedRequests.has(request)
+      && !bridgeMayUseWorkspace(store, bridgeAuthority, body.workspace_id)
+    ) {
+      return sendTransportForbidden(reply);
+    }
+    return reply.code(201).send({
+      endpoint: store.registerEndpoint({ ...body, bridge_id: bridgeAuthority.bridge_id }, broadcast),
+    });
   });
 
   app.delete("/v1/endpoints/:endpoint_id", async (request, reply) => {
@@ -1050,9 +2993,17 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     }
   });
 
-  app.post("/v1/endpoints/:endpoint_id/status", async (request) => {
+  app.post("/v1/endpoints/:endpoint_id/status", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
     const params = z.object({ endpoint_id: z.string() }).parse(request.params);
     const body = z.object({ status: z.string().min(1) }).parse(request.body);
+    if (
+      !testBypassedRequests.has(request)
+      && !bridgeOwnsEndpoint(store, bridgeAuthority.bridge_id, params.endpoint_id)
+    ) {
+      return sendTransportForbidden(reply);
+    }
     return { endpoint: store.updateEndpointStatus(params.endpoint_id, body.status, broadcast) };
   });
 
@@ -1069,6 +3020,18 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       });
     }
     const command = parsed.data as EventCommand;
+    const transportAuthority = requestAuthorities.get(request);
+    if (
+      transportAuthority?.audience === "bridge_service"
+      && !bridgeOwnsWorkspaceEndpoint(
+        store,
+        transportAuthority.bridge_id,
+        command.workspace_id,
+        command.source_endpoint_id,
+      )
+    ) {
+      return sendTransportForbidden(reply);
+    }
     try {
       const result = store.submitEvent(command, broadcast);
       return reply.code(202).send({
@@ -1205,12 +3168,17 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     scope_id: string | null;
     parent_context_id: string | null;
     created_by_endpoint_id: string | null;
+    created_by_principal_id?: string | null;
     created_at: string;
     last_event_at: string | null;
     activity_at: string;
     participants: string[];
     title?: string | null;
-  }) {
+    updated_at?: string;
+    state_revision?: number;
+    lifecycle_state?: string;
+    content_state?: string;
+  }, deliverySummary?: { active_count: number; latest_state: string | null }) {
     const latestMessageRow = store.db.prepare(
       "SELECT event_id FROM events WHERE context_id = ? AND type = 'message' ORDER BY created_at DESC LIMIT 1"
     ).get(r.context_id) as { event_id: string } | undefined;
@@ -1220,15 +3188,26 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       scope_id: r.scope_id,
       parent_context_id: r.parent_context_id,
       created_by_endpoint_id: r.created_by_endpoint_id,
+      created_by_principal_id: r.created_by_principal_id ?? null,
       created_at: r.created_at,
       last_event_at: r.last_event_at,
       activity_at: r.activity_at,
       participants: r.participants,
       title: (r.title as string | null | undefined) ?? null,
+      updated_at: r.updated_at ?? r.created_at,
+      state_revision: r.state_revision ?? 1,
+      lifecycle_state: r.lifecycle_state ?? "active",
+      content_state: r.content_state ?? "available",
       first_message_preview: store.contextStore.getFirstMessagePreview(r.context_id),
       latest_message_preview: store.contextStore.getLatestMessagePreview(r.context_id),
       latest_message: latestMessageRow ? store.getEvent(latestMessageRow.event_id) : null,
+      delivery_summary: deliverySummary ?? { active_count: 0, latest_state: null },
     };
+  }
+
+  function serializeContextListRows(rows: Array<Parameters<typeof serializeContextListRow>[0]>) {
+    const summaries = store.getContextDeliverySummaries(rows.map(row => row.context_id));
+    return rows.map(row => serializeContextListRow(row, summaries.get(row.context_id)));
   }
 
   app.get("/v1/workspaces/:workspace_id/contexts", async (request, reply) => {
@@ -1245,7 +3224,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     // Scope-filtered query uses the indexed listContextsForScope path
     if (query.scope_id) {
       const rows = store.contextStore.listContextsForScope(params.workspace_id, query.scope_id);
-      return { contexts: rows.map(serializeContextListRow) };
+      return { contexts: serializeContextListRows(rows) };
     }
     let before: { activity_at: string; context_id: string } | undefined;
     try {
@@ -1261,7 +3240,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     const hasMore = rows.length > query.limit;
     const page = rows.slice(0, query.limit);
     return {
-      contexts: page.map(serializeContextListRow),
+      contexts: serializeContextListRows(page),
       next_cursor: hasMore && page.length > 0 ? encodeContextCursor(page.at(-1)!) : null,
     };
   });
@@ -1289,7 +3268,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     const hasMore = rows.length > query.limit;
     const page = rows.slice(0, query.limit);
     return {
-      contexts: page.map(serializeContextListRow),
+      contexts: serializeContextListRows(page),
       next_cursor: hasMore && page.length > 0 ? encodeContextCursor(page.at(-1)!) : null,
     };
   });
@@ -1301,13 +3280,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       return reply.code(404).send({ error: "context_not_found", context_id: params.id });
     }
     return {
-      context_id: ctx.context_id,
-      workspace_id: ctx.workspace_id,
-      scope_id: ctx.scope_id,
-      parent_context_id: ctx.parent_context_id,
-      created_by_endpoint_id: ctx.created_by_endpoint_id,
-      created_at: ctx.created_at,
-      title: ctx.title,
+      ...ctx,
       participants: store.contextStore.getContextParticipants(ctx.context_id),
       first_message_preview: store.contextStore.getFirstMessagePreview(ctx.context_id)
     };
@@ -1324,7 +3297,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     }
     const rows = store.contextStore.listContextTree(params.id, query.limit + 1);
     return {
-      contexts: rows.slice(0, query.limit).map(serializeContextListRow),
+      contexts: serializeContextListRows(rows.slice(0, query.limit)),
       truncated: rows.length > query.limit,
     };
   });
@@ -1363,38 +3336,20 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     if (!store.getWorkspace(params.workspace_id)) {
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
     }
-    // Guard: self-reference on parent_context_id (when context_id is explicitly provided)
-    if (body.parent_context_id && body.context_id && body.parent_context_id === body.context_id) {
-      return reply.code(400).send({ ok: false, error: "invalid_request", issues: [{ message: "parent_context_id must not equal the context's own id" }] });
-    }
-    // Guard: parent context must exist
-    if (body.parent_context_id) {
-      const parentCtx = store.contextStore.getContext(body.parent_context_id);
-      if (!parentCtx) {
-        return reply.code(404).send({ ok: false, error: "parent_context_not_found", context_id: body.parent_context_id });
-      }
-      // Guard: cycle detection — walk the parent chain from the proposed parent;
-      // if it already contains body.context_id (explicit) we know it would cycle.
-      // For auto-generated IDs we cannot check pre-insert, so we skip (UUID collision is astronomically unlikely).
-      if (body.context_id && store.contextStore.wouldCreateCycle(body.parent_context_id, body.context_id)) {
-        return reply.code(400).send({ ok: false, error: "invalid_request", issues: [{ message: "parent_context_id would create a cycle" }] });
-      }
-    }
-    const contextId = store.contextStore.createContext({
+    const receipt = await invokeWorkspaceCompatibility(request, reply, {
       workspace_id: params.workspace_id,
-      scope_id: body.scope_id ?? null,
-      participants: body.participants,
-      created_by_endpoint_id: body.created_by_endpoint_id ?? null,
-      context_id: body.context_id,
-      title: body.title ?? null,
-      parent_context_id: body.parent_context_id ?? null,
+      operation_id: CREATE_CONTEXT_OPERATION_ID,
+      value: {
+        participants: body.participants.map((participant_id) => ({ participant_id })),
+        scope_id: body.scope_id ?? null,
+        ...(body.context_id ? { context_id: body.context_id } : {}),
+        title: body.title ?? null,
+        parent_context_id: body.parent_context_id ?? null,
+      },
     });
-    // Post-insert self-reference guard (when context_id was auto-generated)
-    if (body.parent_context_id && body.parent_context_id === contextId) {
-      store.contextStore.db.prepare("DELETE FROM contexts WHERE context_id = ?").run(contextId);
-      return reply.code(400).send({ ok: false, error: "invalid_request", issues: [{ message: "parent_context_id must not equal the context's own id" }] });
-    }
-    const ctx = store.contextStore.getContext(contextId)!;
+    if (!receipt) return reply;
+    const ctx = (receipt.result as { context: import("./contexts/store.js").CanonicalContextRecord }).context;
+    const contextId = ctx.context_id;
     const participants = store.contextStore.getContextParticipants(contextId);
     const serialized = serializeContextListRow({
       ...ctx,
@@ -1402,8 +3357,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       activity_at: ctx.created_at,
       participants,
     });
-    broadcast("context_created", { context: serialized });
-    return reply.code(201).send({ context: serialized });
+    return reply.code(201).send({ context: serialized, receipt_id: receipt.receipt_id });
   });
 
   app.post("/v1/workspaces/:workspace_id/contexts/:context_id/assign-scope", async (request, reply) => {
@@ -1459,11 +3413,28 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
 
   app.delete("/v1/contexts/:id", async (request, reply) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    const result = store.deleteContext(params.id, broadcast);
-    if (!result) {
+    const context = store.contextStore.getContext(params.id);
+    if (!context) {
       return reply.code(404).send({ error: "context_not_found", context_id: params.id });
     }
-    return result;
+    const receipt = await invokeWorkspaceCompatibility(request, reply, {
+      workspace_id: context.workspace_id,
+      operation_id: ARCHIVE_CONTEXT_OPERATION_ID,
+      target: { kind: "context", id: params.id },
+      expected_revision: String(context.state_revision),
+      value: { reason: "Removed from active conversation navigation" },
+    });
+    if (!receipt) return reply;
+    return {
+      ok: true,
+      context_id: params.id,
+      workspace_id: context.workspace_id,
+      archived: true,
+      events_deleted: 0,
+      delivery_bundles_deleted: 0,
+      pulse_subscribers_deleted: 0,
+      receipt_id: receipt.receipt_id,
+    };
   });
 
   // Slice 1 Track A — dynamic participants
@@ -1474,9 +3445,16 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     if (!ctx) {
       return reply.code(404).send({ error: "context_not_found", context_id: params.id });
     }
-    const added = store.contextStore.addParticipant(params.id, body.endpoint_id);
-    broadcast("participant_added", { workspace_id: ctx.workspace_id, context_id: params.id, endpoint_id: body.endpoint_id });
-    return { ok: true, context_id: params.id, endpoint_id: body.endpoint_id, added };
+    const receipt = await invokeWorkspaceCompatibility(request, reply, {
+      workspace_id: ctx.workspace_id,
+      operation_id: SET_CONTEXT_PARTICIPANT_ACCESS_OPERATION_ID,
+      target: { kind: "context", id: params.id },
+      expected_revision: String(ctx.state_revision),
+      value: { participant_id: body.endpoint_id, role: "participant", access: "contribute" },
+    });
+    if (!receipt) return reply;
+    const result = receipt.result as { changed: boolean };
+    return { ok: true, context_id: params.id, endpoint_id: body.endpoint_id, added: result.changed, receipt_id: receipt.receipt_id };
   });
 
   app.delete("/v1/contexts/:id/participants/:endpoint_id", async (request, reply) => {
@@ -1485,9 +3463,16 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     if (!ctx) {
       return reply.code(404).send({ error: "context_not_found", context_id: params.id });
     }
-    const removed = store.contextStore.removeParticipant(params.id, params.endpoint_id);
-    broadcast("participant_removed", { workspace_id: ctx.workspace_id, context_id: params.id, endpoint_id: params.endpoint_id });
-    return { ok: true, context_id: params.id, endpoint_id: params.endpoint_id, removed };
+    const receipt = await invokeWorkspaceCompatibility(request, reply, {
+      workspace_id: ctx.workspace_id,
+      operation_id: REMOVE_CONTEXT_PARTICIPANT_OPERATION_ID,
+      target: { kind: "context", id: params.id },
+      expected_revision: String(ctx.state_revision),
+      value: { participant_id: params.endpoint_id },
+    });
+    if (!receipt) return reply;
+    const result = receipt.result as { removed: boolean };
+    return { ok: true, context_id: params.id, endpoint_id: params.endpoint_id, removed: result.removed, receipt_id: receipt.receipt_id };
   });
 
   // Slice 1 Track B — context linking (children query)
@@ -1497,7 +3482,7 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       return reply.code(404).send({ error: "context_not_found", context_id: params.id });
     }
     const rows = store.contextStore.listContextsForParent(params.id);
-    return { contexts: rows.map(serializeContextListRow) };
+    return { contexts: serializeContextListRows(rows) };
   });
 
   // Slice 2 — per-actor, per-context, per-event-type subscriptions
@@ -1593,22 +3578,32 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   });
 
   // ---------------------------------------------------------------------------
-  app.get("/v1/delivery/claim", async (request) => {
+  app.get("/v1/delivery/claim", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
     const query = z.object({
-      bridge_id: z.string(),
+      bridge_id: z.string().optional(),
       limit: z.coerce.number().int().positive().max(100).optional()
     }).parse(request.query);
-    return { deliveries: store.claimDeliveries(query.bridge_id, query.limit ?? 10, broadcast) };
+    if (query.bridge_id && query.bridge_id !== bridgeAuthority.bridge_id) {
+      return sendTransportForbidden(reply);
+    }
+    return {
+      deliveries: store.claimDeliveries(bridgeAuthority.bridge_id, query.limit ?? 10, broadcast),
+    };
   });
 
   app.get("/v1/delivery", async (request) => {
     const query = z.object({
       workspace_id: z.string().optional(),
+      context_id: z.string().optional(),
       limit: z.coerce.number().int().positive().max(500).optional()
     }).parse(request.query);
     return { deliveries: store.listDeliveries(query) };
   });
   app.post("/v1/runtime/telemetry", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
     const body = z.object({
       workspace_id: z.string().min(1),
       endpoint_id: z.string().min(1),
@@ -1616,6 +3611,24 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       kind: z.string().min(1),
       payload: z.record(z.unknown())
     }).parse(request.body);
+    if (
+      !testBypassedRequests.has(request)
+      && !bridgeOwnsWorkspaceEndpoint(
+        store,
+        bridgeAuthority.bridge_id,
+        body.workspace_id,
+        body.endpoint_id,
+      )
+    ) {
+      return sendTransportForbidden(reply);
+    }
+    if (
+      !testBypassedRequests.has(request)
+      && body.delivery_id
+      && !bridgeOwnsDelivery(store, bridgeAuthority.bridge_id, body.delivery_id)
+    ) {
+      return sendTransportForbidden(reply);
+    }
     const telemetry = store.appendRuntimeTelemetry({
       workspace_id: body.workspace_id,
       endpoint_id: body.endpoint_id,
@@ -1627,12 +3640,20 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   });
 
   app.post("/v1/runtime/turn-result", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
     const body = z.object({
       delivery_id: z.string().min(1),
       outcome: z.enum(["completed", "failed"]),
       text: z.string().min(1),
       metadata: z.record(z.unknown()).optional()
     }).parse(request.body);
+    if (
+      !testBypassedRequests.has(request)
+      && !bridgeOwnsDelivery(store, bridgeAuthority.bridge_id, body.delivery_id)
+    ) {
+      return sendTransportForbidden(reply);
+    }
     const result = store.recordRuntimeTurnResult({
       delivery_id: body.delivery_id,
       outcome: body.outcome,
@@ -1660,8 +3681,16 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return trace;
   });
 
-  app.post("/v1/endpoints/:endpoint_id/turn-end", async (request) => {
+  app.post("/v1/endpoints/:endpoint_id/turn-end", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
     const params = z.object({ endpoint_id: z.string().min(1) }).parse(request.params);
+    if (
+      !testBypassedRequests.has(request)
+      && !bridgeOwnsEndpoint(store, bridgeAuthority.bridge_id, params.endpoint_id)
+    ) {
+      return sendTransportForbidden(reply);
+    }
     return { endpoint: store.reportTurnEnd(params.endpoint_id, broadcast) };
   });
 
@@ -1699,121 +3728,6 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
       }
       throw err;
     }
-  });
-
-  // ---------------------------------------------------------------------------
-  // Extension registry (Track S — runtime state, not persisted to SQLite)
-  // The bridge reports loaded extension metadata here after each workspace attach.
-  // `GET /v1/extensions` lets the app discover registered views.
-  // `GET|POST /v1/extensions/:name/*` relays to the extension's registered handler.
-  // ---------------------------------------------------------------------------
-
-  /** in-memory registry: extension name → metadata */
-  const extensionRegistry = new Map<string, {
-    name: string;
-    workspace_id: string;
-    views: Array<{ slot: string; label: string; component: string }>;
-    errors: string[];
-    relay_url: string | null;
-    reported_at: string;
-  }>();
-
-  app.post("/v1/extensions/report", async (request, reply) => {
-    const body = z.object({
-      workspace_id: z.string().min(1),
-      extensions: z.array(z.object({
-        name: z.string().min(1),
-        views: z.array(z.object({
-          slot: z.string(),
-          label: z.string(),
-          component: z.string()
-        })).optional().default([]),
-        errors: z.array(z.string()).optional().default([]),
-        relay_url: z.string().url().nullable().optional()
-      }))
-    }).parse(request.body);
-    for (const ext of body.extensions) {
-      extensionRegistry.set(`${body.workspace_id}:${ext.name}`, {
-        name: ext.name,
-        workspace_id: body.workspace_id,
-        views: ext.views,
-        errors: ext.errors,
-        relay_url: ext.relay_url ?? null,
-        reported_at: new Date().toISOString()
-      });
-    }
-    // Notify connected app clients so they re-fetch without polling or page refresh
-    broadcast("extensions_updated", { workspace_id: body.workspace_id });
-    return reply.code(201).send({ ok: true, registered: body.extensions.length });
-  });
-
-  app.get("/v1/extensions", async (request) => {
-    const query = z.object({
-      workspace_id: z.string().optional()
-    }).parse(request.query);
-    const all = Array.from(extensionRegistry.values());
-    const filtered = query.workspace_id
-      ? all.filter(e => e.workspace_id === query.workspace_id)
-      : all;
-    return { extensions: filtered };
-  });
-
-  /** Generic relay: proxies GET/POST /v1/extensions/:name/* to the extension's relay_url */
-  async function handleExtensionRelay(
-    request: any,
-    reply: any,
-    method: "GET" | "POST"
-  ): Promise<unknown> {
-    const params = z.object({ name: z.string().min(1), "*": z.string().optional() }).parse(request.params);
-    const workspaceId = (request.query as any)?.workspace_id as string | undefined;
-
-    // Find the extension entry (prefer workspace-scoped match)
-    let entry = workspaceId
-      ? extensionRegistry.get(`${workspaceId}:${params.name}`)
-      : undefined;
-    if (!entry) {
-      // fallback: any entry with this name
-      for (const [, v] of extensionRegistry) {
-        if (v.name === params.name) { entry = v; break; }
-      }
-    }
-    if (!entry) {
-      return reply.code(404).send({ error: "extension_not_found", name: params.name });
-    }
-    if (!entry.relay_url) {
-      return reply.code(503).send({
-        error: "extension_relay_not_available",
-        name: params.name,
-        message: "Extension has not registered an HTTP relay URL. The bridge must start an extension HTTP relay server and report relay_url via POST /v1/extensions/report."
-      });
-    }
-    // Forward the request
-    const subPath = params["*"] ? `/${params["*"]}` : "/";
-    const qs = new URLSearchParams(request.query as Record<string, string>);
-    qs.delete("workspace_id"); // already handled by registry lookup
-    const targetUrl = `${entry.relay_url}${subPath}${qs.toString() ? `?${qs}` : ""}`;
-    try {
-      const fetchOpts: RequestInit = { method };
-      if (method === "POST" && request.body) {
-        fetchOpts.headers = { "content-type": "application/json" };
-        fetchOpts.body = JSON.stringify(request.body);
-      }
-      const upstream = await fetch(targetUrl, fetchOpts);
-      const upstreamBody = await upstream.text();
-      reply.code(upstream.status);
-      reply.header("content-type", upstream.headers.get("content-type") ?? "application/json");
-      return reply.send(upstreamBody);
-    } catch (err) {
-      return reply.code(502).send({ error: "extension_relay_error", message: err instanceof Error ? err.message : String(err) });
-    }
-  }
-
-  app.get("/v1/extensions/:name/*", async (request, reply) => {
-    return handleExtensionRelay(request, reply, "GET");
-  });
-
-  app.post("/v1/extensions/:name/*", async (request, reply) => {
-    return handleExtensionRelay(request, reply, "POST");
   });
 
   // ---------------------------------------------------------------------------
@@ -1865,6 +3779,14 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
         subscribers: body.subscribers as PulseSubscriber[]
       }, broadcast);
     } catch (err) {
+      if (err instanceof WorkspacePortabilityError && err.code === "workspace_restore_held") {
+        return reply.code(409).send({
+          ok: false,
+          error: err.code,
+          reason: err.message,
+          ...err.details,
+        });
+      }
       if (err instanceof ScopeNotFoundError) {
         return reply.code(404).send({
           ok: false,
@@ -1923,9 +3845,22 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
     return { pulse: store.updatePulseStatus(params.pulse_id, "paused", broadcast) };
   });
 
-  app.post("/v1/pulses/:pulse_id/resume", async (request) => {
+  app.post("/v1/pulses/:pulse_id/resume", async (request, reply) => {
     const params = z.object({ pulse_id: z.string() }).parse(request.params);
-    const pulse = store.updatePulseStatus(params.pulse_id, "active", broadcast) as any;
+    let pulse: any;
+    try {
+      pulse = store.updatePulseStatus(params.pulse_id, "active", broadcast) as any;
+    } catch (err) {
+      if (err instanceof WorkspacePortabilityError && err.code === "workspace_restore_held") {
+        return reply.code(409).send({
+          ok: false,
+          error: err.code,
+          reason: err.message,
+          ...err.details,
+        });
+      }
+      throw err;
+    }
     if (pulse) {
       const trigger = pulse.trigger as { type: string; schedule?: string; timezone?: string; at?: string };
       if (trigger.type === "cron") {
@@ -2014,6 +3949,30 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   return {
     app,
     store,
+    localControlToken,
+    issueBridgeServiceCredential: (bridgeId, expiresAt = oneDayFromNow()) =>
+      store.transportCredentialStore.issueBridgeServiceCredential({
+        bridge_id: bridgeId,
+        host_id: store.localHostId,
+        expires_at: expiresAt,
+      }),
+    replaceBridgeServiceCredential: (bridgeId, expiresAt = oneDayFromNow()) =>
+      store.transportCredentialStore.replaceBridgeServiceCredential({
+        bridge_id: bridgeId,
+        host_id: store.localHostId,
+        expires_at: expiresAt,
+      }),
+    rotateBridgeServiceCredential: (
+      credentialId,
+      bridgeId,
+      expiresAt = oneDayFromNow(),
+    ) => store.transportCredentialStore.rotateBridgeServiceCredential({
+      transport_credential_id: credentialId,
+      bridge_id: bridgeId,
+      expires_at: expiresAt,
+    }),
+    revokeBridgeServiceCredential: (credentialId, bridgeId) =>
+      store.transportCredentialStore.revokeBridgeServiceCredential(credentialId, bridgeId),
     broadcast,
     listen: async () => {
       const { host, port } = parseListen(config.bus.listen);
@@ -2022,9 +3981,400 @@ export async function createBusServer(configPath: string, config: LocalConfig): 
   };
 }
 
+type TransportRequirement =
+  | Readonly<{ kind: "public" | "websocket" | "credential_ingress" | "attachment_ingress" | "host_control" | "bridge_or_host" }>
+  | Readonly<{ kind: "bridge_service"; workspace_id: string | null }>
+  | Readonly<{ kind: "workspace_operation" | "bridge_or_workspace"; workspace_id: string }>
+  | Readonly<{ kind: "bridge_workspace_or_host"; workspace_id: string }>
+  | Readonly<{ kind: "workspace_conflict"; workspace_ids: readonly string[] }>;
+
+function resolveTransportRequirement(request: any, store: BusStore): TransportRequirement {
+  const route = String(request.routeOptions?.url ?? request.url?.split("?", 1)[0] ?? "");
+  const method = String(request.method ?? "GET").toUpperCase();
+  if (route === "/health") return { kind: "public" };
+  if (route === HTML_PREVIEW_HOST_PATH) return { kind: "public" };
+  // Each browser adapter route checks its origin-bound cookie itself. It never
+  // accepts caller-authored principal, grant, Workspace, or host authority.
+  if (route === "/v1/browser/connections" || route === "/v1/browser/connections/claim" || route === "/v1/browser/session" || route === "/v1/browser/session/local" || route === "/v1/browser/session/models") return { kind: "public" };
+  if (["/v1/browser/providers", "/v1/browser/providers/:provider/connect", "/v1/browser/providers/:provider/runtime-access", "/v1/browser/provider-connections/:id/answer"].includes(route)) return { kind: "public" };
+  if (["/v1/browser/host/operations", "/v1/browser/host/operations/invoke", "/v1/browser/host/operation-receipts/:receipt_id"].includes(route)) return { kind: "public" };
+  if (route === "/v1/events/stream") return { kind: "websocket" };
+  // This transfer route authenticates its one-time, purpose-bound ingress
+  // credential inside the handler. It must not be interpreted as a reusable
+  // Bus transport credential by the generic pre-handler.
+  if (route === "/v1/credential-ingress-sessions/:ingress_session_id/material") {
+    return { kind: "credential_ingress" };
+  }
+  if (route === "/v1/attachment-ingress-sessions/:ingress_session_id/content") {
+    return { kind: "attachment_ingress" };
+  }
+  const workspace = resolveRequestWorkspace(request, store);
+  if (workspace.conflicted) {
+    return { kind: "workspace_conflict", workspace_ids: workspace.workspace_ids };
+  }
+
+  if (
+    route.startsWith("/v1/bridge/")
+    || route === "/v1/bridges/register"
+    || route === "/v1/bridges/liveness"
+    || route === "/v1/bridges/:bridge_id/liveness"
+    || route === "/v1/delivery/claim"
+    || route === "/v1/delivery/:delivery_id/status"
+    || route === "/v1/delivery/:delivery_id/runtime-prepare"
+    || route === "/v1/delivery/:delivery_id/runtime-credentials/:secret_ref_id"
+    || (route === "/v1/runtime/telemetry" && method === "POST")
+    || route === "/v1/runtime/turn-result"
+    || (route === "/v1/endpoints/register" && method === "POST")
+    || (route === "/v1/endpoints/:endpoint_id/status" && method === "POST")
+    || route === "/v1/endpoints/:endpoint_id/turn-end"
+    || route === "/v1/workspaces/:workspace_id/attachment-result"
+    || route === "/v1/workspaces/:workspace_id/import-config"
+  ) {
+    return { kind: "bridge_service", workspace_id: workspace.workspace_id };
+  }
+
+  if (
+    route.startsWith("/v1/local/")
+    || route === "/v1/local-config/status"
+    || route === "/v1/workspaces"
+    || route === "/v1/workspaces/register"
+    || route === "/v1/workspaces/:workspace_id/select"
+    || route === "/v1/workspaces/:workspace_id/delete"
+    || route === "/v1/workspaces/:workspace_id/config-snapshot"
+    || route === "/v1/workspaces/:workspace_id/apply-config"
+    || route.startsWith("/v1/auth/")
+    || route === "/v1/runtime/status"
+    || route === "/v1/fs/capability"
+    || route === "/v1/fs/browse"
+    || route === "/v1/workspaces/:workspace_id/fs/agents"
+    || route === "/v1/workspaces/:workspace_id/fs/file"
+    || route.startsWith("/v1/webhooks/")
+    || (route === "/v1/configs" && method !== "GET")
+  ) {
+    return { kind: "host_control" };
+  }
+
+  if (route === "/v1/configs" && method === "GET") {
+    return { kind: "bridge_or_host" };
+  }
+
+  const workspaceId = workspace.workspace_id;
+  if (!workspaceId) return { kind: "host_control" };
+
+  // A runtime binding scoped to "agent" or "workspace_default" always names a
+  // Workspace and is Workspace data, not host-only data; only the unscoped
+  // "global_default" mutation (no workspace_id resolvable above) still
+  // requires host control, via the `!workspaceId` branch above.
+  if (
+    route === "/v1/runtime/bindings/resolve"
+    || route === "/v1/runtime/bindings"
+    || route === "/v1/runtime/bindings/clear"
+  ) {
+    return { kind: "bridge_workspace_or_host", workspace_id: workspaceId };
+  }
+
+  if (
+    route.startsWith("/v1/contexts")
+    || route === "/v1/events"
+    || route === "/v1/events/emit"
+    || route === "/v1/events/:event_id/trace"
+    || route.startsWith("/v1/pulses")
+    || route === "/v1/pending-responses"
+    || route === "/v1/workspaces/:workspace_id/endpoints"
+    || route === "/v1/workspaces/:workspace_id/resolve-endpoint"
+    || (route.includes("/graphs") && method === "GET")
+    || route === "/v1/workspaces/:workspace_id/config-status"
+  ) {
+    return { kind: "bridge_or_workspace", workspace_id: workspaceId };
+  }
+  return { kind: "workspace_operation", workspace_id: workspaceId };
+}
+
+function authenticateBridgeOrWorkspace(
+  authenticator: BusTransportAuthenticator,
+  bearer: string,
+  workspaceId: string,
+) {
+  const bridge = authenticator.authenticateBridgeService(bearer);
+  return bridge.verified
+    ? bridge
+    : authenticator.authenticateWorkspaceOperation(bearer, workspaceId);
+}
+
+function authenticateBridgeOrHost(
+  authenticator: BusTransportAuthenticator,
+  bearer: string,
+) {
+  const bridge = authenticator.authenticateBridgeService(bearer);
+  return bridge.verified ? bridge : authenticator.authenticateHostControl(bearer);
+}
+
+function authenticateBridgeWorkspaceOrHost(
+  authenticator: BusTransportAuthenticator,
+  bearer: string,
+  workspaceId: string,
+) {
+  const bridge = authenticator.authenticateBridgeService(bearer);
+  if (bridge.verified) return bridge;
+  const workspace = authenticator.authenticateWorkspaceOperation(bearer, workspaceId);
+  return workspace.verified ? workspace : authenticator.authenticateHostControl(bearer);
+}
+
+function authenticateConflictedWorkspaceRequest(
+  authenticator: BusTransportAuthenticator,
+  bearer: string,
+  workspaceIds: readonly string[],
+) {
+  const process = authenticateBridgeOrHost(authenticator, bearer);
+  if (process.verified) return process;
+  for (const workspaceId of workspaceIds) {
+    const workspace = authenticator.authenticateWorkspaceOperation(bearer, workspaceId);
+    if (workspace.verified) return workspace;
+  }
+  return process;
+}
+
+function authenticatePrivilegedSocket(
+  authenticator: BusTransportAuthenticator,
+  bearer: string,
+) {
+  return authenticateBridgeOrHost(authenticator, bearer);
+}
+
+function sendTransportDenied(reply: any) {
+  return reply.code(401).send({
+    error: "transport_auth_required",
+    message: "The transport credential was not accepted.",
+  });
+}
+
+function sendTransportForbidden(reply: any) {
+  return reply.code(403).send({
+    error: "transport_authority_forbidden",
+    message: "The authenticated connection cannot act on that resource.",
+  });
+}
+
+type RequestWorkspaceResolution =
+  | Readonly<{ conflicted: false; workspace_id: string | null; workspace_ids: readonly string[] }>
+  | Readonly<{ conflicted: true; workspace_id: null; workspace_ids: readonly string[] }>;
+
+/**
+ * Resolves every explicit and canonical Workspace fact carried by a request.
+ * A caller-supplied Workspace is evidence, never precedence: if a referenced
+ * Context, Endpoint, Event, Delivery, or Pulse belongs elsewhere, the request
+ * is refused before its handler can observe or mutate anything.
+ */
+function resolveRequestWorkspace(request: any, store: BusStore): RequestWorkspaceResolution {
+  const params = asRecord(request.params);
+  const query = asRecord(request.query);
+  const body = asRecord(request.body);
+  const route = String(request.routeOptions?.url ?? request.url?.split("?", 1)[0] ?? "");
+  const workspaceIds = new Set<string>();
+  const addWorkspace = (candidate: unknown) => {
+    if (typeof candidate === "string" && candidate) workspaceIds.add(candidate);
+  };
+  for (const candidate of [params.workspace_id, query.workspace_id, body.workspace_id]) {
+    addWorkspace(candidate);
+  }
+
+  const addContext = (candidate: unknown) => {
+    if (typeof candidate !== "string" || !candidate) return;
+    addWorkspace(store.contextStore.getContext(candidate)?.workspace_id);
+  };
+  if (route.startsWith("/v1/contexts") && typeof params.id === "string") addContext(params.id);
+  for (const candidate of [
+    query.context_id,
+    body.context_id,
+    body.current_delivery_context_id,
+    asRecord(body.destination).context_id,
+    asRecord(body.subscriber).context_id,
+  ]) addContext(candidate);
+
+  const addEndpoint = (candidate: unknown) => {
+    if (typeof candidate !== "string" || !candidate) return;
+    const endpoint = store.getEndpoint(candidate) as { workspace_id?: string } | null;
+    addWorkspace(endpoint?.workspace_id);
+  };
+  for (const candidate of [
+    params.endpoint_id,
+    query.endpoint_id,
+    query.participant,
+    body.endpoint_id,
+    body.source_endpoint_id,
+    asRecord(body.destination).endpoint_id,
+    asRecord(body.subscriber).endpoint_id,
+  ]) addEndpoint(candidate);
+  for (const entry of Array.isArray(body.entries) ? body.entries : []) {
+    addEndpoint(asRecord(entry).endpoint_id);
+  }
+  for (const candidate of Array.isArray(body.participants) ? body.participants : []) addEndpoint(candidate);
+  for (const candidate of Array.isArray(body.participants_only) ? body.participants_only : []) addEndpoint(candidate);
+
+  const queryWorkspace = (sql: string, candidate: unknown) => {
+    if (typeof candidate !== "string" || !candidate) return;
+    const row = store.db.prepare(sql).get(candidate) as { workspace_id?: string } | undefined;
+    addWorkspace(row?.workspace_id);
+  };
+  for (const candidate of [params.event_id, body.event_id, body.cause_event_id]) {
+    queryWorkspace("SELECT workspace_id FROM events WHERE event_id = ?", candidate);
+  }
+  for (const candidate of [params.delivery_id, body.delivery_id]) {
+    queryWorkspace(`
+      SELECT e.workspace_id
+      FROM delivery_bundles d
+      JOIN endpoints e ON e.endpoint_id = d.endpoint_id
+      WHERE d.delivery_id = ?
+    `, candidate);
+  }
+  for (const candidate of [params.pulse_id, body.pulse_id]) {
+    if (typeof candidate !== "string" || !candidate) continue;
+    const pulse = store.getPulse(candidate) as { workspace_id?: string } | null;
+    addWorkspace(pulse?.workspace_id);
+  }
+
+  const resolved = [...workspaceIds].sort((left, right) => left.localeCompare(right));
+  return resolved.length > 1
+    ? { conflicted: true, workspace_id: null, workspace_ids: resolved }
+    : { conflicted: false, workspace_id: resolved[0] ?? null, workspace_ids: resolved };
+}
+
+function resolveBroadcastWorkspaceId(
+  store: BusStore,
+  payload: Record<string, unknown>,
+): string | null {
+  const candidates = new Set<string>();
+  const add = (value: unknown) => {
+    if (typeof value === "string" && value) candidates.add(value);
+  };
+  add(payload.workspace_id);
+  for (const key of [
+    "workspace", "scope", "revision", "execution", "node_execution",
+    "event", "delivery", "telemetry", "pulse", "context", "endpoint", "binding",
+  ]) {
+    add(asRecord(payload[key]).workspace_id);
+  }
+
+  const queryWorkspace = (sql: string, id: unknown) => {
+    if (typeof id !== "string" || !id) return;
+    const row = store.db.prepare(sql).get(id) as { workspace_id?: string } | undefined;
+    add(row?.workspace_id);
+  };
+  queryWorkspace("SELECT workspace_id FROM events WHERE event_id = ?", payload.event_id);
+  queryWorkspace("SELECT workspace_id FROM events WHERE event_id = ?", asRecord(payload.event).event_id);
+  queryWorkspace("SELECT workspace_id FROM endpoints WHERE endpoint_id = ?", payload.endpoint_id);
+  queryWorkspace("SELECT workspace_id FROM contexts WHERE context_id = ?", payload.context_id);
+  queryWorkspace("SELECT workspace_id FROM pulses WHERE pulse_id = ?", payload.pulse_id);
+  queryWorkspace("SELECT workspace_id FROM scope_executions WHERE execution_id = ?", payload.scope_execution_id);
+  if (typeof payload.delivery_id === "string") {
+    queryWorkspace(`
+      SELECT e.workspace_id
+      FROM delivery_bundles d JOIN endpoints e ON e.endpoint_id = d.endpoint_id
+      WHERE d.delivery_id = ?
+    `, payload.delivery_id);
+  }
+  return candidates.size === 1 ? [...candidates][0] ?? null : null;
+}
+
+function serializePushEntry(entry: TransportPushEntry): string {
+  return JSON.stringify({
+    type: entry.type,
+    payload: entry.payload,
+    at: entry.at,
+    cursor: entry.cursor,
+  });
+}
+
+function mayReceivePushEntry(
+  authority: BusTransportAuthority,
+  entry: TransportPushEntry,
+  store: BusStore,
+): boolean {
+  if (authority.audience === "host_control") return true;
+  if (authority.audience === "workspace_operation") {
+    return entry.workspace_id === authority.workspace_id;
+  }
+  if (entry.workspace_id) return bridgeMayUseWorkspace(store, authority, entry.workspace_id);
+  return asRecord(entry.payload).bridge_id === authority.bridge_id;
+}
+
+function socketAuthenticationProjection(authority: BusTransportAuthority): Record<string, unknown> {
+  if (authority.audience === "host_control") {
+    return { audience: authority.audience, host_id: authority.host_id };
+  }
+  if (authority.audience === "bridge_service") {
+    return {
+      audience: authority.audience,
+      bridge_id: authority.bridge_id,
+      host_id: authority.host_id,
+    };
+  }
+  return { audience: authority.audience, workspace_id: authority.workspace_id };
+}
+
+function bridgeMayUseWorkspace(
+  store: BusStore,
+  authority: BridgeServiceAuthority,
+  workspaceId: string,
+): boolean {
+  return store.workspaceIdentityStore.getCurrentBinding(workspaceId, authority.host_id) !== null;
+}
+
+function bridgeOwnsEndpoint(store: BusStore, bridgeId: string, endpointId: string): boolean {
+  const endpoint = store.getEndpoint(endpointId) as { bridge_id?: string | null } | null;
+  return endpoint?.bridge_id === bridgeId;
+}
+
+function bridgeOwnsWorkspaceEndpoint(
+  store: BusStore,
+  bridgeId: string,
+  workspaceId: string,
+  endpointId: string,
+): boolean {
+  const endpoint = store.getEndpoint(endpointId) as {
+    bridge_id?: string | null;
+    workspace_id?: string;
+  } | null;
+  return endpoint?.bridge_id === bridgeId && endpoint.workspace_id === workspaceId;
+}
+
+function bridgeOwnsDelivery(store: BusStore, bridgeId: string, deliveryId: string): boolean {
+  const row = store.db.prepare(`
+    SELECT e.bridge_id
+    FROM delivery_bundles d
+    JOIN endpoints e ON e.endpoint_id = d.endpoint_id
+    WHERE d.delivery_id = ?
+  `).get(deliveryId) as { bridge_id: string | null } | undefined;
+  return row?.bridge_id === bridgeId;
+}
+
+function bridgeIdentityFromRequest(request: object): string | null {
+  const candidate = request as { params?: unknown; query?: unknown; body?: unknown };
+  for (const source of [candidate.params, candidate.query, candidate.body]) {
+    const bridgeId = asRecord(source).bridge_id;
+    if (typeof bridgeId === "string" && bridgeId) return bridgeId;
+  }
+  return null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function oneDayFromNow(): string {
+  return new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString();
+}
+
+function oneYearFromNow(): string {
+  return new Date(Date.now() + 365 * 24 * 60 * 60 * 1_000).toISOString();
+}
+
 function firePulse(pulseId: string, store: BusStore, broadcast: (type: string, payload: Record<string, unknown>) => void, pulseScheduler: PulseScheduler): void {
   const pulse = store.getPulse(pulseId) as any;
   if (!pulse || pulse.status !== "active") return;
+  if (store.workspacePortabilityService.isRestoreHeld(String(pulse.workspace_id))) return;
 
   const subscribers = store.getPulseSubscribers(pulseId);
   if (subscribers.length === 0) return;

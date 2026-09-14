@@ -14,7 +14,7 @@ async function makeServer() {
   const cfgPath = join(tmp, "config.yaml");
   const cfg: LocalConfig = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const handle = await createBusServer(cfgPath, cfg);
+  const handle = await createBusServer(cfgPath, cfg, { allow_unauthenticated_test_requests: true });
   await handle.app.ready();
   return { handle, tmp };
 }
@@ -25,6 +25,7 @@ async function registerWorkspace(handle: ServerHandle, tmp: string): Promise<str
   const registered = await handle.app.inject({
     method: "POST",
     url: "/v1/workspaces/register",
+    headers: { authorization: `Bearer ${handle.localControlToken}` },
     payload: { locator: wsLocator, name: "wm-test" }
   });
   expect(registered.statusCode).toBe(201);

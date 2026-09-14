@@ -28,6 +28,24 @@ revision state. Superseded bindings remain evidence. A callback must name the
 exact binding it began under; a late callback cannot update a replacement
 binding.
 
+### Portable Workspace package
+
+A versioned, deterministic transfer representation of one retained Workspace
+identity and its canonical evidence. It carries immutable revisions, execution
+and Delivery history, Context material subject to retention, Artefact lineage,
+exact reachable content, and safe authority references. It never carries host
+locator bindings, reusable credential material, authority sessions, Bridge or
+worker attachments, or other host-local state.
+
+Restore retains canonical IDs and historical states, binds a new host-local
+Workspace locator, and creates a separate restore hold. SecretRefs and other
+host dependencies remain unresolved until exact new target-host evidence is
+reconciled. Imported operation receipts can never prove that reconciliation.
+Reactivation is an explicit governed operation after every dependency resolves.
+
+A portable Workspace package is a transfer format, not a new substrate
+primitive and not an opaque backup of one host.
+
 ### Scope
 
 The durable outcome, organisation, lifecycle, and governance boundary presented
@@ -141,9 +159,25 @@ An immutable fact, signal, communication, observation, or decision that landed
 in Floe. It records source, time, Workspace, causation, correlation, schema,
 small payload facts, and zero or more exact ArtefactVersion references.
 
+Those version references are recorded when the Event is emitted. Later Artefact
+associations describe relationships to that Event; they cannot change its input
+or attachment references. Legacy Event references frozen during schema 12's
+upgrade retain their then-visible projection with explicit metadata provenance;
+that snapshot is not evidence of which versions were present at original emission.
+
 An Event can start an execution, satisfy a Port, record an output or decision,
 or remain non-graph communication. Arbitrary Event content is not automatically
 an Artefact.
+
+Context communication may carry optional `content.references` entries with
+`name` and `resource_ref: { kind, id, revision }`. The reference uses the existing
+semantic-operation resource shape; a null revision means no exact revision was
+supplied. It is navigation supplied by the message author, not an assertion of
+current state, authority, approval or an instruction to execute an operation.
+Clients retain the selected Workspace boundary and discover current actions when
+opened. Model input retains these references alongside the message text.
+Exact saved content continues to use ArtefactVersion attachments and canonical
+Event membership. A named reference does not create an Artefact association.
 
 ### Emit
 
@@ -191,12 +225,31 @@ An Actor has stable identity, a versioned ActorDefinitionRevision, and a
 separately replaceable runtime binding. Assignment to a NodePlacement or Context
 controls responsibility and access, never routing.
 
+An authenticated principal backs an Actor only through a retained Principal–Actor
+binding with exact evidence. A runtime self-binding is derived by the Bus from
+the exact ActorDefinitionRevision and Actor runtime binding pinned by an active
+Delivery; request content cannot claim it, and revocation is never restored
+implicitly. Workspace and Scope roles use explicit retained Actor role
+assignments. Context roles use the retained assignment referenced by canonical
+Context participation. An executor role at a NodePlacement or NodeExecution is
+valid only with its exact ScopeCompositionRevision and revision-local node ID.
+Roles may qualify a Policy or Approval decision, but never grant an operation or
+advance work.
+
+Publishing an assigned Actor's output resolves the authenticated principal's
+current retained binding and executor evidence against the exact NodeExecution.
+Identifier equality is not authority. The Event records the assigned Actor as
+publisher and retains the authenticated principal separately. Runtime-origin
+restrictions and operation grants still apply.
+
 ### Endpoint
 
-An addressable delivery interface used by an Actor, Command, Connector, service,
-or other runtime. Endpoint is not a type of identity and no backing is
-privileged. A retired Endpoint keeps historical references but receives no new
-Delivery.
+An addressable delivery interface used by an Actor runtime, authenticated
+Command worker, Connector, service, or other runtime. Endpoint is not a type of
+identity and no backing is privileged. A Command never masquerades as its own
+Endpoint: its stable identity and immutable definition are separate from the
+host-local worker Endpoint that executes it. A retired Endpoint keeps
+historical references but receives no new Delivery.
 
 ### ActorDefinitionRevision
 
@@ -210,6 +263,19 @@ A deterministic executable operation with declared inputs, outputs, side
 effects, permissions, timeout, idempotency, and implementation. A Command
 executes a defined operation; an Actor can interpret, choose, converse, and
 delegate.
+
+A stable Command points to its currently published immutable
+CommandDefinitionRevision. Publication of a ScopeCompositionRevision validates
+the referenced Command and exact Port contracts. A NodeExecution pins the
+CommandDefinitionRevision and authenticated worker binding it began with, and
+every retry retains those pins even if the Command head changes or retires.
+
+The Bus persists the exact processing contract for each ExecutionAttempt and
+dispatches it to an isolated Command host. Implementations are exact core or
+Extension version references. Filesystem, network, secret, and external action
+access is available only through granted canonical operations and brokers.
+Command output can advance stored Edges only through a named Port using
+`scope.node-output.publish`.
 
 ### Artefact
 
@@ -244,6 +310,11 @@ storage, document provider, database snapshot, or another content store. Floe
 does not need to copy large bytes when a verified immutable reference is
 sufficient.
 
+Publishing a local Workspace file through the canonical operation verifies its
+digest and size, retains those bytes in the Workspace content store, and records
+that retained reference. Later edits to the source file cannot change the
+published version. Externally pinned revisions keep their resolver contract.
+
 ### Capability
 
 A discoverable semantic operation or reusable implementation available under
@@ -257,6 +328,56 @@ semantic operation IDs within one explicit authority boundary: a Workspace or
 a host. A grant may also be restricted to exact resources. Authority sessions
 reference CapabilityGrant IDs and resolve their current state on every
 invocation; they never copy operation strings as authority.
+
+### Policy
+
+A stable governance identity with immutable published Policy revisions and
+exact revocable bindings to a Workspace, Scope, Actor, ConnectorBinding,
+Extension installation, or one NodePlacement in one ScopeCompositionRevision.
+A Policy can deny, require approval, or limit resource use; it cannot create
+authority that a CapabilityGrant does not provide.
+
+Every Policy decision retains the normalized facts and exact Policy revisions
+that were evaluated. Actor roles come from retained Actor assignments, never a
+role claimed in an operation request.
+
+### Budget reservation and resource use
+
+A Budget reservation atomically holds estimated use against every applicable
+Policy limit before work starts. Completion records measured use; a failed
+action releases its reservation; uncertain external effects remain reserved
+until reconciliation proves the outcome. Workspace, Scope, Actor, Connector,
+Extension, and exact revision-local NodePlacement limits remain independent and
+all apply when relevant.
+
+### ApprovalRequest and ApprovalReceipt
+
+An ApprovalRequest binds an exact action, inputs, evidence, composition
+revision, Policy decision, eligible decision set, and expiry. Named, all-named,
+quorum, and role-based decisions are retained individually. Only a terminal
+approved decision creates an ApprovalReceipt, and changed action or authority
+invalidates it before use.
+
+A pending request may explicitly select one existing participant in its Context
+to receive the resolved decision. This response choice changes neither the bound
+action nor its Policy. The decision and its delivery obligation are retained
+together; partial collective votes and replayed decisions do not create another
+response. A removed or unavailable recipient does not prevent the decision and
+receives no content. Scope decision bindings continue to use their stored Ports
+and Edges independently.
+
+Resuming an operation after approval retains that invocation's original causal
+provenance. A new authenticated Delivery does not replace the origin of the same
+intent. Current authority, interaction mode, target, roles, Policy, inputs and
+exact approval are revalidated before execution. A decision can carry the safe
+retry identity of its awaiting operation, never its invocation inputs or secrets.
+
+### Audit record
+
+An immutable request and outcome record for one semantic operation. It retains
+the authenticated principal and grants, exact target, input and state digests,
+Policy and Budget references, provenance, changed references, refusal, and
+affected ArtefactVersions without copying secret values.
 
 ### SecretRef
 
@@ -295,9 +416,10 @@ bounded product surfaces under declared permissions, isolation, approval, and
 rollback. Workspace installation remains under `.floe/extensions/NAME/`;
 canonical source may live in an independent repository or package.
 
-The existing in-process TypeScript loader is legacy implementation to be
-replaced by the accepted isolated Extension lifecycle. It is not permission to
-grant arbitrary filesystem, network, secret, or action access.
+Extension source executes through the isolated Extension host. The Bridge does
+not import package source or inject Extension tools into runtime sessions.
+Filesystem, network, secret, and action access requires an exact declared
+permission and current canonical authority; unavailable brokers fail closed.
 
 ### Projection
 
@@ -346,6 +468,7 @@ that makes a response visible.
 - Artefact lineage records exact version relationships; it is never pipeline topology.
 - Content storage owns bytes; Floe owns identity, provenance, authority, and safe references.
 - CapabilityGrant owns operation authority; SecretRef constraints narrow credential purpose without creating another grant lifecycle.
+- Policy restricts granted authority; Budget, approval, and audit retain exact decisions and evidence rather than creating parallel permission paths.
 - Clients project and invoke the same Bus-owned semantic operations; they do not own parallel validation or policy.
 - Developer diagnostics may expose raw evidence, but normal operator work cannot depend on Developer tools.
 

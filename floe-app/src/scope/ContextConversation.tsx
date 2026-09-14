@@ -3,11 +3,12 @@
  *
  * Header: context human label + participant pills (by NAME).
  * Body: scrollable chronological message stream — lifecycle events
- * (e.g. context.created) are hidden by default; only `type === "message"`
- * events render as chat bubbles, author resolved to actor name.
- * Footer: composer dock — text input + "Speaking as [actor]" selector.
- * Sending posts the message into this context as the selected actor's
- * endpoint; on success it appears in the stream and the input clears;
+ * (e.g. context.created) are hidden by default; conversation messages and
+ * retained approval decisions render with their authenticated author.
+ * Footer: operator composer dock. The Bus derives the authenticated author;
+ * developer Context inspection is read-only.
+ * Sending invokes canonical Context communication as the authenticated
+ * principal; on success it appears in the stream and the input clears;
  * on failure an inline error is shown.
  *
  * Features:
@@ -16,28 +17,30 @@
  *        arguments remain private. Driven entirely by the live stream.
  *   B2 — Auto-scroll to bottom: sticks to bottom as new messages arrive;
  *        respects user scroll-up (no yank).
- *   B3 — Speaking-as selector always accessible: even when selected actor is
- *        not a context participant, the selector is visible; a "Join context"
- *        button lets the user add themselves.
  */
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ContextRef,
   EndpointRef,
   EventEnvelope,
-  DeliveryBundle,
   DeliveryRow,
+  OperationRefusal,
   TelemetryRow,
 } from "../bus-client/types.ts";
 import {
   getContext,
   listContextEventHistoryPage,
-  emit,
-  addContextParticipant,
   listDeliveries,
   listRuntimeTelemetry,
 } from "../bus-client/client.ts";
+import { ContextCommunicationPendingError, createConversationSubmission } from "../features/conversations/contextCommunication.ts";
+import { createResponseStop } from "../features/conversations/stopResponse.ts";
 import { subscribeEvents } from "../bus-client/stream.ts";
+import { CanonicalArtefactDetail } from "../features/work/CanonicalArtefactDetail.tsx";
+import { approvalDecisionFromEvent } from "../features/actions/approvalPresentation.ts";
+import { ConversationReferences } from "../features/conversations/ConversationReferences.tsx";
+import { ActionPanel } from "../features/actions/ActionPanel.tsx";
+import { isNativeFloeApp, readArtefactVersionContent } from "../bus-client/transport.ts";
 import { FloeModelControl } from "../workspace/FloeModelControl.tsx";
 import { MiniMarkdown } from "../actors/markdown.tsx";
 import { contextLabel } from "./ScopeDetail.tsx";
@@ -45,7 +48,6 @@ import type { RuntimeHealth } from "../runtime/health.ts";
 import {
   conversationAttachments,
   formatAttachmentBytes,
-  stageConversationAttachments,
   type ConversationAttachment,
 } from "../fs/conversationAttachments.ts";
 import {
@@ -95,6 +97,46 @@ function endpointName(endpointId: string | null, endpoints: EndpointRef[]): stri
   return ep?.name?.trim() || endpointId;
 }
 
+function canonicalPrincipalId(event: EventEnvelope): string | null {
+  const principal = event.metadata?.["source_principal_id"];
+  return event.source_endpoint_id === null
+    && (event.metadata?.["semantic_operation_id"] === "context.communication.emit" || approvalDecisionFromEvent(event) !== null)
+    && typeof principal === "string"
+    && principal.trim()
+      ? principal
+      : null;
+}
+
+export function conversationMessagePresentation(
+  event: EventEnvelope,
+  endpoints: EndpointRef[],
+  alignRightEndpointId?: string,
+): { author: string; alignedRight: boolean } {
+  if (event.source_endpoint_id === null && event.metadata?.["origin"] === "runtime_delivery_cancellation") {
+    return { author: "Floe status", alignedRight: false };
+  }
+  const principalId = canonicalPrincipalId(event);
+  const principalEndpoint = principalId
+    ? endpoints.find(endpoint => endpoint.endpoint_id === principalId)
+    : null;
+  const localOperatorCommunication = Boolean(principalId && !principalEndpoint);
+  const sourceId = event.source_endpoint_id ?? principalId;
+  const currentOperatorWithoutEndpoint = Boolean(
+    alignRightEndpointId
+    && sourceId === alignRightEndpointId
+    && !endpoints.some(endpoint => endpoint.endpoint_id === sourceId && endpoint.name?.trim()),
+  );
+  return {
+    author: localOperatorCommunication || currentOperatorWithoutEndpoint
+      ? "Operator"
+      : endpointName(sourceId, endpoints),
+    alignedRight: Boolean(
+      alignRightEndpointId
+      && (event.source_endpoint_id === alignRightEndpointId || localOperatorCommunication),
+    ),
+  };
+}
+
 function formatTime(iso: string): string {
   try {
     return new Date(iso).toLocaleString(undefined, {
@@ -105,9 +147,9 @@ function formatTime(iso: string): string {
   }
 }
 
-/** Message-vs-lifecycle filter: only `type === "message"` events render in the stream. */
+/** Conversation and retained decisions are visible; unrelated lifecycle records stay in inspection. */
 function isVisibleMessage(event: EventEnvelope): boolean {
-  return event.type === "message";
+  return event.type === "message" || approvalDecisionFromEvent(event) !== null;
 }
 
 const HISTORY_PAGE_SIZE = 50;
@@ -142,25 +184,18 @@ function workEventText(event: EventEnvelope): string {
 const ACTIVE_DELIVERY_STATES = new Set(["reserved", "delivered_to_bridge", "injected_to_runtime"]);
 const FAILED_DELIVERY_STATES = new Set(["failed", "dead_lettered", "deferred"]);
 
-export function conversationDeliveryState(deliveries: DeliveryRow[], contextId: string): {
+/** Rows are scoped by the Bus to this Context and its explicitly requested work. */
+export function conversationDeliveryState(deliveries: DeliveryRow[]): {
   working: Map<string, string>;
   notice: string | null;
 } {
-  const relevant = deliveries
-    .filter(delivery => {
-      try {
-        const events = JSON.parse(delivery.events_json) as Array<{ context_id?: string }>;
-        return events.some(event => event.context_id === contextId);
-      } catch {
-        return false;
-      }
-    })
+  const relevant = [...deliveries]
     .sort((a, b) => a.created_at.localeCompare(b.created_at));
 
   const working = new Map<string, string>();
   for (const delivery of relevant) {
     if (ACTIVE_DELIVERY_STATES.has(delivery.state)) {
-      working.set(delivery.endpoint_id, delivery.delivery_id);
+      working.set(delivery.delivery_id, delivery.endpoint_id);
     }
   }
   if (working.size > 0) return { working, notice: null };
@@ -170,7 +205,7 @@ export function conversationDeliveryState(deliveries: DeliveryRow[], contextId: 
     working,
     notice: latest && FAILED_DELIVERY_STATES.has(latest.state)
       ? friendlyDeliveryFailure(latest.last_error)
-      : null,
+      : latest?.state === "cancelled" ? "This response was stopped. Changes already made remain." : null,
   };
 }
 
@@ -235,9 +270,10 @@ export function operatorProgressFromTelemetry(
     ? payload["toolCallId"]
     : telemetry.telemetry_id;
   const path = safePath(payload);
-  const failed = telemetry.kind === "ToolUseFailed" || payload["isError"] === true;
   const completed = telemetry.kind === "AfterToolUse" || telemetry.kind === "ToolUseFailed";
   const summary = typeof payload["summary"] === "string" ? payload["summary"] : "";
+  const failed = telemetry.kind === "ToolUseFailed" || payload["isError"] === true
+    || /\((?:exit [1-9]\d*|timeout)[,)]/i.test(summary);
 
   let action: string;
   switch (toolName) {
@@ -249,7 +285,7 @@ export function operatorProgressFromTelemetry(
     case "write": action = path ? `Writing ${path}` : "Writing a workspace file"; break;
     case "edit": action = path ? `Updating ${path}` : "Updating a workspace file"; break;
     case "bash":
-    case "run_command": action = "Running and verifying workspace automation"; break;
+    case "run_command": action = "Running a workspace step"; break;
     case "list_actors":
     case "list_endpoints":
     case "resolve_destination": action = "Checking available collaborators"; break;
@@ -258,11 +294,11 @@ export function operatorProgressFromTelemetry(
   }
 
   let text = action;
-  if (failed || /\((?:exit [1-9]\d*|timeout)[,)]/i.test(summary)) {
-    text = "A step did not succeed; Floe is adapting";
+  if (failed) {
+    text = "A step did not succeed";
   } else if (completed) {
     if (toolName === "write" || toolName === "edit") text = path ? `Updated ${path}` : "Updated the workspace";
-    else if (toolName === "bash" || toolName === "run_command") text = "Verified a workspace step";
+    else if (toolName === "bash" || toolName === "run_command") text = "Completed a workspace step";
     else if (toolName === "emit") text = "Response ready";
   }
 
@@ -310,24 +346,78 @@ function ParticipantPill({ name }: { name: string }): React.ReactElement {
   );
 }
 
-function AttachmentRefs({ attachments }: { attachments: ConversationAttachment[] }): React.ReactElement {
+function CanonicalAttachmentImage({ workspaceId, attachment }: {
+  workspaceId: string;
+  attachment: ConversationAttachment;
+}): React.ReactElement | null {
+  const [source, setSource] = useState<string | null>(null);
+  useEffect(() => {
+    if (!attachment.artefact_version_id || !attachment.media_type.startsWith("image/")) return;
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    void readArtefactVersionContent(workspaceId, attachment.artefact_version_id)
+      .then(content => {
+        if (cancelled || !content.mediaType.startsWith("image/")) return;
+        objectUrl = URL.createObjectURL(content.data);
+        setSource(objectUrl);
+      })
+      .catch(() => {
+        // The exact reference remains useful even when its content resolver is unavailable.
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [attachment.artefact_version_id, attachment.media_type, workspaceId]);
+  return source ? (
+    <img
+      src={source}
+      alt={attachment.name}
+      style={{ width: "100%", maxHeight: 320, objectFit: "contain", borderRadius: tk.r2 }}
+    />
+  ) : null;
+}
+
+function AttachmentRefs({ workspaceId, attachments }: {
+  workspaceId: string;
+  attachments: ConversationAttachment[];
+}): React.ReactElement {
+  const [openedVersionId, setOpenedVersionId] = useState<string | null>(null);
   return (
     <div aria-label="Message attachments" style={{ display: "grid", gap: 6, marginTop: 8 }}>
       {attachments.map(attachment => (
         <div
-          key={attachment.path}
-          title={attachment.path}
+          key={attachment.artefact_version_id ?? attachment.path ?? attachment.name}
+          title={attachment.artefact_version_id ?? attachment.path ?? undefined}
           style={{
-            display: "flex", alignItems: "baseline", gap: 7,
+            display: "grid", gap: 7,
             padding: "6px 8px", borderRadius: tk.r2,
             border: `1px solid ${tk.border}`, background: tk.surfaceSunk,
             fontSize: 11.5, color: tk.ink2,
           }}
         >
-          <span aria-hidden="true">📎</span>
-          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{attachment.name}</span>
-          {formatAttachmentBytes(attachment.bytes) && (
-            <span style={{ color: tk.ink4, whiteSpace: "nowrap" }}>{formatAttachmentBytes(attachment.bytes)}</span>
+          <CanonicalAttachmentImage workspaceId={workspaceId} attachment={attachment} />
+          <span style={{ display: "flex", alignItems: "baseline", gap: 7 }}>
+            <span aria-hidden="true">📎</span>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{attachment.name}</span>
+            {formatAttachmentBytes(attachment.bytes) && (
+              <span style={{ color: tk.ink4, whiteSpace: "nowrap" }}>{formatAttachmentBytes(attachment.bytes)}</span>
+            )}
+          </span>
+          {attachment.artefact_version_id && (
+            <>
+              <button
+                type="button"
+                aria-expanded={openedVersionId === attachment.artefact_version_id}
+                onClick={() => setOpenedVersionId(current => current === attachment.artefact_version_id ? null : attachment.artefact_version_id)}
+                style={{ justifySelf: "start", border: `1px solid ${tk.border}`, borderRadius: tk.r2, background: tk.surface, color: tk.accent, padding: "6px 9px", cursor: "pointer" }}
+              >
+                {openedVersionId === attachment.artefact_version_id ? "Close" : "Open"} {attachment.name}
+              </button>
+              {openedVersionId === attachment.artefact_version_id && (
+                <CanonicalArtefactDetail key={attachment.artefact_version_id} workspaceId={workspaceId} artefactVersionId={attachment.artefact_version_id} />
+              )}
+            </>
           )}
         </div>
       ))}
@@ -340,21 +430,26 @@ function AttachmentRefs({ attachments }: { attachments: ConversationAttachment[]
 // ---------------------------------------------------------------------------
 
 function MessageRow({
+  workspaceId,
   event,
   endpoints,
   alignRightEndpointId,
   showEventType,
   onReviewProblemReport,
+  artefactLabels,
 }: {
+  workspaceId: string;
   event: EventEnvelope;
   endpoints: EndpointRef[];
   alignRightEndpointId?: string;
   showEventType?: boolean;
   onReviewProblemReport?: (draft: Partial<ProblemReportDraft>) => void;
+  artefactLabels?: ReadonlyMap<string, string>;
 }): React.ReactElement {
-  const author = endpointName(event.source_endpoint_id, endpoints);
-  const alignedRight = !!alignRightEndpointId && event.source_endpoint_id === alignRightEndpointId;
-  const attachments = conversationAttachments(event.content);
+  const { author, alignedRight } = conversationMessagePresentation(event, endpoints, alignRightEndpointId);
+  const decision = approvalDecisionFromEvent(event);
+  const [reviewDecision, setReviewDecision] = useState(false);
+  const attachments = conversationAttachments(event.content, event.artefact_version_ids, artefactLabels);
   const problemReportDraft = problemReportDraftFromEvent(event);
   return (
     <div
@@ -383,8 +478,16 @@ function MessageRow({
           <span style={{ fontSize: 11, color: tk.ink4 }}>{formatTime(event.created_at)}</span>
         </div>
         <div style={{ fontSize: 13.5, color: tk.ink2, lineHeight: 1.5, overflowWrap: "anywhere" }}>
-          <MiniMarkdown source={showEventType ? workEventText(event) : messageText(event)} />
-          {attachments.length > 0 && <AttachmentRefs attachments={attachments} />}
+          {decision && !showEventType ? <section aria-label="Recorded approval decision">
+            <p><strong>{decision.label}</strong></p>
+            <p style={{ whiteSpace: "pre-wrap" }}>{decision.reason}</p>
+            <button type="button" onClick={() => setReviewDecision(true)} style={{
+              border: `1px solid ${tk.border}`, borderRadius: tk.r2, background: tk.surface,
+              color: tk.accent, padding: "6px 9px", cursor: "pointer",
+            }}>Review decision</button>
+          </section> : <MiniMarkdown source={showEventType ? workEventText(event) : messageText(event)} />}
+          {attachments.length > 0 && <AttachmentRefs workspaceId={workspaceId} attachments={attachments} />}
+          <ConversationReferences workspaceId={workspaceId} content={event.content} artefactLabels={artefactLabels} />
           {problemReportDraft && onReviewProblemReport && (
             <button
               type="button"
@@ -400,6 +503,9 @@ function MessageRow({
           )}
         </div>
       </article>
+      {decision && reviewDecision && <ActionPanel workspaceId={workspaceId} workspaceName="Recorded decision"
+        initialTarget={{ ref: { kind: "approval_request", id: decision.requestId, revision: null }, label: decision.label }}
+        artefactLabels={artefactLabels} onClose={() => setReviewDecision(false)} />}
     </div>
   );
 }
@@ -474,66 +580,17 @@ if (typeof document !== "undefined") {
 }
 
 // ---------------------------------------------------------------------------
-// Speaking-as selector (shared between participant and non-participant states)
-// ---------------------------------------------------------------------------
-
-function SpeakingAsSelector({
-  endpoints,
-  speakingAsId,
-  onSpeakingAsChange,
-}: {
-  endpoints: EndpointRef[];
-  speakingAsId: string;
-  onSpeakingAsChange: (id: string) => void;
-}): React.ReactElement {
-  return (
-    <div style={{
-      display: "flex", alignItems: "center", gap: 8,
-      fontSize: 12, color: tk.ink3,
-    }}>
-      <label htmlFor="speaking-as-select">Speaking as</label>
-      <select
-        id="speaking-as-select"
-        aria-label="Speaking as"
-        value={speakingAsId}
-        onChange={e => onSpeakingAsChange(e.target.value)}
-        style={{
-          background: tk.canvas, color: tk.ink, border: `1px solid ${tk.border}`,
-          borderRadius: tk.r2, padding: "4px 8px", fontSize: 12.5,
-          fontFamily: tk.fontUi, cursor: "pointer",
-        }}
-      >
-        {endpoints.length === 0 && <option value="">No actors available</option>}
-        {endpoints.map(ep => (
-          <option key={ep.endpoint_id} value={ep.endpoint_id}>
-            {ep.name || ep.endpoint_id}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Composer dock (participant state)
+// Operator composer dock
 // ---------------------------------------------------------------------------
 
 function ComposerDock({
-  endpoints,
-  speakingAsId,
-  onSpeakingAsChange,
   onSend,
-  hideSpeakingAs = false,
   placeholder = "Write a message… (Enter to send, Shift+Enter for newline)",
   disabled = false,
   disabledReason,
   allowAttachments = false,
 }: {
-  endpoints: EndpointRef[];
-  speakingAsId: string;
-  onSpeakingAsChange: (id: string) => void;
   onSend: (text: string, files: File[]) => Promise<void>;
-  hideSpeakingAs?: boolean;
   placeholder?: string;
   disabled?: boolean;
   disabledReason?: string;
@@ -542,18 +599,21 @@ function ComposerDock({
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [sending, setSending] = useState(false);
+  const [awaitingReceipt, setAwaitingReceipt] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSend() {
     const trimmed = text.trim();
-    if ((!trimmed && files.length === 0) || sending || !speakingAsId || disabled) return;
+    if ((!trimmed && files.length === 0) || sending || disabled) return;
     setSending(true);
     setError(null);
     try {
       await onSend(trimmed, files);
+      setAwaitingReceipt(false);
       setText("");
       setFiles([]);
     } catch (err) {
+      setAwaitingReceipt(err instanceof ContextCommunicationPendingError);
       setError(err instanceof Error ? err.message : "Failed to send message");
     } finally {
       setSending(false);
@@ -588,16 +648,6 @@ function ComposerDock({
         </div>
       )}
 
-      {!hideSpeakingAs && (
-        <div style={{ marginBottom: 8 }}>
-          <SpeakingAsSelector
-            endpoints={endpoints}
-            speakingAsId={speakingAsId}
-            onSpeakingAsChange={onSpeakingAsChange}
-          />
-        </div>
-      )}
-
       {/* Input row */}
       <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
         <div style={{ flex: 1, display: "grid", gap: 7 }}>
@@ -616,7 +666,7 @@ function ComposerDock({
               if (!result.error) setFiles(result.files);
             }}
             placeholder={placeholder}
-            disabled={disabled || sending || !speakingAsId}
+            disabled={disabled || sending || awaitingReceipt}
             rows={2}
             style={{
               width: "100%", boxSizing: "border-box", resize: "vertical",
@@ -627,107 +677,25 @@ function ComposerDock({
             }}
           />
           {allowAttachments && (
-            <AttachmentPicker files={files} onChange={setFiles} disabled={disabled || sending || !speakingAsId} />
+            <AttachmentPicker files={files} onChange={setFiles} disabled={disabled || sending || awaitingReceipt} />
           )}
         </div>
         <button
           onClick={() => void handleSend()}
-          disabled={disabled || sending || (!text.trim() && files.length === 0) || !speakingAsId}
-          aria-label="Send message"
+          disabled={disabled || sending || (!text.trim() && files.length === 0)}
+          aria-label={awaitingReceipt ? "Retry send" : "Send message"}
           style={{
             background: tk.accent, color: "#0c1714", border: "none",
             borderRadius: tk.r2, padding: "8px 18px", fontSize: 13,
             fontWeight: 510, fontFamily: tk.fontUi,
-            cursor: disabled || sending || (!text.trim() && files.length === 0) || !speakingAsId ? "not-allowed" : "pointer",
-            opacity: disabled || sending || (!text.trim() && files.length === 0) || !speakingAsId ? 0.5 : 1,
+            cursor: disabled || sending || (!text.trim() && files.length === 0) ? "not-allowed" : "pointer",
+            opacity: disabled || sending || (!text.trim() && files.length === 0) ? 0.5 : 1,
             flexShrink: 0,
           }}
         >
-          {sending ? "Sending…" : "Send"}
+          {sending ? "Sending…" : awaitingReceipt ? "Retry send" : "Send"}
         </button>
       </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// B3 — Non-participant footer (speaker selector + join option)
-// ---------------------------------------------------------------------------
-
-function NonParticipantFooter({
-  endpoints,
-  speakingAsId,
-  onSpeakingAsChange,
-  onJoin,
-}: {
-  endpoints: EndpointRef[];
-  speakingAsId: string;
-  onSpeakingAsChange: (id: string) => void;
-  onJoin: () => Promise<void>;
-}): React.ReactElement {
-  const [joining, setJoining] = useState(false);
-  const [joinError, setJoinError] = useState<string | null>(null);
-  const actorLabel = endpoints.find(e => e.endpoint_id === speakingAsId)?.name ?? speakingAsId;
-
-  async function handleJoin() {
-    setJoining(true);
-    setJoinError(null);
-    try {
-      await onJoin();
-    } catch (err) {
-      setJoinError(err instanceof Error ? err.message : "Failed to join context");
-    } finally {
-      setJoining(false);
-    }
-  }
-
-  return (
-    <div
-      aria-label="Not a participant"
-      style={{
-        flexShrink: 0,
-        borderTop: `1px solid ${tk.border}`,
-        background: tk.surface,
-        padding: "12px 24px 14px",
-        fontFamily: tk.fontUi,
-      }}
-    >
-      {/* Always-visible speaker selector */}
-      <div style={{ marginBottom: 10 }}>
-        <SpeakingAsSelector
-          endpoints={endpoints}
-          speakingAsId={speakingAsId}
-          onSpeakingAsChange={onSpeakingAsChange}
-        />
-      </div>
-
-      {/* Not-a-participant notice + join button */}
-      <div style={{
-        display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
-      }}>
-        <span style={{ fontSize: 12, color: tk.ink4, fontStyle: "italic" }}>
-          {actorLabel} is not a participant of this context.
-        </span>
-        <button
-          onClick={() => void handleJoin()}
-          disabled={joining}
-          aria-label="Join context"
-          style={{
-            background: tk.accentSoft2, color: tk.accentHov,
-            border: `1px solid rgba(138,168,156,0.3)`,
-            borderRadius: tk.r2, padding: "4px 12px", fontSize: 12,
-            fontFamily: tk.fontUi, cursor: joining ? "not-allowed" : "pointer",
-            opacity: joining ? 0.6 : 1,
-          }}
-        >
-          {joining ? "Joining…" : "Join context"}
-        </button>
-      </div>
-      {joinError && (
-        <div role="alert" style={{ marginTop: 6, fontSize: 11.5, color: tk.danger }}>
-          {joinError}
-        </div>
-      )}
     </div>
   );
 }
@@ -736,7 +704,6 @@ function NonParticipantFooter({
 // ContextConversation
 // ---------------------------------------------------------------------------
 
-const SPEAKING_AS_KEY = "floe.speakingAsEndpointId";
 const SCROLL_BOTTOM_THRESHOLD = 80; // px from bottom — within this, considered "at bottom"
 
 export type ContextConversationProps = {
@@ -757,18 +724,25 @@ export type ContextConversationProps = {
   runtimeHealth?: RuntimeHealth;
   /** Neutral operator front door: fixes the human identity and hides substrate-oriented context controls. */
   operatorEntry?: {
-    speakingAsEndpointId: string;
+    /** Legacy operator Endpoint used only to identify the other participant in imported direct Contexts. */
+    operatorEndpointId: string;
     /** Show the other participant as the conversation identity instead of always presenting Floe. */
     showContextIdentity?: boolean;
     onOpenSettings?: () => void;
     onBackToConversations?: () => void;
     onNewConversation?: () => void;
-    onDeleteConversation?: () => void;
+    onArchiveConversation?: () => void;
+    onRestoreConversation?: () => void;
+    onDestroyConversation?: () => void;
+    onConfirmDestroyConversation?: () => void;
     onOpenWork?: () => void;
     onReportProblem?: () => void;
     onReviewProblemReport?: (draft: Partial<ProblemReportDraft>) => void;
+    conversationLifecycleState?: "active" | "archived" | "tombstoned";
     conversationActionsDisabled?: boolean;
     conversationActionError?: string | null;
+    conversationActionRefusal?: OperationRefusal | null;
+    conversationActionConfirmation?: { title: string; description: string } | null;
   };
 };
 
@@ -786,39 +760,59 @@ export function ContextConversation({
 }: ContextConversationProps): React.ReactElement {
   const [context, setContext] = useState<ContextRef | null>(null);
   const [events, setEvents] = useState<EventEnvelope[]>([]);
+  // Names are presentation from exact references already present in this Context.
+  // They never replace the version IDs or change a retained approval action.
+  const artefactLabels = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const event of events) for (const attachment of conversationAttachments(event.content)) {
+      if (attachment.artefact_version_id && attachment.name.trim()
+        && event.artefact_version_ids?.includes(attachment.artefact_version_id)) {
+        labels.set(attachment.artefact_version_id, attachment.name);
+      }
+    }
+    return labels;
+  }, [events]);
   const [loading, setLoading] = useState(true);
   const [previousCursor, setPreviousCursor] = useState<string | null>(null);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [historyNotice, setHistoryNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [deliveryNotice, setDeliveryNotice] = useState<string | null>(null);
-  const [speakingAsId, setSpeakingAsId] = useState<string>("");
   const [operatorModelReady, setOperatorModelReady] = useState(false);
   const [workProgress, setWorkProgress] = useState<OperatorProgress[]>([]);
+  const [stoppingResponse, setStoppingResponse] = useState<string | null>(null);
+  const [stopError, setStopError] = useState<string | null>(null);
+  const pendingStops = useRef(new Map<string, () => Promise<void>>());
+  const loadSequence = useRef(0);
 
-  // B1 — working endpoints: map endpoint_id → delivery_id (tracks in-flight turns)
+  // Keep each response distinct, including concurrent work by the same Actor.
   const [workingEndpoints, setWorkingEndpoints] = useState<Map<string, string>>(new Map());
+  const workingResponses = useRef(workingEndpoints);
+  workingResponses.current = workingEndpoints;
 
   // B2 — scroll-to-bottom refs
   const scrollRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
   const loadingEarlierRef = useRef(false);
+  const pendingSend = useRef<{ contextId: string; send: () => Promise<string> } | null>(null);
 
   const load = useCallback((preserveLoadedHistory = false) => {
+    const sequence = ++loadSequence.current;
     if (!preserveLoadedHistory) setLoading(true);
     setError(null);
     setHistoryNotice(null);
     Promise.all([
-      getContext(contextId),
+      getContext(contextId, workspaceId),
       listContextEventHistoryPage(contextId, {
         limit: HISTORY_PAGE_SIZE,
-        type: showWorkEvents ? undefined : "message",
+        workspace_id: workspaceId,
       }),
-      listDeliveries({ workspace_id: workspaceId, limit: 500 }).catch(() => []),
+      listDeliveries({ workspace_id: workspaceId, context_id: contextId, limit: 500 }).catch(() => []),
     ])
       .then(([ctx, history, deliveries]) => {
-        const deliveryState = conversationDeliveryState(deliveries, contextId);
-        const activeDeliveryIds = new Set(deliveryState.working.values());
+        if (sequence !== loadSequence.current) return;
+        const deliveryState = conversationDeliveryState(deliveries);
+        const activeDeliveryIds = new Set(deliveryState.working.keys());
         setContext(ctx);
         setEvents(previous => preserveLoadedHistory
           ? mergeEventPages(previous, history.events)
@@ -829,14 +823,16 @@ export function ContextConversation({
         setDeliveryNotice(deliveryState.notice);
         setLoading(false);
         void Promise.all([...activeDeliveryIds].map(deliveryId =>
-          listRuntimeTelemetry({ delivery_id: deliveryId, limit: 100 })
+          listRuntimeTelemetry({ workspace_id: workspaceId, delivery_id: deliveryId, limit: 100 })
         )).then(records => {
+          if (sequence !== loadSequence.current) return;
           setWorkProgress(previous => mergeOperatorProgress(previous, records.flat()));
         }).catch(() => {
           // Progress is supplementary; a telemetry failure must not hide the conversation.
         });
       })
       .catch(err => {
+        if (sequence !== loadSequence.current) return;
         if (preserveLoadedHistory) {
           setHistoryNotice("Couldn’t refresh the newest messages. The loaded conversation remains available.");
         } else {
@@ -846,11 +842,29 @@ export function ContextConversation({
       });
   }, [contextId, showWorkEvents, workspaceId]);
 
+  const stopResponse = async (deliveryId: string) => {
+    setStoppingResponse(deliveryId);
+    setStopError(null);
+    let stop = pendingStops.current.get(deliveryId);
+    if (!stop) {
+      stop = createResponseStop(workspaceId, deliveryId);
+      pendingStops.current.set(deliveryId, stop);
+    }
+    try {
+      await stop();
+      pendingStops.current.delete(deliveryId);
+      load(true);
+    } catch (error) {
+      setStopError(error instanceof Error ? error.message : "Floe could not confirm Stop. Try again.");
+    } finally { setStoppingResponse(null); }
+  };
+
   useEffect(() => {
     setEvents([]);
     setPreviousCursor(null);
     setLoadingEarlier(false);
     setHistoryNotice(null);
+    setStopError(null);
     loadingEarlierRef.current = false;
     isAtBottomRef.current = true;
     load(false);
@@ -879,82 +893,25 @@ export function ContextConversation({
         }
       }
 
-      // B1 — delivery started → mark endpoint as working if relevant to this context
-      if (msg.type === "delivery_bundle_available") {
-        const { delivery } = msg.payload as { delivery: DeliveryBundle };
-        const isForThisContext = delivery.events.some(e => e.context_id === contextId);
-        if (isForThisContext) {
-          setDeliveryNotice(null);
-          setWorkingEndpoints(prev => {
-            const next = new Map(prev);
-            next.set(delivery.endpoint_id, delivery.delivery_id);
-            return next;
-          });
-        }
-      }
+      // Work can begin in a separate Context after its parent has completed.
+      // Re-read the Bus projection on lifecycle pushes; never infer completion
+      // from an Actor's endpoint status or introduce a recurring refresh loop.
+      if (["delivery_bundle_available", "delivery_deferred", "delivery_failed",
+        "delivery_dead_lettered", "delivery_cancelled", "turn_end_observed"].includes(msg.type)) load(true);
 
       if (msg.type === "runtime_telemetry") {
         const telemetry = (msg.payload as { telemetry?: TelemetryWithPayload }).telemetry;
         if (telemetry) {
           const payload = telemetryPayload(telemetry);
-          if (payload["context_id"] === contextId) {
+          if (payload["context_id"] === contextId || (telemetry.delivery_id && workingResponses.current.has(telemetry.delivery_id))) {
             setWorkProgress(previous => mergeOperatorProgress(previous, [telemetry]));
           }
         }
       }
 
-      if (["delivery_deferred", "delivery_failed", "delivery_dead_lettered"].includes(msg.type)) {
-        const { delivery_id, error } = msg.payload as { delivery_id: string; error?: string | null };
-        setWorkingEndpoints(prev => {
-          if (![...prev.values()].includes(delivery_id)) return prev;
-          const next = new Map([...prev].filter(([, id]) => id !== delivery_id));
-          setDeliveryNotice(friendlyDeliveryFailure(error));
-          return next;
-        });
-      }
-
-      // B1 — turn ended → clear working state for that endpoint
-      if (msg.type === "turn_end_observed") {
-        const { endpoint_id } = msg.payload as { endpoint_id: string };
-        setWorkingEndpoints(prev => {
-          if (!prev.has(endpoint_id)) return prev;
-          const next = new Map(prev);
-          next.delete(endpoint_id);
-          return next;
-        });
-        setWorkProgress(previous => previous.filter(progress => progress.endpointId !== endpoint_id));
-      }
-    });
+    }, { workspaceId, startAtCurrent: true, onOpen: () => load(true) });
     return unsub;
-  }, [contextId, load]);
-
-  // Default "speaking as" to the last saved choice, else the first endpoint.
-  useEffect(() => {
-    if (endpoints.length === 0) {
-      setSpeakingAsId("");
-      return;
-    }
-    if (operatorEntry) {
-      setSpeakingAsId(operatorEntry.speakingAsEndpointId);
-      return;
-    }
-    let saved: string | null = null;
-    try {
-      saved = localStorage.getItem(SPEAKING_AS_KEY);
-    } catch { /* ignore */ }
-    if (saved && endpoints.some(e => e.endpoint_id === saved)) {
-      setSpeakingAsId(saved);
-      return;
-    }
-    setSpeakingAsId(prev =>
-      prev && endpoints.some(e => e.endpoint_id === prev) ? prev : endpoints[0]!.endpoint_id
-    );
-  }, [endpoints, operatorEntry]);
-
-  function handleSpeakingAsChange(id: string) {
-    setSpeakingAsId(id);
-    try { localStorage.setItem(SPEAKING_AS_KEY, id); } catch { /* ignore */ }
-  }
+  }, [contextId, load, workspaceId]);
 
   async function loadEarlierHistory() {
     if (!previousCursor || loadingEarlierRef.current) return;
@@ -967,7 +924,7 @@ export function ContextConversation({
       const page = await listContextEventHistoryPage(contextId, {
         before: previousCursor,
         limit: HISTORY_PAGE_SIZE,
-        type: showWorkEvents ? undefined : "message",
+        workspace_id: workspaceId,
       });
       setEvents(previous => mergeEventPages(previous, page.events));
       setPreviousCursor(page.previous_cursor);
@@ -1019,40 +976,26 @@ export function ContextConversation({
   }, [loading]);
 
   async function handleSend(text: string, files: File[]) {
-    if (!context) return;
-    const others = context.participants.filter(p => p !== speakingAsId);
-    const destination = others[0]
-      ? { kind: "endpoint" as const, endpoint_id: others[0] }
-      : { kind: "broadcast" as const, scope: "workspace" as const, target: "all" };
+    if (!context || !operatorEntry) return;
+    const recipientParticipantId = context.scope_id ? null : context.participants.find(
+      participant => participant !== operatorEntry.operatorEndpointId,
+    ) ?? null;
 
-    const attachments = files.length > 0
-      ? await stageConversationAttachments(
-          { workspace_id: workspaceId, locator: workspaceLocator ?? "" },
-          contextId,
-          files,
-        )
-      : [];
-    const content: Record<string, unknown> = {};
-    if (text) content.text = text;
-    if (attachments.length > 0) content.attachments = attachments;
-
-    await emit({
-      type: "message",
-      workspace_id: workspaceId,
-      source_endpoint_id: speakingAsId,
-      destination,
-      context_id: contextId,
-      content,
-      response: { expected: !!operatorEntry },
-      metadata: {},
-    });
-    await load(true);
-  }
-
-  // B3 — join context as selected actor
-  async function handleJoin() {
-    await addContextParticipant(contextId, speakingAsId);
-    await load(true);
+    if (!pendingSend.current || pendingSend.current.contextId !== contextId) {
+      pendingSend.current = {
+        contextId,
+        send: createConversationSubmission(workspaceId, { context, recipientParticipantId, responseExpected: !context.scope_id, text, files }),
+      };
+    }
+    const submission = pendingSend.current;
+    try {
+      await submission.send();
+      if (pendingSend.current === submission) pendingSend.current = null;
+    } catch (error) {
+      if (!(error instanceof ContextCommunicationPendingError) && pendingSend.current === submission) pendingSend.current = null;
+      throw error;
+    }
+    void load(true);
   }
 
   const label = context ? contextLabel(context) : null;
@@ -1079,20 +1022,24 @@ export function ContextConversation({
 
   if (!context) return <></>;
 
-  const isParticipant = context.participants.includes(speakingAsId);
-
-  const workingActorNames = Array.from(workingEndpoints.keys())
+  const workingActorNames = Array.from(workingEndpoints.values())
     .map(id => endpointName(id, endpoints));
 
   const visibleMessages = events.filter(event => showWorkEvents || isVisibleMessage(event));
   const operatorCollaborators = operatorEntry
     ? context.participants
-        .filter(participant => participant !== operatorEntry.speakingAsEndpointId)
-        .map(participant => endpointName(participant, endpoints))
+        .filter(participant => participant !== operatorEntry.operatorEndpointId)
+        .flatMap(participant => {
+          const endpoint = endpoints.find(endpoint => endpoint.endpoint_id === participant);
+          return endpoint ? [endpoint.name] : [];
+        })
     : [];
   const operatorConversationName = operatorEntry?.showContextIdentity
     ? operatorCollaborators.join(", ") || context.title || "Conversation"
     : "Floe";
+  // A work conversation may include people or Commands. Posting to its Context
+  // is governed by Context communication, not by a model setup control.
+  const canCompose = !!context.scope_id || operatorModelReady;
 
   return (
     <div style={{
@@ -1133,7 +1080,15 @@ export function ContextConversation({
           }}>
             {operatorEntry ? operatorConversationName : label}
           </h2>
-          {operatorEntry && (operatorEntry.onOpenWork || operatorEntry.onReportProblem || operatorEntry.onNewConversation || operatorEntry.onDeleteConversation) && (
+          {operatorEntry && (
+            operatorEntry.onOpenWork
+            || operatorEntry.onReportProblem
+            || operatorEntry.onNewConversation
+            || operatorEntry.onArchiveConversation
+            || operatorEntry.onRestoreConversation
+            || operatorEntry.onDestroyConversation
+            || operatorEntry.onConfirmDestroyConversation
+          ) && (
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               {operatorEntry.onOpenWork && (
                 <button
@@ -1175,12 +1130,12 @@ export function ContextConversation({
                   New conversation
                 </button>
               )}
-              {operatorEntry.onDeleteConversation && (
+              {operatorEntry.onArchiveConversation && (
                 <button
                   type="button"
-                  onClick={operatorEntry.onDeleteConversation}
+                  onClick={operatorEntry.onArchiveConversation}
                   disabled={operatorEntry.conversationActionsDisabled || workingEndpoints.size > 0}
-                  title={workingEndpoints.size > 0 ? `Wait for ${operatorConversationName} to finish before deleting this conversation` : undefined}
+                  title={workingEndpoints.size > 0 ? `Wait for ${operatorConversationName} to finish before archiving this conversation` : undefined}
                   style={{
                     background: "transparent", color: tk.ink3, border: "none",
                     padding: "6px 4px", fontSize: 12,
@@ -1188,7 +1143,37 @@ export function ContextConversation({
                     opacity: operatorEntry.conversationActionsDisabled || workingEndpoints.size > 0 ? 0.5 : 1,
                   }}
                 >
-                  Delete
+                  Archive
+                </button>
+              )}
+              {operatorEntry.onRestoreConversation && (
+                <button
+                  type="button"
+                  onClick={operatorEntry.onRestoreConversation}
+                  disabled={operatorEntry.conversationActionsDisabled}
+                  style={{
+                    background: "transparent", color: tk.ink2, border: `1px solid ${tk.border}`,
+                    borderRadius: tk.r2, padding: "6px 10px", fontSize: 12,
+                    cursor: operatorEntry.conversationActionsDisabled ? "default" : "pointer",
+                    opacity: operatorEntry.conversationActionsDisabled ? 0.5 : 1,
+                  }}
+                >
+                  Restore
+                </button>
+              )}
+              {operatorEntry.onDestroyConversation && (
+                <button
+                  type="button"
+                  onClick={operatorEntry.onDestroyConversation}
+                  disabled={operatorEntry.conversationActionsDisabled}
+                  style={{
+                    background: "transparent", color: tk.danger, border: "none",
+                    padding: "6px 4px", fontSize: 12,
+                    cursor: operatorEntry.conversationActionsDisabled ? "default" : "pointer",
+                    opacity: operatorEntry.conversationActionsDisabled ? 0.5 : 1,
+                  }}
+                >
+                  Permanently destroy
                 </button>
               )}
             </div>
@@ -1197,7 +1182,9 @@ export function ContextConversation({
         {operatorEntry ? (
           <>
             <p style={{ margin: 0, color: tk.ink3, fontSize: 12.5 }}>
-              {operatorEntry.showContextIdentity
+              {operatorEntry.conversationLifecycleState === "archived"
+                ? "Archived conversations are retained but cannot receive new messages."
+                : operatorEntry.showContextIdentity
                 ? context.title || "A direct conversation in this workspace."
                 : "Working with you on this workspace."}
             </p>
@@ -1206,13 +1193,68 @@ export function ContextConversation({
                 {operatorEntry.conversationActionError}
               </div>
             )}
-            <div style={{ marginTop: 12 }}>
-              <FloeModelControl
-                workspaceId={workspaceId}
-                onReadyChange={setOperatorModelReady}
-                onOpenSettings={operatorEntry.onOpenSettings}
-              />
-            </div>
+            {operatorEntry.conversationActionConfirmation && (
+              <div
+                role="status"
+                style={{
+                  marginTop: 10,
+                  padding: "10px 12px",
+                  border: `1px solid ${tk.border}`,
+                  borderRadius: tk.r2,
+                  color: tk.ink2,
+                  fontSize: 12,
+                  lineHeight: 1.45,
+                }}
+              >
+                <div style={{ color: tk.ink, fontWeight: 590 }}>
+                  {operatorEntry.conversationActionConfirmation.title}
+                </div>
+                <div style={{ marginTop: 3 }}>
+                  {operatorEntry.conversationActionConfirmation.description}
+                </div>
+                {operatorEntry.onConfirmDestroyConversation && (
+                  <button
+                    type="button"
+                    onClick={operatorEntry.onConfirmDestroyConversation}
+                    disabled={operatorEntry.conversationActionsDisabled}
+                    style={{
+                      marginTop: 8,
+                      background: "transparent",
+                      color: tk.danger,
+                      border: `1px solid ${tk.border}`,
+                      borderRadius: tk.r2,
+                      padding: "6px 10px",
+                      fontSize: 12,
+                      cursor: operatorEntry.conversationActionsDisabled ? "default" : "pointer",
+                      opacity: operatorEntry.conversationActionsDisabled ? 0.5 : 1,
+                    }}
+                  >
+                    Confirm permanent destruction
+                  </button>
+                )}
+              </div>
+            )}
+            {operatorEntry.conversationActionRefusal && (
+              <div role="alert" style={{ marginTop: 8, color: tk.danger, fontSize: 12, lineHeight: 1.45 }}>
+                <div>{operatorEntry.conversationActionRefusal.message}</div>
+                {operatorEntry.conversationActionRefusal.required_action && (
+                  <div style={{ marginTop: 4, color: tk.ink3 }}>
+                    {operatorEntry.conversationActionRefusal.required_action.title}: {operatorEntry.conversationActionRefusal.required_action.description}
+                  </div>
+                )}
+              </div>
+            )}
+            {!readOnly && !context.scope_id && (
+              <div style={{ marginTop: 12 }}>
+                <FloeModelControl
+                  readOnly={!isNativeFloeApp()}
+                  workspaceId={workspaceId}
+                  endpointId={context.participants.find(participant => participant !== operatorEntry.operatorEndpointId && endpoints.some(endpoint => endpoint.endpoint_id === participant)) ?? ""}
+                  onReadyChange={setOperatorModelReady}
+                  onOpenSettings={operatorEntry.onOpenSettings}
+                />
+              </div>
+            )}
           </>
         ) : (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -1257,23 +1299,35 @@ export function ContextConversation({
             visibleMessages.map(event => (
               <MessageRow
                 key={event.event_id}
+                workspaceId={workspaceId}
                 event={event}
                 endpoints={endpoints}
-                alignRightEndpointId={alignRightEndpointId ?? operatorEntry?.speakingAsEndpointId}
+                alignRightEndpointId={alignRightEndpointId ?? operatorEntry?.operatorEndpointId}
                 showEventType={showWorkEvents}
                 onReviewProblemReport={operatorEntry?.onReviewProblemReport}
+                artefactLabels={artefactLabels}
               />
             ))
           )}
 
           {/* B1 — Typing / working indicators at bottom of stream */}
-          {Array.from(workingEndpoints.keys()).map(endpointId => (
-            <WorkingIndicator
-              key={endpointId}
-              actorName={endpointName(endpointId, endpoints)}
-              progress={workProgress.filter(progress => progress.endpointId === endpointId)}
-            />
+          {Array.from(workingEndpoints.entries()).map(([deliveryId, endpointId]) => (
+            <div key={deliveryId}>
+              <WorkingIndicator
+                actorName={endpointName(endpointId, endpoints)}
+                progress={workProgress.filter(progress => progress.deliveryId === deliveryId)}
+              />
+              {!readOnly && operatorEntry && !context.scope_id && (
+                <button type="button" aria-label={`Stop ${endpointName(endpointId, endpoints)} response`}
+                  disabled={stoppingResponse !== null} onClick={() => void stopResponse(deliveryId)}
+                  style={{ background: tk.surface, color: tk.ink2, border: `1px solid ${tk.border}`,
+                    borderRadius: tk.r2, padding: "7px 12px", cursor: stoppingResponse ? "default" : "pointer" }}>
+                  {stoppingResponse === deliveryId ? "Stopping…" : "Stop response"}
+                </button>
+              )}
+            </div>
           ))}
+          {stopError && <div role="alert" style={{ padding: "10px 0", color: tk.danger, fontSize: 12.5 }}>{stopError}</div>}
           {deliveryNotice && (
             <div role="alert" style={{ padding: "10px 0", color: tk.danger, fontSize: 12.5 }}>
               {deliveryNotice}
@@ -1283,35 +1337,36 @@ export function ContextConversation({
 
       </div>
 
-      {/* Footer: composer dock (participant) or non-participant selector + join */}
-      {!readOnly && (isParticipant ? (
+      {/* Only the operator front door can send. Developer Context views are an observatory. */}
+      {!readOnly && operatorEntry ? (
         <ComposerDock
-          endpoints={endpoints}
-          speakingAsId={speakingAsId}
-          onSpeakingAsChange={handleSpeakingAsChange}
+          key={`${workspaceId}:${contextId}`}
           onSend={handleSend}
-          hideSpeakingAs={!!operatorEntry}
-          placeholder={operatorEntry
-            ? operatorModelReady
-              ? operatorEntry.showContextIdentity
-                ? `Message ${operatorConversationName}…`
-                : "Tell Floe what you want to happen…"
-              : "Choose a provider and model above"
-            : undefined}
-          disabled={!!operatorEntry && !operatorModelReady}
-          disabledReason={operatorEntry && !operatorModelReady
+          placeholder={canCompose
+            ? operatorEntry.showContextIdentity
+              ? `Message ${operatorConversationName}…`
+              : "Tell Floe what you want to happen…"
+            : "Choose a provider and model above"}
+          disabled={!canCompose}
+          disabledReason={!canCompose
             ? `Choose a provider and model before talking to ${operatorConversationName}.`
             : undefined}
           allowAttachments={!!workspaceLocator}
         />
       ) : (
-        <NonParticipantFooter
-          endpoints={endpoints}
-          speakingAsId={speakingAsId}
-          onSpeakingAsChange={handleSpeakingAsChange}
-          onJoin={handleJoin}
-        />
-      ))}
+        !readOnly && (
+          <div role="status" style={{
+            flexShrink: 0,
+            borderTop: `1px solid ${tk.border}`,
+            background: tk.surface,
+            padding: "12px 24px 14px",
+            color: tk.ink3,
+            fontSize: 12.5,
+          }}>
+            Conversation history is read-only here. Open Conversations to reply as the authenticated operator.
+          </div>
+        )
+      )}
     </div>
   );
 }

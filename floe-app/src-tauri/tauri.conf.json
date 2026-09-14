@@ -1,7 +1,7 @@
 {
   "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Floe",
-  "version": "0.1.32",
+  "version": "0.1.80",
   "identifier": "com.floe.console",
   "build": {
     "frontendDist": "../dist",
@@ -21,18 +21,22 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src http://127.0.0.1:5377/v1/previews/html; form-action 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost blob: data:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
     "externalBin": [
-      "binaries/floe-node"
+      "binaries/floe-node",
+      "binaries/floe-authority-broker"
     ],
     "resources": [
       "resources/floe-desktop.js",
-      "resources/prompts/*.md"
+      "resources/isolated-command-host-process.js",
+      "resources/isolated-extension-host-process.js",
+      "resources/prompts/*.md",
+      "resources/node_modules/**/*"
     ],
     "icon": [
       "icons/32x32.png",

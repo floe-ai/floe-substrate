@@ -629,7 +629,7 @@ function EventsSection({
           load();
         }
       }
-    });
+    }, { workspaceId });
     return unsub;
   }, [workspaceId, scopeId, load]);
 
@@ -723,7 +723,7 @@ function PulsesSection({
       } else {
         load();
       }
-    });
+    }, { workspaceId });
     return unsub;
   }, [workspaceId, scopeId, load]);
 

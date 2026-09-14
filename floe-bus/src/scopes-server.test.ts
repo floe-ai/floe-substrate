@@ -8,6 +8,10 @@ import { defaultConfig, type LocalConfig } from "./config.js";
 
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
 
+function localHeaders(handle: ServerHandle) {
+  return { authorization: `Bearer ${handle.localControlToken}` };
+}
+
 async function makeServer(): Promise<{
   handle: ServerHandle;
   tmp: string;
@@ -18,7 +22,7 @@ async function makeServer(): Promise<{
   const cfgPath = join(tmp, "config.yaml");
   const cfg: LocalConfig = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const handle = await createBusServer(cfgPath, cfg);
+  const handle = await createBusServer(cfgPath, cfg, { allow_unauthenticated_test_requests: true });
   await handle.app.ready();
   return {
     handle,
@@ -53,6 +57,7 @@ describe("Scope HTTP routes", () => {
     const registered = await handle.app.inject({
       method: "POST",
       url: "/v1/workspaces/register",
+      headers: localHeaders(handle),
       payload: { locator: wsLocator, name: "scope-test" }
     });
     expect(registered.statusCode).toBe(201);
@@ -73,6 +78,7 @@ describe("Scope HTTP routes", () => {
     const registered = await handle.app.inject({
       method: "POST",
       url: "/v1/workspaces/register",
+      headers: localHeaders(handle),
       payload: { locator: wsLocator, name: "scope-test" }
     });
     expect(registered.statusCode).toBe(201);
@@ -112,6 +118,7 @@ describe("Scope HTTP routes", () => {
     const registered = await handle.app.inject({
       method: "POST",
       url: "/v1/workspaces/register",
+      headers: localHeaders(handle),
       payload: { locator: wsLocator, name: "scope-test" }
     });
     const workspaceId = registered.json().workspace.workspace_id;
@@ -128,8 +135,7 @@ describe("Scope HTTP routes", () => {
     expect(created.statusCode).toBe(400);
     expect(created.json()).toMatchObject({
       error: "scope_id_reserved",
-      workspace_id: workspaceId,
-      scope_id: "default"
+      receipt_id: expect.any(String),
     });
   });
 
@@ -139,6 +145,7 @@ describe("Scope HTTP routes", () => {
     const registered = await handle.app.inject({
       method: "POST",
       url: "/v1/workspaces/register",
+      headers: localHeaders(handle),
       payload: { locator: wsLocator, name: "scope-test" }
     });
     const workspaceId = registered.json().workspace.workspace_id;
@@ -176,6 +183,7 @@ describe("Scope HTTP routes", () => {
     const registered = await handle.app.inject({
       method: "POST",
       url: "/v1/workspaces/register",
+      headers: localHeaders(handle),
       payload: { locator: wsLocator, name: "scope-test" }
     });
     const workspaceId = registered.json().workspace.workspace_id;
@@ -209,21 +217,24 @@ describe("Scope HTTP routes", () => {
     const firstRegistration = await handle.app.inject({
       method: "POST",
       url: "/v1/workspaces/register",
+      headers: localHeaders(handle),
       payload: { locator: wsLocator, name: "scope-test" }
     });
     const workspaceId = firstRegistration.json().workspace.workspace_id;
     await handle.app.inject({
       method: "POST",
-      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/select`
+      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/select`,
+      headers: localHeaders(handle),
     });
     await handle.app.inject({
       method: "POST",
       url: "/v1/workspaces/register",
+      headers: localHeaders(handle),
       payload: { locator: wsLocator, name: "scope-test-renamed" }
     });
 
     await handle.app.close();
-    handle = await createBusServer(cfgPath, cfg);
+    handle = await createBusServer(cfgPath, cfg, { allow_unauthenticated_test_requests: true });
     await handle.app.ready();
 
     const scopes = await handle.app.inject({
@@ -241,6 +252,7 @@ describe("Scope HTTP routes", () => {
       const registered = await handle.app.inject({
         method: "POST",
         url: "/v1/workspaces/register",
+        headers: localHeaders(handle),
         payload: { locator: wsLocator, name: "scope-test" }
       });
       expect(registered.statusCode).toBe(201);

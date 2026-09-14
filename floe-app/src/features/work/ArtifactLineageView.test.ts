@@ -22,6 +22,7 @@ function event(type: string, text: string): EventEnvelope {
     content: { text },
     response: { expected: false },
     metadata: {},
+    artefact_version_ids: [],
     created_at: "2026-09-01T00:00:00Z",
   };
 }

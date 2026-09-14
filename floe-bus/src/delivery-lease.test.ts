@@ -23,6 +23,23 @@ function makeStore(): { store: BusStore; cleanup: () => void } {
   const cfg = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
   const store = new BusStore(cfgPath, cfg);
+  const timestamp = new Date().toISOString();
+  store.workspaceIdentityStore.restoreWorkspace({
+    snapshot: {
+      workspace_id: WS,
+      name: "Lease test",
+      creation_kind: "created",
+      source_workspace_id: null,
+      created_at: timestamp,
+      updated_at: timestamp,
+    },
+    binding: {
+      host_id: store.localHostId,
+      platform: store.localWorkspacePlatform,
+      locator: join(tmp, "workspace"),
+      init_authorized: true,
+    },
+  });
   return {
     store,
     cleanup: () => {
@@ -46,7 +63,6 @@ describe("D5 — lease-expiry requeue via scheduled single-shot timer (no recurr
 
     try {
       store.setBroadcast(broadcast);
-      store.registerWorkspace({ locator: "/fake/path", name: "Runtime Lease Test", init_authorized: true }, broadcast);
       store.registerEndpoint({ endpoint_id: EP, workspace_id: WS, name: "Agent", bridge_id: BRIDGE, status: "idle" }, broadcast);
       store.submitEvent({
         type: "message",
@@ -101,7 +117,6 @@ describe("D5 — lease-expiry requeue via scheduled single-shot timer (no recurr
 
     try {
       store.setBroadcast(broadcast);
-      store.registerWorkspace({ locator: "/fake/path", name: "Restart Safety Test", init_authorized: true }, broadcast);
       store.registerEndpoint({ endpoint_id: EP, workspace_id: WS, name: "Agent", bridge_id: BRIDGE, status: "idle" }, broadcast);
       store.submitEvent({
         type: "message",
@@ -146,7 +161,6 @@ describe("D5 — lease-expiry requeue via scheduled single-shot timer (no recurr
       // Inject broadcast so the store can self-schedule (D5).
       store.setBroadcast(broadcast);
 
-      store.registerWorkspace({ locator: "/fake/path", name: "Lease Test", init_authorized: true }, broadcast);
       store.registerEndpoint({ endpoint_id: EP, workspace_id: WS, name: "Agent", bridge_id: BRIDGE, status: "idle" }, broadcast);
 
       const eventCmd: EventCommand = {
@@ -201,7 +215,6 @@ describe("D5 — lease-expiry requeue via scheduled single-shot timer (no recurr
     try {
       store.setBroadcast(broadcast);
 
-      store.registerWorkspace({ locator: "/fake/path", name: "Timer Test", init_authorized: true }, broadcast);
       store.registerEndpoint({ endpoint_id: EP, workspace_id: WS, name: "Agent", bridge_id: BRIDGE, status: "idle" }, broadcast);
 
       const eventCmd: EventCommand = {
@@ -242,7 +255,6 @@ describe("D5 — lease-expiry requeue via scheduled single-shot timer (no recurr
     try {
       store.setBroadcast(broadcast);
 
-      store.registerWorkspace({ locator: "/fake/path", name: "Reschedule Test", init_authorized: true }, broadcast);
       store.registerEndpoint({ endpoint_id: EP, workspace_id: WS, name: "Agent", bridge_id: BRIDGE, status: "idle" }, broadcast);
 
       // Create first bundle

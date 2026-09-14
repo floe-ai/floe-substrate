@@ -15,7 +15,7 @@ async function makeServer(): Promise<{ handle: ServerHandle; tmp: string }> {
   const cfgPath = join(tmp, "config.yaml");
   const cfg: LocalConfig = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const handle = await createBusServer(cfgPath, cfg);
+  const handle = await createBusServer(cfgPath, cfg, { allow_unauthenticated_test_requests: true });
   await handle.app.ready();
   return { handle, tmp };
 }
@@ -46,7 +46,7 @@ async function makeServerWithLegacyPulseScopeSchema(): Promise<{ handle: ServerH
     );
   `);
   db.close();
-  const handle = await createBusServer(cfgPath, cfg);
+  const handle = await createBusServer(cfgPath, cfg, { allow_unauthenticated_test_requests: true });
   await handle.app.ready();
   return { handle, tmp };
 }
@@ -57,6 +57,7 @@ async function registerWorkspace(handle: ServerHandle, tmp: string): Promise<str
   const res = await handle.app.inject({
     method: "POST",
     url: "/v1/workspaces/register",
+    headers: { authorization: `Bearer ${handle.localControlToken}` },
     payload: { locator, name: "pulse-scope" }
   });
   expect(res.statusCode).toBe(201);

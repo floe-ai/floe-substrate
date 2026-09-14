@@ -1,46 +1,93 @@
-# ADR-0002: Extension substrate design — manifest, loading, and scope
+# ADR-0002: Canonical Extension package lifecycle and isolated execution
 
 ## Status
-Accepted
+Accepted (amended 2026-09-04)
 
 ## Context
-The Floe substrate needs an extension model so that agents can gain new capabilities beyond built-in tools. The PRD lists event types, tools, state, hooks, pulse behaviours, and work-log contributions as possible extension provisions. Pi (the runtime) has its own extension format (TypeScript factory functions with `ExtensionAPI`). We needed to decide: what IS a Floe extension, how is it shaped, loaded, and bound to agents?
+Floe needs Extensions to add capabilities, connectors, schemas, resolvers, and
+bounded product surfaces without giving third-party package code the authority
+of the Bridge or creating another source of truth.
+
+The original implementation dynamically imported TypeScript from
+`.floe/extensions/NAME/` into the Bridge. It injected returned tools into every
+runtime session, gave package code ambient Bridge authority, and reported an
+in-memory view/HTTP-relay registry to the Bus. Real operation proved that this
+could not support exact version identity, permission review, execution pinning,
+crash containment, safe upgrade, or rollback. Those loading, authority, and
+registration decisions are superseded by this amendment.
 
 ## Decision
 
-### Current scope: tools, pulse declarations, and programmatic extension hooks
-Extensions provide agent tools, optional pulse schedule declarations, and programmatic Extension Hooks registered from TypeScript through `ExtensionContext.hooks.on(...)`. Event type declarations, dedicated state management, work-log contributions, and declarative YAML hook configuration remain deferred.
+### Canonical identity and lifecycle
 
-### Manifest format: extension.json
-Extensions live in `.floe/extensions/NAME/` with a JSON manifest (`extension.json`) declaring metadata and capabilities. JSON was chosen over YAML because extensions contain TypeScript code — JSON is the natural companion (like `package.json`).
+The Bus owns durable Extension identity, immutable ExtensionPackageVersion
+records, Workspace installations, activation attempts, lifecycle history, and
+execution pins. Install, enable, disable, upgrade, rollback, inspection,
+contribution discovery, and entry-point invocation use the shared semantic
+operation contract.
 
-### Entry point: factory function returning AgentTool[]
-The TypeScript entry exports `export default function(ctx: ExtensionContext): AgentTool[]`. This matches the existing internal pattern (pulse-tools, actor-tools are factories receiving context). The `ExtensionContext` provides `workspacePath`, `busClient`, `workspaceId`, `extensionName`, and `hooks.on(...)` for programmatic hook registration.
+Every executable package version has an exact content digest, permission digest,
+compatibility contract, provenance, declared entry points, and test evidence.
+An execution that invokes an Extension pins the exact ExtensionPackageVersion.
 
-Rejected alternative: Pi-compatible `export default function(pi: ExtensionAPI)` — Pi extensions operate at runtime level (session lifecycle), while Floe extensions operate at substrate level (bus/bridge, cross-agent). The lifecycles don't align. Pi compatibility is a nice-to-have for later, not a current driver.
+### Source and installation
 
-### Extension hooks: programmatic registration, bridge/runtime firing
-Hook registration and hook firing are separate. An extension may register handlers while it is loaded, but a hook runs only when the current bridge/runtime path fires it. The public fired hooks are `SessionStart`, `SessionResume`, `BeforeTurn`, `Pulse`, `TurnEnd`, `Error`, `BeforeToolUse`, `AfterToolUse`, `ToolUseFailed`, `SessionEnd`, and `WebhookReceived`. `BeforeTurn` supports prompt/context injection via returned `inject` data; the other active hooks are observation hooks. `SessionEnd` fires when runtime sessions are replaced or disposed, and `WebhookReceived` fires from the real bus webhook ingest event path.
+Canonical source may live in an independent repository or package as required by
+ADR-0006. `.floe/extensions/NAME/` remains the Workspace installation and
+discovery location, not an identity or registration ledger. Its descriptor
+points to one canonical ExtensionPackageVersion. The host verifies the exact
+installed source bytes against that version before code can run.
 
-### Loading: on workspace attach (bridge-only)
-The bridge discovers and loads extensions at workspace attach time, alongside agents and pulses. The bus is extension-unaware — extension-declared pulses are registered as normal pulses.
+### Contributions
 
-### Tool namespacing: auto-prefix
-Extension tool names are automatically prefixed with the extension name (`todo_add`, `notes_search`) to prevent collisions. The extension author writes `name: "add"`, the agent sees `todo_add`.
+An ExtensionPackageVersion may declare capabilities, connectors, Artefact
+schemas or resolvers, and bounded product surfaces. Active contributions are a
+projection of the exact enabled package version. Disabling or rolling back an
+installation changes that projection through the canonical lifecycle.
 
-### State: workspace-free
-Extensions have no designated state directory. Extension tools read/write the workspace filesystem like any other agent tool. Structured extension state (SQLite, caches) can be added later if needed.
+A product surface declares canonical projection and action operation IDs plus a
+presentation schema. It cannot register executable UI code or an arbitrary HTTP
+relay. This is a bounded contract, not a universal renderer or design system.
 
-### TypeScript loading: dynamic import
-The bridge runs under `tsx`, so `await import('./path/to/index.ts')` works natively. No new dependencies needed.
+### Isolation and authority
+
+Package source runs in a dedicated hidden child process and a constrained
+QuickJS WebAssembly realm. The realm receives no ambient Node, filesystem,
+network, environment, secret, or semantic-operation access.
+
+Every host call must use an exact declared permission. The trusted parent checks
+the call again, resolves current CapabilityGrants, invokes the canonical
+operation or broker, and records an audit entry. Secret values never enter the
+Extension contract; only SecretRefs and grant IDs cross it. Filesystem and
+network calls fail closed until their canonical brokers are connected.
+
+Activation consumes an exact canonical ApprovalReceipt and creates the durable
+activation attempt in one transaction before untrusted code runs. Compatibility,
+permission digest, package bytes, isolation level, principal, lifecycle action,
+and grant IDs are bound to that attempt. A replay returns the same attempt and
+does not silently run code again.
+
+An upgrade starts and verifies the candidate before retiring the prior host. A
+failed candidate preserves the prior version. Unexpected host exit quarantines
+the exact active installation. Disable and rollback retain history and require
+the host stop to be confirmed; uncertain shutdown remains quarantined.
+
+### Bridge boundary
+
+The Bridge does not import Extension source, inject Extension tools, host an
+Extension HTTP relay, or report a second Extension registry. Runtime actors and
+clients discover and invoke Extension behaviour through the same canonical
+semantic operations.
 
 ## Consequences
-- `.floe/extensions/NAME/extension.json` becomes the extension manifest format
-- Bridge gains extension discovery, loading, and tool injection logic
-- Agent frontmatter `extensions: ["name"]` binds extensions to agents
-- Extension-declared pulses flow through existing pulse infrastructure
-- Programmatic Extension Hooks are part of the current extension substrate
-- Declarative YAML hook configuration is future/not implemented
-- Public hook names must have firing paths, typed payloads, and tests before being documented
-- No bus schema changes needed
-- Pi extension compatibility is deferred but not precluded
+
+- Extension identity, permissions, active contributions, and lifecycle have one
+  durable source of truth.
+- Package code cannot inherit the Bridge's authority.
+- Installed package bytes are verified before activation.
+- Activation, execution, crash, upgrade, disable, and rollback retain exact
+  package evidence.
+- Clients can render safe declared product surfaces from canonical operations
+  without loading untrusted UI code.
+- The process boundary and QuickJS limits are defence in depth, not a claim of
+  perfect containment.

@@ -259,7 +259,7 @@ export function renderProblemReportMarkdown(report: FloeProblemReport): string {
     `- Participants: ${bus.context.participants.map((participant) => `\`${participant}\``).join(", ") || "none"}`,
     `- Related deliveries: ${bus.deliveries.length}${bus.limits.deliveries_truncated ? "+ (bounded)" : ""}`,
     `- Related telemetry records: ${bus.telemetry.length}${bus.limits.telemetry_truncated ? "+ (bounded)" : ""}`,
-    `- Discoverable capabilities: ${bus.capabilities.map((capability) => capability.capability_id).join(", ") || "none"}`,
+    `- Registered semantic operations: ${bus.operations.map((operation) => `${operation.operation_id}@${operation.operation_version}`).join(", ") || "none"}`,
     "",
     "### Delivery state",
     "",
@@ -360,6 +360,7 @@ function normalizedHostPath(value: string): string {
 }
 
 async function discoverUnindexedProblemReports(workspace: WorkspaceFsRef): Promise<ProblemReportReceipt[]> {
+  if (!workspace.locator) return [];
   try {
     const separator = /^[A-Za-z]:[\\/]/.test(workspace.locator) || workspace.locator.includes("\\") ? "\\" : "/";
     const reportRoot = `${workspace.locator.replace(/[\\/]+$/, "")}${separator}.floe${separator}state${separator}feedback`;
@@ -399,6 +400,7 @@ async function discoverUnindexedProblemReports(workspace: WorkspaceFsRef): Promi
 }
 
 export function developerHandoffText(workspace: WorkspaceFsRef, receipt: ProblemReportReceipt): string {
+  if (!workspace.locator) return `Review the saved Floe problem report ${receipt.markdown_path} in workspace ${workspace.workspace_id} and resolve the demonstrated issue.`;
   const separator = /^[A-Za-z]:[\\/]/.test(workspace.locator) || workspace.locator.includes("\\") ? "\\" : "/";
   const absolute = `${workspace.locator.replace(/[\\/]+$/, "")}${separator}${receipt.markdown_path.replace(/[\\/]/g, separator)}`;
   return `Review this saved Floe problem report and resolve the demonstrated issue: ${absolute}`;

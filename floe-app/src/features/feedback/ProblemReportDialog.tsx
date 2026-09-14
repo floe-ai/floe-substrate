@@ -50,7 +50,8 @@ function latestFloeInterpretation(evidence: ContextDiagnosticEvidence, operatorE
   return typeof event?.content?.["text"] === "string" ? event.content["text"].trim() : "";
 }
 
-function absolutePath(workspaceRoot: string, relativePath: string): string {
+function absolutePath(workspaceRoot: string | undefined, relativePath: string): string {
+  if (!workspaceRoot) return relativePath;
   const windows = /^[A-Za-z]:[\\/]/.test(workspaceRoot) || workspaceRoot.includes("\\");
   const separator = windows ? "\\" : "/";
   return `${workspaceRoot.replace(/[\\/]+$/, "")}${separator}${relativePath.replace(/[\\/]/g, separator)}`;
@@ -293,7 +294,7 @@ export function ProblemReportDialog({
                 border: `1px solid ${tk.border}`, borderRadius: tk.r2, padding: "11px 12px",
                 color: tk.ink3, fontSize: 12, lineHeight: 1.5, background: tk.surfaceSunk,
               }}>
-                Evidence: {evidence.deliveries.length} related deliveries, {evidence.telemetry.length} runtime records, {evidence.capabilities.length} discoverable capabilities. Sensitive keys, credentials, personal paths, and email addresses are redacted before preview.
+                Evidence: {evidence.deliveries.length} related deliveries, {evidence.telemetry.length} runtime records, {evidence.operations.length} registered semantic operations. Sensitive keys, credentials, personal paths, and email addresses are redacted before preview.
               </div>
               <div style={{ display: "flex", justifyContent: "flex-end", gap: 9 }}>
                 <button type="button" onClick={onClose} style={{

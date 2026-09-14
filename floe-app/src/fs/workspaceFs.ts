@@ -27,7 +27,8 @@
 /** Minimal workspace identity needed to address either FS backend. */
 export type WorkspaceFsRef = {
   workspace_id: string;
-  locator: string;
+  /** Host paths are absent from browser projections. */
+  locator?: string;
 };
 
 /** True when running inside the Tauri desktop shell, false in a plain browser. */
@@ -80,6 +81,7 @@ export function resetFileAccessAvailableCacheForTests(): void {
  */
 export async function listAgentFiles(workspace: WorkspaceFsRef): Promise<string[]> {
   if (isTauri()) {
+    if (!workspace.locator) throw new Error("This workspace has no local folder binding.");
     return invokeTauri<string[]>("list_agent_files", { workspaceRoot: workspace.locator });
   }
   const { busListAgentFiles } = await import("../bus-client/client.ts");
@@ -92,6 +94,7 @@ export async function readWorkspaceFile(
   relPath: string
 ): Promise<string> {
   if (isTauri()) {
+    if (!workspace.locator) throw new Error("This workspace has no local folder binding.");
     return invokeTauri<string>("read_file", { workspaceRoot: workspace.locator, relPath });
   }
   const { busReadFile } = await import("../bus-client/client.ts");
@@ -103,11 +106,8 @@ export async function workspaceMediaSource(
   workspace: WorkspaceFsRef,
   relPath: string,
 ): Promise<string> {
-  if (isTauri()) {
-    return invokeTauri<string>("read_media_file", { workspaceRoot: workspace.locator, relPath });
-  }
-  const { busWorkspaceMediaUrl } = await import("../bus-client/client.ts");
-  return busWorkspaceMediaUrl(workspace.workspace_id, relPath);
+  const { busWorkspaceMediaSource } = await import("../bus-client/client.ts");
+  return busWorkspaceMediaSource(workspace.workspace_id, relPath);
 }
 
 /**
@@ -120,6 +120,7 @@ export async function writeWorkspaceFile(
   contents: string
 ): Promise<void> {
   if (isTauri()) {
+    if (!workspace.locator) throw new Error("This workspace has no local folder binding.");
     await invokeTauri<void>("write_file", { workspaceRoot: workspace.locator, relPath, contents });
     return;
   }

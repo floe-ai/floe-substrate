@@ -2,12 +2,11 @@
  * ContextInspector — right-inspector content for a selected context in a scope.
  *
  * Shows: name (human label), participants, scope, created — all by name not IDs.
- * Delete context action with name-confirm dialog. On success removes from parent list.
- * 404 is treated as already-gone (silent success).
+ * This developer observatory is read-only; operator lifecycle actions live in Conversations.
  */
 import React, { useEffect, useState } from "react";
 import type { ContextRef, EndpointRef, ScopeRef } from "../bus-client/types.ts";
-import { getContext, deleteContext, listEndpoints } from "../bus-client/client.ts";
+import { getContext, listEndpoints } from "../bus-client/client.ts";
 import { contextLabel } from "./ScopeDetail.tsx";
 
 // ---------------------------------------------------------------------------
@@ -61,16 +60,6 @@ function StatRow({ label, value }: { label: string; value: React.ReactNode }): R
 }
 
 // ---------------------------------------------------------------------------
-// Delete state machine
-// ---------------------------------------------------------------------------
-
-type DeleteState =
-  | { phase: "idle" }
-  | { phase: "confirming" }
-  | { phase: "deleting" }
-  | { phase: "error"; message: string };
-
-// ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
@@ -102,17 +91,15 @@ export function ContextInspector({
   const [endpoints, setEndpoints] = useState<EndpointRef[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [deleteState, setDeleteState] = useState<DeleteState>({ phase: "idle" });
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
     setCtx(null);
-    setDeleteState({ phase: "idle" });
 
     Promise.all([
-      getContext(contextId),
+      getContext(contextId, workspaceId),
       listEndpoints(workspaceId).catch(() => [] as EndpointRef[]),
     ])
       .then(([c, eps]) => {
@@ -135,23 +122,6 @@ export function ContextInspector({
 
     return () => { cancelled = true; };
   }, [contextId, workspaceId, onDeleted]);
-
-  async function handleDelete() {
-    if (!ctx) return;
-    setDeleteState({ phase: "deleting" });
-    try {
-      await deleteContext(ctx.context_id);
-      onDeleted();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // 404 → already gone
-      if (msg.includes("404")) {
-        onDeleted();
-      } else {
-        setDeleteState({ phase: "error", message: msg });
-      }
-    }
-  }
 
   if (loading) {
     return (
@@ -219,73 +189,6 @@ export function ContextInspector({
         />
       </div>
 
-      {/* Delete action */}
-      <div style={{ padding: "12px 16px" }}>
-        {deleteState.phase === "idle" && (
-          <button
-            onClick={() => setDeleteState({ phase: "confirming" })}
-            style={{
-              background: "transparent", border: `1px solid ${tk.danger}`,
-              color: tk.danger, borderRadius: tk.r2, padding: "5px 12px",
-              fontSize: 12, cursor: "pointer", fontWeight: 510, fontFamily: tk.fontUi,
-            }}
-          >
-            Delete context
-          </button>
-        )}
-
-        {deleteState.phase === "confirming" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <p style={{ fontSize: 12, color: tk.ink2, lineHeight: 1.45, margin: 0 }}>
-              Delete "{label}"? This removes all its events and cannot be undone.
-            </p>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button
-                onClick={() => void handleDelete()}
-                style={{
-                  background: tk.danger, color: "#fff", border: "none",
-                  borderRadius: tk.r2, padding: "5px 12px", fontSize: 12,
-                  cursor: "pointer", fontFamily: tk.fontUi,
-                }}
-              >
-                Confirm delete
-              </button>
-              <button
-                onClick={() => setDeleteState({ phase: "idle" })}
-                style={{
-                  background: "transparent", border: `1px solid ${tk.border}`,
-                  color: tk.ink3, borderRadius: tk.r2, padding: "5px 12px", fontSize: 12,
-                  fontFamily: tk.fontUi,
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-
-        {deleteState.phase === "deleting" && (
-          <p style={{ fontSize: 12, color: tk.ink3, margin: 0 }}>Deleting…</p>
-        )}
-
-        {deleteState.phase === "error" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <p role="alert" style={{ fontSize: 12, color: tk.danger, margin: 0 }}>
-              {deleteState.message}
-            </p>
-            <button
-              onClick={() => setDeleteState({ phase: "idle" })}
-              style={{
-                background: "transparent", border: `1px solid ${tk.border}`,
-                color: tk.ink3, borderRadius: tk.r2, padding: "4px 10px", fontSize: 12,
-                alignSelf: "flex-start", fontFamily: tk.fontUi,
-              }}
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
-      </div>
     </div>
   );
 }

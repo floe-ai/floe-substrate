@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { platform } from "node:os";
+import { createHash } from "node:crypto";
 import { resolveWorkspacePath, validateWorkspaceContainment, safeWorkspacePath } from "./path-scoping.js";
 import { truncateOutput } from "./truncation.js";
 import { sanitiseEnvironment, listStrippedVarNames } from "./env-sanitise.js";
@@ -190,6 +191,18 @@ describe("read tool", () => {
     expect(firstText(result)).toContain("4. line 4");
     expect(firstText(result)).not.toContain("1. line 1");
     expect(firstText(result)).not.toContain("5. line 5");
+  });
+
+  it("reports the complete byte identity even when displaying a line range", async () => {
+    const bytes = Buffer.from("\uFEFFcafé\r\nsecond line\r\n", "utf8");
+    writeFileSync(join(workspace, "identity.txt"), bytes);
+    const result = await createReadTool(createTestContext(workspace)).execute("identity", {
+      path: "identity.txt", start_line: 2, end_line: 2,
+    });
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    expect(result.details).toMatchObject({ size_bytes: bytes.length, digest: { algorithm: "sha256", value: digest } });
+    expect(firstText(result)).toContain(digest);
+    expect(firstText(result)).not.toContain("café");
   });
 
   it("rejects paths outside workspace", async () => {
@@ -578,6 +591,18 @@ describe("edit tool", () => {
     expect(content).toContain("const z = 300;");
   });
 
+  it("returns the exact written byte identity including BOM and CRLF", async () => {
+    writeFileSync(join(workspace, "identity.txt"), "\uFEFFcafé\r\nblue\r\n", "utf8");
+    const result = await createEditTool(createTestContext(workspace)).execute("identity", {
+      path: "identity.txt", edits: [{ old_text: "blue", new_text: "copper-orange" }],
+    });
+    const bytes = readFileSync(join(workspace, "identity.txt"));
+    expect(bytes.toString("utf8")).toBe("\uFEFFcafé\r\ncopper-orange\r\n");
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    expect(result.details).toMatchObject({ size_bytes: bytes.length, digest: { algorithm: "sha256", value: digest } });
+    expect(firstText(result)).toContain(digest);
+  });
+
   it("returns diff in output", async () => {
     const ctx = createTestContext(workspace);
     const tool = createEditTool(ctx);
@@ -772,6 +797,25 @@ describe("run_command tool", () => {
     expect(firstText(result)).toContain("hello");
   });
 
+  it("preserves a quoted program containing spaces when passed through the shell", async () => {
+    const tool = createBashTool(createTestContext(workspace));
+    const result = await tool.execute("quoted-program", {
+      command: `node -e "const label = 'saved work'; console.log(label)"`,
+    });
+    expect(result.details?.ok, firstText(result)).toBe(true);
+    expect(firstText(result)).toContain("saved work");
+  });
+
+  it("preserves a quoted executable and a filename containing spaces and shell characters", async () => {
+    writeFileSync(join(workspace, "review & evidence.txt"), "retained evidence");
+    const tool = createBashTool(createTestContext(workspace));
+    const result = await tool.execute("quoted-paths", {
+      command: `"${process.execPath}" -e "const fs = require('fs'); console.log(fs.readFileSync(process.argv[1], 'utf8'))" "review & evidence.txt"`,
+    });
+    expect(result.details?.ok, firstText(result)).toBe(true);
+    expect(firstText(result)).toContain("retained evidence");
+  });
+
   it("runs in workspace root directory", async () => {
     const ctx = createTestContext(workspace);
     const tool = createBashTool(ctx);
@@ -878,4 +922,3 @@ describe("run_command tool", () => {
     expect(result.details?.ok).toBe(true);
   });
 });
-

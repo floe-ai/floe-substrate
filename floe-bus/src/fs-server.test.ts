@@ -14,6 +14,10 @@ import { defaultConfig, type LocalConfig } from "./config.js";
 
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
 
+function localHeaders(handle: ServerHandle) {
+  return { authorization: `Bearer ${handle.localControlToken}` };
+}
+
 async function makeServer(opts?: { localPaths?: boolean }): Promise<{
   handle: ServerHandle;
   cleanup: () => Promise<void>;
@@ -24,7 +28,7 @@ async function makeServer(opts?: { localPaths?: boolean }): Promise<{
   const cfg: LocalConfig = defaultConfig(tmp);
   cfg.bridge.workspace_access.local_paths = opts?.localPaths ?? true;
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const handle = await createBusServer(cfgPath, cfg);
+  const handle = await createBusServer(cfgPath, cfg, { allow_unauthenticated_test_requests: true });
   await handle.app.ready();
 
   const workspaceDir = join(tmp, "my-workspace");
@@ -44,6 +48,7 @@ async function registerWorkspace(handle: ServerHandle, locator: string): Promise
   const res = await handle.app.inject({
     method: "POST",
     url: "/v1/workspaces/register",
+    headers: { authorization: `Bearer ${handle.localControlToken}` },
     payload: { locator, name: "fs-test-ws" }
   });
   expect(res.statusCode).toBe(201);
@@ -83,7 +88,8 @@ describe("GET /v1/fs/browse", () => {
 
       const res = await handle.app.inject({
         method: "GET",
-        url: `/v1/fs/browse?path=${encodeURIComponent(workspaceDir)}`
+        url: `/v1/fs/browse?path=${encodeURIComponent(workspaceDir)}`,
+        headers: localHeaders(handle),
       });
       expect(res.statusCode).toBe(200);
       const body = res.json();
@@ -101,7 +107,11 @@ describe("GET /v1/fs/browse", () => {
   it("defaults to home dir when path is omitted", async () => {
     const { handle, cleanup } = await makeServer();
     try {
-      const res = await handle.app.inject({ method: "GET", url: "/v1/fs/browse" });
+      const res = await handle.app.inject({
+        method: "GET",
+        url: "/v1/fs/browse",
+        headers: localHeaders(handle),
+      });
       expect(res.statusCode).toBe(200);
       expect(typeof res.json().path).toBe("string");
     } finally {
@@ -112,7 +122,11 @@ describe("GET /v1/fs/browse", () => {
   it("is gated off when local_paths is disabled", async () => {
     const { handle, cleanup } = await makeServer({ localPaths: false });
     try {
-      const res = await handle.app.inject({ method: "GET", url: "/v1/fs/browse" });
+      const res = await handle.app.inject({
+        method: "GET",
+        url: "/v1/fs/browse",
+        headers: localHeaders(handle),
+      });
       expect(res.statusCode).toBe(403);
       expect(res.json().error).toBe("fs_disabled");
     } finally {
@@ -133,7 +147,8 @@ describe("GET /v1/workspaces/:workspace_id/fs/agents", () => {
 
       const res = await handle.app.inject({
         method: "GET",
-        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/agents`
+        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/agents`,
+        headers: localHeaders(handle),
       });
       expect(res.statusCode).toBe(200);
       const files = res.json().files as string[];
@@ -150,7 +165,8 @@ describe("GET /v1/workspaces/:workspace_id/fs/agents", () => {
     try {
       const res = await handle.app.inject({
         method: "GET",
-        url: "/v1/workspaces/workspace:does-not-exist/fs/agents"
+        url: "/v1/workspaces/workspace:does-not-exist/fs/agents",
+        headers: localHeaders(handle),
       });
       expect(res.statusCode).toBe(404);
     } finally {
@@ -165,7 +181,8 @@ describe("GET /v1/workspaces/:workspace_id/fs/agents", () => {
       // gate must reject before resolving anything workspace-specific.
       const res = await handle.app.inject({
         method: "GET",
-        url: "/v1/workspaces/workspace:whatever/fs/agents"
+        url: "/v1/workspaces/workspace:whatever/fs/agents",
+        headers: localHeaders(handle),
       });
       expect(res.statusCode).toBe(403);
       expect(res.json().error).toBe("fs_disabled");
@@ -185,6 +202,7 @@ describe("GET/PUT /v1/workspaces/:workspace_id/fs/file", () => {
       const putRes = await handle.app.inject({
         method: "PUT",
         url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/file`,
+        headers: localHeaders(handle),
         payload: { path: ".floe/agents/new-agent.md", contents: "---\nagent_id: new-agent\n---\nHello" }
       });
       expect(putRes.statusCode).toBe(200);
@@ -192,7 +210,8 @@ describe("GET/PUT /v1/workspaces/:workspace_id/fs/file", () => {
 
       const getRes = await handle.app.inject({
         method: "GET",
-        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/file?path=${encodeURIComponent(".floe/agents/new-agent.md")}`
+        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/file?path=${encodeURIComponent(".floe/agents/new-agent.md")}`,
+        headers: localHeaders(handle),
       });
       expect(getRes.statusCode).toBe(200);
       expect(getRes.json().contents).toBe("---\nagent_id: new-agent\n---\nHello");
@@ -207,7 +226,8 @@ describe("GET/PUT /v1/workspaces/:workspace_id/fs/file", () => {
       const wsId = await registerWorkspace(handle, workspaceDir);
       const res = await handle.app.inject({
         method: "GET",
-        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/file?path=${encodeURIComponent(".floe/agents/nope.md")}`
+        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/file?path=${encodeURIComponent(".floe/agents/nope.md")}`,
+        headers: localHeaders(handle),
       });
       expect(res.statusCode).toBe(404);
     } finally {
@@ -222,7 +242,8 @@ describe("GET/PUT /v1/workspaces/:workspace_id/fs/file", () => {
 
       const getRes = await handle.app.inject({
         method: "GET",
-        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/file?path=${encodeURIComponent("../../etc/passwd")}`
+        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/file?path=${encodeURIComponent("../../etc/passwd")}`,
+        headers: localHeaders(handle),
       });
       expect(getRes.statusCode).toBe(400);
       expect(getRes.json().error).toBe("path_escapes_root");
@@ -230,6 +251,7 @@ describe("GET/PUT /v1/workspaces/:workspace_id/fs/file", () => {
       const putRes = await handle.app.inject({
         method: "PUT",
         url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/file`,
+        headers: localHeaders(handle),
         payload: { path: "../../etc/passwd", contents: "pwned" }
       });
       expect(putRes.statusCode).toBe(400);
@@ -245,7 +267,8 @@ describe("GET/PUT /v1/workspaces/:workspace_id/fs/file", () => {
       const wsId = await registerWorkspace(handle, workspaceDir);
       const res = await handle.app.inject({
         method: "GET",
-        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/file?path=${encodeURIComponent("/etc/passwd")}`
+        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/file?path=${encodeURIComponent("/etc/passwd")}`,
+        headers: localHeaders(handle),
       });
       expect(res.statusCode).toBe(400);
       expect(res.json().error).toBe("path_escapes_root");
@@ -259,7 +282,8 @@ describe("GET/PUT /v1/workspaces/:workspace_id/fs/file", () => {
     try {
       const res = await handle.app.inject({
         method: "GET",
-        url: `/v1/workspaces/workspace:whatever/fs/file?path=${encodeURIComponent("a.md")}`
+        url: `/v1/workspaces/workspace:whatever/fs/file?path=${encodeURIComponent("a.md")}`,
+        headers: localHeaders(handle),
       });
       expect(res.statusCode).toBe(403);
       expect(res.json().error).toBe("fs_disabled");
@@ -276,13 +300,15 @@ describe("GET/PUT /v1/workspaces/:workspace_id/fs/file", () => {
       const putRes = await handle.app.inject({
         method: "PUT",
         url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/file`,
+        headers: localHeaders(handle),
         payload: { path: ".floe/agents/deeply/nested/agent.md", contents: "nested" }
       });
       expect(putRes.statusCode).toBe(200);
 
       const getRes = await handle.app.inject({
         method: "GET",
-        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/file?path=${encodeURIComponent(".floe/agents/deeply/nested/agent.md")}`
+        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/file?path=${encodeURIComponent(".floe/agents/deeply/nested/agent.md")}`,
+        headers: localHeaders(handle),
       });
       expect(getRes.json().contents).toBe("nested");
     } finally {
@@ -300,7 +326,8 @@ describe("GET /v1/workspaces/:workspace_id/fs/media", () => {
       writeFileSync(join(workspaceDir, "preview.png"), bytes);
       const res = await handle.app.inject({
         method: "GET",
-        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/media?path=${encodeURIComponent("preview.png")}`
+        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/media?path=${encodeURIComponent("preview.png")}`,
+        headers: localHeaders(handle),
       });
       expect(res.statusCode).toBe(200);
       expect(res.headers["content-type"]).toContain("image/png");
@@ -318,13 +345,15 @@ describe("GET /v1/workspaces/:workspace_id/fs/media", () => {
       writeFileSync(join(workspaceDir, "notes.md"), "notes");
       const unsupported = await handle.app.inject({
         method: "GET",
-        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/media?path=${encodeURIComponent("notes.md")}`
+        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/media?path=${encodeURIComponent("notes.md")}`,
+        headers: localHeaders(handle),
       });
       expect(unsupported.statusCode).toBe(415);
 
       const escaped = await handle.app.inject({
         method: "GET",
-        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/media?path=${encodeURIComponent("../outside.png")}`
+        url: `/v1/workspaces/${encodeURIComponent(wsId)}/fs/media?path=${encodeURIComponent("../outside.png")}`,
+        headers: localHeaders(handle),
       });
       expect(escaped.statusCode).toBe(400);
       expect(escaped.json().error).toBe("path_escapes_root");

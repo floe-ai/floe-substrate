@@ -3,109 +3,16 @@
  *
  * Header: scope name + description.
  *
- * Body: list of contexts in that scope, shown by human label (never raw id as
- * primary). Each row: label + meta line + delete affordance.
+ * Body: read-only list of contexts in that scope, shown by human label (never raw id as
+ * primary). Context lifecycle actions live in the operator Conversations surface.
  *
  * Empty state: "No contexts in this scope yet"
  */
 import React, { useEffect, useState, useCallback } from "react";
 import type { ScopeRef, ContextRef } from "../bus-client/types.ts";
-import {
-  listContextsForScope,
-  deleteContext,
-} from "../bus-client/client.ts";
+import { listContextsForScope } from "../bus-client/client.ts";
 import { subscribeEvents } from "../bus-client/stream.ts";
 import { Ops } from "./Ops.tsx";
-
-export interface ExtensionViewProps {
-  workspaceId: string;
-  scopeId: string;
-  busBaseUrl: string;
-  extensionName: string;
-}
-
-/** A registered extension view (one tab slot: "scope-detail-tab") */
-export interface ExtensionViewEntry {
-  id: string;         // unique key: extension name (e.g. "acme")
-  label: string;      // tab label (e.g. "Board")
-  extensionName: string;
-  component: React.ComponentType<ExtensionViewProps>;
-}
-
-function PlaceholderExtensionView({ extensionName, scopeId }: ExtensionViewProps): React.ReactElement {
-  return (
-    <div style={{ padding: 28, color: "#8a8f98", fontSize: 13, fontFamily: '"Inter Variable","Inter",-apple-system,system-ui,sans-serif' }}>
-      <strong style={{ color: "#d0d6e0" }}>{extensionName}</strong> view — {scopeId}
-      <br />
-      <span style={{ fontSize: 11, color: "#62666d", marginTop: 8, display: "block" }}>
-        Extension view not registered in the app build.
-      </span>
-    </div>
-  );
-}
-
-const BUS_BASE = "http://127.0.0.1:5377";
-
-type ExtensionApiEntry = {
-  name: string;
-  workspace_id: string;
-  views: Array<{ slot: string; label: string; component: string }>;
-  errors: string[];
-};
-
-function useFetchedExtensionViews(workspaceId: string): ExtensionViewEntry[] {
-  const [views, setViews] = useState<ExtensionViewEntry[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-
-    function doFetch() {
-      const ctrl = new AbortController();
-      const timeout = setTimeout(() => ctrl.abort(), 5000);
-      fetch(`${BUS_BASE}/v1/extensions?workspace_id=${encodeURIComponent(workspaceId)}`, { signal: ctrl.signal })
-        .then(r => r.ok ? r.json() as Promise<{ extensions: ExtensionApiEntry[] }> : null)
-        .then(data => {
-          if (cancelled || !data) return;
-          const entries: ExtensionViewEntry[] = [];
-          for (const ext of data.extensions) {
-            for (const v of ext.views) {
-              if (v.slot === "scope-detail-tab") {
-                entries.push({
-                  id: ext.name,
-                  label: v.label,
-                  extensionName: ext.name,
-                  // External extension views are not loaded yet; runtime loading is not implemented.
-                  // Declared views therefore render a placeholder.
-                  component: PlaceholderExtensionView,
-                });
-              }
-            }
-          }
-          setViews(entries);
-        })
-        .catch(() => { /* extension views unavailable — degrade gracefully */ })
-        .finally(() => clearTimeout(timeout));
-    }
-
-    // Initial fetch (bridge may not be attached yet — that's OK; the WS push fixes it)
-    doFetch();
-
-    // Re-fetch when the bridge finishes attaching and reports extensions to the bus.
-    // This closes the boot-race: if the app opens before the bridge is ready, the
-    // push causes a second fetch without any manual refresh.
-    const unsubscribe = subscribeEvents((msg) => {
-      if (msg.type === "extensions_updated" &&
-          (!msg.payload?.workspace_id || msg.payload.workspace_id === workspaceId)) {
-        doFetch();
-      }
-    });
-
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [workspaceId]);
-  return views;
-}
 
 // ---------------------------------------------------------------------------
 // Design tokens (matches App.tsx tk object)
@@ -170,14 +77,10 @@ export function ContextRow({
   ctx,
   isSelected,
   onClick,
-  onDelete,
-  isDeleting,
 }: {
   ctx: ContextRef;
   isSelected: boolean;
   onClick: () => void;
-  onDelete?: (e: React.MouseEvent) => void;
-  isDeleting?: boolean;
 }): React.ReactElement {
   const [hov, setHov] = useState(false);
   const label = contextLabel(ctx);
@@ -203,7 +106,6 @@ export function ContextRow({
         borderLeft: `2px solid ${isSelected ? tk.accent : "transparent"}`,
         cursor: "pointer",
         transition: "background 100ms ease",
-        opacity: isDeleting ? 0.4 : 1,
       }}
     >
       {/* Label + meta */}
@@ -224,31 +126,6 @@ export function ContextRow({
         </div>
       </div>
 
-      {/* Delete affordance (omitted when onDelete is not provided, e.g. read-only lists) */}
-      {onDelete && (
-        <button
-          onClick={e => { e.stopPropagation(); onDelete(e); }}
-          disabled={isDeleting}
-          aria-label={`Delete context: ${label}`}
-          title="Delete context"
-          style={{
-            background: "transparent",
-            border: `1px solid ${tk.danger}`,
-            color: tk.danger,
-            borderRadius: tk.r1,
-            padding: "2px 8px",
-            fontSize: 11,
-            cursor: "pointer",
-            fontFamily: tk.fontUi,
-            flexShrink: 0,
-            opacity: isDeleting ? 0.5 : 1,
-          }}
-          onMouseEnter={e => { if (!isDeleting) (e.currentTarget as HTMLButtonElement).style.background = "rgba(184,90,90,0.12)"; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
-        >
-          {isDeleting ? "…" : "×"}
-        </button>
-      )}
     </div>
   );
 }
@@ -275,7 +152,7 @@ const BUILTIN_VIEWS = [
 ] as const;
 
 type BuiltinViewId = (typeof BUILTIN_VIEWS)[number]["id"];
-type ScopeDetailView = BuiltinViewId | string; // string for extension views
+type ScopeDetailView = BuiltinViewId;
 
 export function ScopeDetail({
   scope,
@@ -286,11 +163,7 @@ export function ScopeDetail({
   const [contexts, setContexts] = useState<ContextRef[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [deletingContextId, setDeletingContextId] = useState<string | null>(null);
   const [view, setView] = useState<ScopeDetailView>("contexts");
-
-  // Fetch extension views for this workspace
-  const extensionViews = useFetchedExtensionViews(workspaceId);
 
   const loadContexts = useCallback(() => {
     setLoading(true);
@@ -331,36 +204,9 @@ export function ScopeDetail({
           loadContexts();
         }
       }
-    });
+    }, { workspaceId });
     return unsub;
   }, [workspaceId, scope.scope_id, loadContexts]);
-
-  async function handleDeleteContext(ctx: ContextRef, e: React.MouseEvent) {
-    e.stopPropagation();
-    setDeletingContextId(ctx.context_id);
-    try {
-      await deleteContext(ctx.context_id);
-      // If this was the selected context, clear it
-      if (selectedContextId === ctx.context_id) {
-        onSelectContext(null);
-      }
-      // Remove from list
-      setContexts(prev => prev.filter(c => c.context_id !== ctx.context_id));
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to delete";
-      // Treat 404 as already gone
-      if (msg.includes("404")) {
-        setContexts(prev => prev.filter(c => c.context_id !== ctx.context_id));
-        if (selectedContextId === ctx.context_id) {
-          onSelectContext(null);
-        }
-      } else {
-        alert(msg);
-      }
-    } finally {
-      setDeletingContextId(null);
-    }
-  }
 
   return (
     <div style={{
@@ -409,7 +255,7 @@ export function ScopeDetail({
       </div>
 
       {/* ------------------------------------------------------------------ */}
-      {/* View toggle: Contexts / Ops / extension tabs                         */}
+      {/* View toggle: Contexts / Ops                                           */}
       {/* ------------------------------------------------------------------ */}
       <div style={{
         display: "flex", gap: 4, padding: "10px 28px 0",
@@ -432,48 +278,14 @@ export function ScopeDetail({
             {v.label}
           </button>
         ))}
-        {extensionViews.map(ev => (
-          <button
-            key={ev.id}
-            onClick={() => setView(ev.id)}
-            aria-pressed={view === ev.id}
-            style={{
-              background: "transparent", border: "none",
-              borderBottom: `2px solid ${view === ev.id ? tk.accent : "transparent"}`,
-              color: view === ev.id ? tk.ink : tk.ink3,
-              padding: "6px 10px 8px",
-              fontSize: 12.5, fontWeight: 510, cursor: "pointer",
-              fontFamily: tk.fontUi,
-            }}
-          >
-            {ev.label}
-          </button>
-        ))}
       </div>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Body: Contexts list or Ops (events & pulses) or extension view       */}
+      {/* Body: Contexts list or Ops (events & pulses)                          */}
       {/* ------------------------------------------------------------------ */}
       {view === "ops" ? (
         <Ops workspaceId={workspaceId} scopeId={scope.scope_id} />
-      ) : (() => {
-        // Check if current view is an extension view
-        const extView = extensionViews.find(ev => ev.id === view);
-        if (extView) {
-          const ExtComponent = extView.component;
-          return (
-            <div style={{ flex: 1, overflow: "auto" }}>
-              <ExtComponent
-                workspaceId={workspaceId}
-                scopeId={scope.scope_id}
-                busBaseUrl={BUS_BASE}
-                extensionName={extView.extensionName}
-              />
-            </div>
-          );
-        }
-        // Default: Contexts view
-        return (
+      ) : (
       <div style={{ flex: 1, overflow: "auto" }}>
         {/* Section header */}
         <div style={{
@@ -516,16 +328,12 @@ export function ScopeDetail({
                 ctx={ctx}
                 isSelected={selectedContextId === ctx.context_id}
                 onClick={() => onSelectContext(ctx.context_id)}
-                onDelete={e => void handleDeleteContext(ctx, e)}
-                isDeleting={deletingContextId === ctx.context_id}
               />
             ))}
           </div>
         )}
       </div>
-      );
-      })()
-      }
+      )}
     </div>
   );
 }

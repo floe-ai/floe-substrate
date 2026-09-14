@@ -5,26 +5,48 @@ import {
   summarizePiRequestPayload,
   applyThinkingCapabilityClamp,
   eventContentToPrompt,
+  eventAttachments,
 } from "./pi-agent-core-adapter.js";
 import type { DeliveryBundle } from "../bus-client.js";
 import { HookRegistry, type HookName, type HookPayload } from "../hooks.js";
 
 describe("operator-selected conversation attachments", () => {
-  it("makes workspace attachment paths discoverable without host filesystem access", () => {
+  it("preserves named resource references alongside the message for model participation", () => {
+    const reference = { name: "Preview approval", resource_ref: { kind: "approval_request", id: "approval:exact", revision: "2" } };
+    const prompt = eventContentToPrompt({ text: "Review this decision.", references: [reference] });
+    expect(prompt).toContain("Review this decision.");
+    expect(prompt).toContain(JSON.stringify(reference));
+    expect(prompt).toContain("do not prove the record's state");
+  });
+  it("preserves exact shared image references without inventing a storage path", () => {
     const prompt = eventContentToPrompt({
       text: "Please inspect this result.",
       attachments: [{
-        path: ".floe/state/attachments/context/screenshot.png",
+        artefact_version_id: "version:screenshot",
         name: "screenshot.png",
         media_type: "image/png",
         bytes: 1280,
       }],
-    });
+    }, ["version:screenshot"]);
 
     expect(prompt).toContain("Please inspect this result.");
-    expect(prompt).toContain("[Attached workspace files]");
+    expect(prompt).toContain("[Attached ArtefactVersions]");
     expect(prompt).toContain("screenshot.png (image/png, 1280 bytes)");
-    expect(prompt).toContain(".floe/state/attachments/context/screenshot.png");
+    expect(prompt).toContain("version:screenshot");
+    expect(prompt).toContain("read_artefact");
+    expect(prompt).not.toContain(".floe/");
+  });
+
+  it("uses Event membership for both prompt and history, including versions without display data", () => {
+    const content = { text: "Inspect the attached result", attachments: [
+      { artefact_version_id: "version:not-attached", name: "forged.png" },
+    ] };
+    const historyAttachments = eventAttachments(content, ["version:actual"]);
+    expect(historyAttachments).toEqual([expect.objectContaining({ artefact_version_id: "version:actual" })]);
+    const prompt = eventContentToPrompt(content, ["version:actual"]);
+    expect(prompt).toContain("version:actual");
+    expect(prompt).not.toContain("forged.png");
+    expect(prompt).not.toContain("version:not-attached");
   });
 
   it("ignores malformed attachment references", () => {
@@ -226,7 +248,7 @@ describe("PiAgentCoreAdapter", () => {
 });
 
 describe("PiAgentCoreAdapter – output classification", () => {
-  function makeTestAdapter(fakeAgent: any) {
+  function makeTestAdapter(fakeAgent: any, capturedTools?: any[]) {
     return new PiAgentCoreAdapter(
       {
         paths: { authDir: "", authJsonPath: "", modelsJsonPath: "", profilesYamlPath: "" },
@@ -250,7 +272,7 @@ describe("PiAgentCoreAdapter – output classification", () => {
           profiles: [{ id: "test-profile", provider: "mock-provider", model: "mock-model" }]
         }
       } as any,
-      { agentFactory: () => fakeAgent, turnFinalizeTimeoutMs: 1_000 }
+      { agentFactory: input => { capturedTools?.push(...input.tools); return fakeAgent; }, turnFinalizeTimeoutMs: 1_000 }
     );
   }
 
@@ -269,6 +291,81 @@ describe("PiAgentCoreAdapter – output classification", () => {
       emittedEvents
     };
   }
+
+  it("reports a real nonzero workspace command as failed even when the runtime did not throw", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const root = mkdtempSync(join(tmpdir(), "floe-command-status-"));
+    const capturedTools: any[] = [];
+    const { context, telemetryCalls } = makeContext();
+    const failedHook = vi.fn(), successfulHook = vi.fn();
+    context.workspace_locator = root;
+    context.hooks = new HookRegistry();
+    context.hooks.on("ToolUseFailed", "test", failedHook);
+    context.hooks.on("AfterToolUse", "test", successfulHook);
+    const fakeAgent = {
+      listeners: [] as Array<(event: any) => void | Promise<void>>,
+      subscribe(listener: (event: any) => void | Promise<void>) { this.listeners.push(listener); },
+      async prompt() {
+        const args = { command: process.platform === "win32" ? "exit /b 7" : "exit 7" };
+        for (const listener of this.listeners) await listener({ type: "tool_execution_start", toolCallId: "command", toolName: "run_command", args });
+        const result = await capturedTools.find(tool => tool.name === "run_command").execute("command", args);
+        expect(result.details).toMatchObject({ ok: false, exit_code: 7 });
+        for (const listener of this.listeners) await listener({ type: "tool_execution_end", toolCallId: "command", toolName: "run_command", isError: false, result });
+        for (const listener of this.listeners) await listener({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "The command failed." }] }] });
+      },
+    };
+    try {
+      await makeTestAdapter(fakeAgent, capturedTools).handleBundle(context, makeDelivery("command-failure", "command-context", "Try the command"),
+        { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" });
+      expect(telemetryCalls.find(item => item.kind === "ToolUseFailed")?.payload)
+        .toMatchObject({ toolName: "run_command", isError: true, summary: expect.stringContaining("exit 7") });
+      expect(telemetryCalls.some(item => item.kind === "AfterToolUse")).toBe(false);
+      expect(failedHook).toHaveBeenCalledOnce();
+      expect(successfulHook).not.toHaveBeenCalled();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(["completed", "interrupted", "unreported"] as const)("accounts for each model response when a turn is %s", async (ending) => {
+    const { context, telemetryCalls } = makeContext();
+    const first = {
+      role: "assistant", content: [{ type: "toolCall", id: "tool:1", name: "read", arguments: {} }],
+      usage: { input: 100, output: 12, cacheRead: 30, cacheWrite: 4, reasoning: 2, totalTokens: 146 },
+      model: "mock-model", provider: "mock-provider", stopReason: "toolUse",
+    };
+    const last = {
+      role: "assistant", content: [{ type: "text", text: "Verified result." }],
+      usage: ending === "unreported" ? null : { input: 160, output: 10, cacheRead: 70, cacheWrite: 0, reasoning: 0, totalTokens: 240 },
+      model: "mock-model", provider: "mock-provider", stopReason: "stop",
+    };
+    const listeners: Array<(event: any) => void | Promise<void>> = [];
+    const emit = async (event: any) => { for (const listener of listeners) await listener(event); };
+    const adapter = makeTestAdapter({
+      subscribe(listener: (event: any) => void | Promise<void>) { listeners.push(listener); },
+      async prompt() {
+        await emit({ type: "message_update", message: first });
+        await emit({ type: "message_end", message: first });
+        await emit({ type: "message_end", message: first });
+        await emit({ type: "message_end", message: { role: "toolResult", content: [], usage: { totalTokens: 99999 } } });
+        expect(telemetryCalls.filter(row => row.kind === "usage")).toHaveLength(1);
+        if (ending === "interrupted") throw new Error("Connection interrupted after the tool response");
+        await emit({ type: "message_end", message: last });
+        await emit({ type: "agent_end", messages: [first, last] });
+      },
+    });
+    const run = adapter.handleBundle(context, makeDelivery("usage-delivery", "usage-context", "Do the work"),
+      { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" });
+    if (ending === "interrupted") await expect(run).rejects.toBeInstanceOf(TurnFailedError);
+    else await run;
+    const usage = telemetryCalls.filter(row => row.kind === "usage");
+    expect(usage.map(row => row.payload.response_index)).toEqual(ending === "interrupted" ? [1] : [1, 2]);
+    expect(usage[0].payload).toMatchObject({ measurement_scope: "model_response", usage: first.usage });
+    if (ending !== "interrupted") expect(usage[1].payload.usage).toEqual(last.usage);
+    const coverage = telemetryCalls.filter(row => row.kind === "usage_coverage");
+    if (ending === "interrupted") expect(coverage).toEqual([]);
+    else expect(coverage[0].payload).toMatchObject({ agent_end_observed: true, model_response_count: 2 });
+  });
 
   it("does not persist input echo as runtime_turn_output — only endpoint visible output is captured", async () => {
     const deliveryBundleText = "Floe delivery bundle del_abc123\n- [message] from actor:workspace:test:operator thread=thread-1: hi, tell me about yourself\nRespond naturally to the delivered events.";
@@ -632,6 +729,9 @@ describe("PiAgentCoreAdapter – output classification", () => {
         for (const l of this.listeners) await l({ type: "tool_execution_end", toolCallId: "tc-ok", toolName: "read", isError: false });
         for (const l of this.listeners) await l({ type: "tool_execution_start", toolCallId: "tc-fail", toolName: "write", args: {} });
         for (const l of this.listeners) await l({ type: "tool_execution_end", toolCallId: "tc-fail", toolName: "write", isError: true });
+        for (const l of this.listeners) await l({ type: "tool_execution_start", toolCallId: "tc-refused", toolName: "use_capability", args: {} });
+        for (const l of this.listeners) await l({ type: "tool_execution_end", toolCallId: "tc-refused", toolName: "use_capability", isError: false,
+          result: { content: [{ type: "text", text: "Access refused" }], details: { ok: false, error: "grant_revoked" } } });
         for (const l of this.listeners) await l({
           type: "message_end",
           message: { role: "assistant", content: [{ type: "text", text: "Done." }] }
@@ -699,9 +799,11 @@ describe("PiAgentCoreAdapter – output classification", () => {
       pulse_id: "pulse:daily",
       content: { pulse_id: "pulse:daily", text: "Daily pulse" }
     });
-    expect(seen.BeforeToolUse).toHaveLength(4);
+    expect(seen.BeforeToolUse).toHaveLength(6);
     expect(seen.AfterToolUse).toHaveLength(2);
-    expect(seen.ToolUseFailed).toHaveLength(2);
+    expect(seen.ToolUseFailed).toHaveLength(4);
+    expect(seen.ToolUseFailed?.find(item => "toolCallId" in item && item.toolCallId === "tc-refused"))
+      .toMatchObject({ toolName: "use_capability", isError: true });
     expect(seen.BeforeToolUse?.[0]).toMatchObject({
       delivery_id: "del-hooks-1",
       trigger_event_id: "evt:del-hooks-1",
@@ -942,6 +1044,7 @@ function makeDelivery(deliveryId: string, threadId: string, text: string): Deliv
         source_endpoint_id: "actor:workspace:test:operator",
         thread_id: threadId,
         correlation_id: null,
+        artefact_version_ids: [],
         destination_json: {
           kind: "endpoint",
           endpoint_id: "actor:workspace:test:floe"
@@ -1053,7 +1156,7 @@ describe("Substrate model — local completion and explicit effects", () => {
     expect(autoEmits).toHaveLength(0);
   });
 
-  it("delivery prompt includes a compact causal envelope", async () => {
+  it.each([false, true])("delivery prompt identifies the current work without preloading the contract (Scope: %s)", async (scope) => {
     let capturedPrompt = "";
     const fakeAgent = {
       listeners: [] as Array<(event: any) => void | Promise<void>>,
@@ -1076,9 +1179,22 @@ describe("Substrate model — local completion and explicit effects", () => {
       }
     } as any;
 
+    const bundle = makeDelivery("del-ctx-1", "thread-ctx-1", "Source review node: node-execution:old");
+    if (scope) bundle.processing_contract = {
+      contract_kind: "scope_node", contract_version: 1, processing_contract_id: "contract:new",
+      scope_execution: { execution_id: "execution:new", scope_id: "scope:review", revision_id: "plan:pinned" },
+      node_execution: { node_execution_id: "node-execution:new", node_id: "reviewer" },
+      execution_attempt: { attempt_id: "attempt:new" },
+      outputs: { publish_operation_id: "scope.node-output.publish", ports: [{
+        port_id: "review:out", name: "Review", direction: "output", node_id: "reviewer",
+        event_types: ["review.completed"], min_count: 1,
+      }] },
+      runtime: { profile: { content: { secret_ref_ids: ["secret-ref:not-for-the-prompt"] } } },
+      operation_authority: { capability_grant_ids: ["grant:not-for-the-prompt"] },
+    } as NonNullable<DeliveryBundle["processing_contract"]>;
     await adapter.handleBundle(
       context,
-      makeDelivery("del-ctx-1", "thread-ctx-1", "hello context test"),
+      bundle,
       { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" }
     );
 
@@ -1088,6 +1204,19 @@ describe("Substrate model — local completion and explicit effects", () => {
     expect(capturedPrompt).toContain("history: available on demand with context_history");
     expect(capturedPrompt).not.toContain("reply_actor");
     expect(capturedPrompt).not.toContain("response_expected");
+    if (scope) {
+      expect(capturedPrompt).toContain("[Current Scope execution]");
+      expect(capturedPrompt).toContain("execution: execution:new");
+      expect(capturedPrompt).toContain("node_execution: node-execution:new");
+      expect(capturedPrompt).toContain("attempt: attempt:new");
+      expect(capturedPrompt).toContain("composition_revision: plan:pinned");
+      expect(capturedPrompt).toContain('"port_id":"review:out"');
+      expect(capturedPrompt).toContain('"event_types":["review.completed"]');
+      expect(capturedPrompt).toContain('"min_count":1');
+      expect(capturedPrompt).toContain("Source review node: node-execution:old");
+    } else expect(capturedPrompt).not.toContain("[Current Scope execution]");
+    expect(capturedPrompt).not.toContain("secret-ref:not-for-the-prompt");
+    expect(capturedPrompt).not.toContain("grant:not-for-the-prompt");
   });
 
   it("does not inject response protocol for either operator or actor causes", async () => {
@@ -1477,6 +1606,7 @@ describe("Substrate model — local completion and explicit effects", () => {
             type: "message",
             destination: "actor:workspace:test:operator",
             text: "reply continuing context",
+            artefact_version_ids: ["artefact-version:exact-result"],
             context_id: "ctx_caller_supplied",
             response_expected: false
           });
@@ -1541,6 +1671,7 @@ describe("Substrate model — local completion and explicit effects", () => {
     const emitted = emittedEvents[0];
     expect(emitted.context_id).toBeNull();
     expect(emitted.current_delivery_context_id).toBe("ctx_delivery");
+    expect(emitted.artefact_version_ids).toEqual(["artefact-version:exact-result"]);
   });
 
   it("emit tool always forwards current_delivery_context_id even when context_id omitted", async () => {
@@ -1834,6 +1965,7 @@ describe("Substrate model — local completion and explicit effects", () => {
         source_endpoint_id: "actor:ws-a:operator",
         thread_id: "thread-scope",
         correlation_id: null,
+        artefact_version_ids: [],
         destination_json: { kind: "endpoint", endpoint_id: "actor:ws-a:floe" },
         content: { text: "list actors", data: {} },
         response: { expected: false },
@@ -2426,6 +2558,7 @@ describe("Full actor work loop acceptance", () => {
         source_endpoint_id: `actor:${workspaceId}:operator`,
         thread_id: `thread:${workspaceId}:floe`,
         correlation_id: null,
+        artefact_version_ids: [],
         destination_json: { kind: "endpoint", endpoint_id: `actor:${workspaceId}:floe` },
         content: { text, data: {} },
         response: { expected: false },
@@ -2725,7 +2858,7 @@ describe("TurnFailedError propagation (FIX 1)", () => {
 describe("PiAgentCoreAdapter – stop_reason 'error' treated as TurnFailedError", () => {
   function makeAdapterWithErrorStopReason(
     errorStopMessage: string | null,
-    options?: { detachAgentEnd?: boolean }
+    options?: { detachAgentEnd?: boolean; partialText?: string; stopReason?: string }
   ) {
     return new PiAgentCoreAdapter(
       {
@@ -2759,8 +2892,8 @@ describe("PiAgentCoreAdapter – stop_reason 'error' treated as TurnFailedError"
               // Pi does NOT throw — it emits an assistant message with stopReason 'error'
               const errorAssistantMessage = {
                 role: "assistant",
-                content: [],
-                stopReason: "error",
+                content: options?.partialText ? [{ type: "text", text: options.partialText }] : [],
+                stopReason: options?.stopReason ?? "error",
                 errorMessage: errorStopMessage,
                 usage: { input: 5, output: 0, totalTokens: 5 },
                 model: "mock-model",
@@ -2783,6 +2916,16 @@ describe("PiAgentCoreAdapter – stop_reason 'error' treated as TurnFailedError"
       }
     );
   }
+
+  it.each(["error", "aborted"])("does not turn partial text into completion after %s", async stopReason => {
+    const recorded = vi.fn();
+    const adapter = makeAdapterWithErrorStopReason("503 interrupted", { partialText: "I have started inspecting the file.", stopReason });
+    await expect(adapter.handleBundle({ bridge_id: "bridge:test", bus: {
+      recordRuntimeTurnResult: recorded, async appendRuntimeTelemetry() {}, async emit() {},
+    } } as any, makeDelivery(`del-partial-${stopReason}`, "thread-partial", "hello"),
+    { provider: "mock-provider", model: "mock-model", auth_profile: "test-profile" })).rejects.toBeInstanceOf(TurnFailedError);
+    expect(recorded).not.toHaveBeenCalled();
+  });
 
   it("throws TurnFailedError when pi turn ends with stop_reason 'error' and no pi throw", async () => {
     const adapter = makeAdapterWithErrorStopReason("model not found: 404 Not Found");

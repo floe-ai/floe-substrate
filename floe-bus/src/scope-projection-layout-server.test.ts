@@ -9,6 +9,10 @@ import { defaultConfig, type LocalConfig } from "./config.js";
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
 const SCOPE_ID = "research";
 
+function localHeaders(handle: ServerHandle) {
+  return { authorization: `Bearer ${handle.localControlToken}` };
+}
+
 async function makeServer(): Promise<{
   handle: ServerHandle;
   cleanup: () => Promise<void>;
@@ -20,7 +24,7 @@ async function makeServer(): Promise<{
   const cfgPath = join(tmp, "config.yaml");
   const cfg: LocalConfig = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const handle = await createBusServer(cfgPath, cfg);
+  const handle = await createBusServer(cfgPath, cfg, { allow_unauthenticated_test_requests: true });
   await handle.app.ready();
 
   const wsLocator = join(tmp, "ws");
@@ -89,6 +93,7 @@ describe("Scope Projection layout HTTP routes", () => {
     const put = await handle.app.inject({
       method: "PUT",
       url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floe-app`,
+      headers: localHeaders(handle),
       payload: layout
     });
     expect(put.statusCode).toBe(200);
@@ -98,7 +103,8 @@ describe("Scope Projection layout HTTP routes", () => {
 
     const get = await handle.app.inject({
       method: "GET",
-      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floe-app`
+      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floe-app`,
+      headers: localHeaders(handle),
     });
     expect(get.statusCode).toBe(200);
     expect(get.json()).toEqual({ layout });
@@ -115,7 +121,8 @@ describe("Scope Projection layout HTTP routes", () => {
   it("returns explicit layout errors for missing sidecars, missing Scopes, invalid renderers, and mismatched ids", async () => {
     const missing = await handle.app.inject({
       method: "GET",
-      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floe-app`
+      url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floe-app`,
+      headers: localHeaders(handle),
     });
     expect(missing.statusCode).toBe(404);
     expect(missing.json()).toEqual({ error: "scope_projection_layout_not_found" });
@@ -123,6 +130,7 @@ describe("Scope Projection layout HTTP routes", () => {
     const missingScope = await handle.app.inject({
       method: "PUT",
       url: `/v1/workspaces/${wsId}/scopes/unknown/projection/layout/floe-app`,
+      headers: localHeaders(handle),
       payload: makeLayout("unknown")
     });
     expect(missingScope.statusCode).toBe(404);
@@ -131,6 +139,7 @@ describe("Scope Projection layout HTTP routes", () => {
     const badRenderer = await handle.app.inject({
       method: "PUT",
       url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/react-flow`,
+      headers: localHeaders(handle),
       payload: makeLayout(SCOPE_ID)
     });
     expect(badRenderer.statusCode).toBe(400);
@@ -139,6 +148,7 @@ describe("Scope Projection layout HTTP routes", () => {
     const mismatch = await handle.app.inject({
       method: "PUT",
       url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floe-app`,
+      headers: localHeaders(handle),
       payload: makeLayout("other")
     });
     expect(mismatch.statusCode).toBe(400);
@@ -153,16 +163,22 @@ describe("Scope Projection layout HTTP routes", () => {
     const ws = new WS(url);
     const messages: any[] = [];
     await new Promise<void>((resolve, reject) => {
-      ws.on("open", () => resolve());
+      ws.on("open", () => ws.send(JSON.stringify({
+        type: "authenticate",
+        bearer_token: handle.localControlToken,
+      })));
+      ws.on("message", (data: any) => {
+        const message = JSON.parse(data.toString());
+        messages.push(message);
+        if (message.type === "authenticated") resolve();
+      });
       ws.on("error", (error: any) => reject(error));
-    });
-    ws.on("message", (data: any) => {
-      messages.push(JSON.parse(data.toString()));
     });
 
     await handle.app.inject({
       method: "PUT",
       url: `/v1/workspaces/${wsId}/scopes/${SCOPE_ID}/projection/layout/floe-app`,
+      headers: localHeaders(handle),
       payload: makeLayout(SCOPE_ID)
     });
 

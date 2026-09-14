@@ -53,20 +53,31 @@ export function ArtifactPreview({
 
   useEffect(() => {
     let cancelled = false;
+    let objectUrl: string | null = null;
     setImageSource(null);
     setText(null);
     setFailed(false);
     if (!node.path) return () => { cancelled = true; };
     if (kind === "image") {
       void workspaceMediaSource(workspace, node.path)
-        .then((source) => { if (!cancelled) setImageSource(source); })
+        .then((source) => {
+          if (!cancelled) {
+            objectUrl = source;
+            setImageSource(source);
+          } else if (source.startsWith("blob:")) {
+            URL.revokeObjectURL(source);
+          }
+        })
         .catch(() => { if (!cancelled) setFailed(true); });
     } else if (showText && (kind === "json" || kind === "markdown")) {
       void readWorkspaceFile(workspace, node.path)
         .then((contents) => { if (!cancelled) setText(textPreview(kind, contents)); })
         .catch(() => { if (!cancelled) setFailed(true); });
     }
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (objectUrl?.startsWith("blob:")) URL.revokeObjectURL(objectUrl);
+    };
   }, [kind, node.path, showText, workspace.locator, workspace.workspace_id]);
 
   const height = variant === "hero" ? 260 : variant === "graph" ? 74 : 62;

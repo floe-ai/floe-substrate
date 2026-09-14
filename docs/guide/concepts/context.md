@@ -27,6 +27,19 @@ NodePlacement's Context policy. That policy may create a Context, reuse one by a
 stable key, or enter a fixed persistent Context. The Context is where the work is
 understood and recorded; it is not the NodeExecution itself.
 
+A fixed execution Context must already be active, retain available content, and
+belong to the same Workspace and Scope as the placement. Validation, publication,
+rollback and activation enforce that constraint. A later archive or redaction
+can make a previously valid fixed Context unavailable. To return a result to an
+outside conversation, keep the execution Context in its Scope and communicate
+to that conversation under the Actor's granted authority.
+
+Model-facing history is read on demand as bounded chronological previews.
+Pages retain complete JSON and the Bus-issued continuation cursor; the Bridge
+reduces the page size before returning it when necessary. Text truncation and
+oversized fields omitted from a single-Event preview are explicitly identified.
+The canonical Event and its saved content remain unchanged.
+
 ## Participants
 
 A Context participant is an Actor with an explicit role and access relationship

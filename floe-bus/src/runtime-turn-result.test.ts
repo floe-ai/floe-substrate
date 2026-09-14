@@ -5,6 +5,8 @@ import { join } from "node:path";
 import YAML from "yaml";
 import { BusStore, type EventCommand } from "./store.js";
 import { defaultConfig } from "./config.js";
+import type { ScopeCompositionContent } from "./scope-compositions.js";
+import { registerExecutableActorFixture } from "./executable-actor-test-fixture.js";
 
 const WS = "workspace:turn-result";
 const A = `actor:${WS}:a`;
@@ -43,6 +45,76 @@ function requestCommand(input: {
   };
 }
 
+function parallelPlacementsComposition(
+  ingressContextId: string,
+): ScopeCompositionContent {
+  return {
+    nodes: [
+      {
+        node_id: "ingress",
+        kind: "event",
+        label: "Input",
+        context_policy: { mode: "fixed", context_id: ingressContextId },
+      },
+      {
+        node_id: "worker-left",
+        kind: "actor",
+        label: "Worker left",
+        resource_id: B,
+        activation: { mode: "per_delivery" },
+        context_policy: { mode: "new_per_execution" },
+      },
+      {
+        node_id: "worker-right",
+        kind: "actor",
+        label: "Worker right",
+        resource_id: B,
+        activation: { mode: "per_delivery" },
+        context_policy: { mode: "new_per_execution" },
+      },
+    ],
+    ports: [
+      { port_id: "ingress:out", node_id: "ingress", name: "input", direction: "output", event_types: ["work.arrived"] },
+      { port_id: "worker-left:in", node_id: "worker-left", name: "input", direction: "input", event_types: ["work.arrived"], min_count: 1 },
+      { port_id: "worker-right:in", node_id: "worker-right", name: "input", direction: "input", event_types: ["work.arrived"], min_count: 1 },
+    ],
+    edges: [
+      { edge_id: "to-left", source_port_id: "ingress:out", target_port_id: "worker-left:in" },
+      { edge_id: "to-right", source_port_id: "ingress:out", target_port_id: "worker-right:in" },
+    ],
+  };
+}
+
+function delegatingActorComposition(
+  ingressContextId: string,
+): ScopeCompositionContent {
+  return {
+    nodes: [
+      {
+        node_id: "ingress",
+        kind: "event",
+        label: "Input",
+        context_policy: { mode: "fixed", context_id: ingressContextId },
+      },
+      {
+        node_id: "coordinator",
+        kind: "actor",
+        label: "Coordinator",
+        resource_id: A,
+        activation: { mode: "per_delivery" },
+        context_policy: { mode: "new_per_execution" },
+      },
+    ],
+    ports: [
+      { port_id: "ingress:out", node_id: "ingress", name: "input", direction: "output", event_types: ["work.arrived"] },
+      { port_id: "coordinator:in", node_id: "coordinator", name: "input", direction: "input", event_types: ["work.arrived"], min_count: 1 },
+    ],
+    edges: [
+      { edge_id: "to-coordinator", source_port_id: "ingress:out", target_port_id: "coordinator:in" },
+    ],
+  };
+}
+
 describe("runtime turn results and causal requests", () => {
   let store: BusStore;
   let root: string;
@@ -56,6 +128,8 @@ describe("runtime turn results and causal requests", () => {
     for (const [endpoint_id, bridge_id] of [[OPERATOR, null], [A, "bridge:a"], [B, "bridge:b"], [C, "bridge:c"]] as const) {
       store.registerEndpoint({ endpoint_id, workspace_id: WS, name: endpoint_id, bridge_id, status: "idle" }, noop);
     }
+    registerExecutableActorFixture(store, WS, A);
+    registerExecutableActorFixture(store, WS, B);
   });
 
   afterEach(() => {
@@ -132,6 +206,181 @@ describe("runtime turn results and causal requests", () => {
       WHERE context_id = ? AND source_endpoint_id = ? AND type = 'message'
     `).all(submitted.event.context_id, B);
     expect(rows).toEqual([{ event_id: first.result_event.event_id }]);
+  });
+
+  it("records canonical placement results in each target Context without collapsing two placements of one Actor", () => {
+    store.createScope({ workspace_id: WS, scope_id: "parallel", title: "Parallel" }, noop);
+    const ingressContextId = store.contextStore.createContext({
+      workspace_id: WS,
+      scope_id: "parallel",
+      created_by_endpoint_id: OPERATOR,
+      participants: [OPERATOR],
+      title: "Ingress",
+    });
+    const draft = store.createScopeCompositionDraft({
+      workspace_id: WS,
+      scope_id: "parallel",
+      content: parallelPlacementsComposition(ingressContextId),
+    }, noop);
+    store.publishScopeComposition({ revision_id: draft.revision_id }, noop);
+    const started = store.startScopeExecution({
+      workspace_id: WS,
+      scope_id: "parallel",
+      ingress_node_id: "ingress",
+      output_port_id: "ingress:out",
+      content: { work: "run both placements" },
+      idempotency_key: "parallel-result-contexts",
+    }, noop);
+
+    const [leftDelivery] = store.claimDeliveries("bridge:b", 1, noop);
+    const leftInjected = store.reportDeliveryStatus({
+      bridge_id: "bridge:b",
+      delivery_id: leftDelivery.delivery_id,
+      state: "injected_to_runtime",
+    }, noop) as { execution_attempt_id: string };
+    const left = store.recordRuntimeTurnResult({
+      delivery_id: leftDelivery.delivery_id,
+      outcome: "completed",
+      text: "Left placement result",
+      metadata: { execution_attempt_id: leftInjected.execution_attempt_id },
+    }, noop);
+    store.reportDeliveryStatus({
+      bridge_id: "bridge:b",
+      delivery_id: leftDelivery.delivery_id,
+      state: "acknowledged",
+    }, noop);
+    store.reportTurnEnd(B, noop);
+
+    const [rightDelivery] = store.claimDeliveries("bridge:b", 1, noop);
+    const rightInjected = store.reportDeliveryStatus({
+      bridge_id: "bridge:b",
+      delivery_id: rightDelivery.delivery_id,
+      state: "injected_to_runtime",
+    }, noop) as { execution_attempt_id: string };
+    const right = store.recordRuntimeTurnResult({
+      delivery_id: rightDelivery.delivery_id,
+      outcome: "completed",
+      text: "Right placement result",
+      metadata: { execution_attempt_id: rightInjected.execution_attempt_id },
+    }, noop);
+
+    expect(leftDelivery.trigger_event_id).toBe(started.root_event.event_id);
+    expect(rightDelivery.trigger_event_id).toBe(started.root_event.event_id);
+    expect(leftDelivery.node_execution_id).not.toBe(rightDelivery.node_execution_id);
+    expect(leftDelivery.context_id).not.toBe(rightDelivery.context_id);
+    expect(left.result_event.event_id).not.toBe(right.result_event.event_id);
+    expect(left.result_event.context_id).toBe(leftDelivery.context_id);
+    expect(right.result_event.context_id).toBe(rightDelivery.context_id);
+    expect(left.result_event.context_id).not.toBe(ingressContextId);
+    expect(right.result_event.context_id).not.toBe(ingressContextId);
+  });
+
+  it("resumes a delegated request in the same NodeExecution and pinned revision", () => {
+    store.createScope({ workspace_id: WS, scope_id: "delegation", title: "Delegation" }, noop);
+    const ingressContextId = store.contextStore.createContext({
+      workspace_id: WS,
+      scope_id: "delegation",
+      created_by_endpoint_id: OPERATOR,
+      participants: [OPERATOR],
+      title: "Ingress",
+    });
+    const draft = store.createScopeCompositionDraft({
+      workspace_id: WS,
+      scope_id: "delegation",
+      content: delegatingActorComposition(ingressContextId),
+    }, noop);
+    store.publishScopeComposition({ revision_id: draft.revision_id }, noop);
+    const started = store.startScopeExecution({
+      workspace_id: WS,
+      scope_id: "delegation",
+      ingress_node_id: "ingress",
+      output_port_id: "ingress:out",
+      content: { work: "coordinate" },
+      idempotency_key: "delegation-continuation",
+    }, noop);
+    const [firstA] = store.claimDeliveries("bridge:a", 1, noop);
+    const firstAttempt = store.reportDeliveryStatus({
+      bridge_id: "bridge:a",
+      delivery_id: firstA.delivery_id,
+      state: "injected_to_runtime",
+    }, noop) as { execution_attempt_id: string };
+
+    const childRequest = requestCommand({
+      source: A,
+      destination: B,
+      correlation: "corr-canonical-delegation",
+      currentContext: firstA.context_id!,
+      parentDelivery: firstA.delivery_id,
+    });
+    childRequest.metadata = {
+      ...(childRequest.metadata ?? {}),
+      request_parent_scope_execution_id: firstA.scope_execution_id,
+      request_parent_composition_revision_id: firstA.composition_revision_id,
+      request_parent_node_execution_id: firstA.node_execution_id,
+      request_parent_target_node_id: firstA.target_node_id,
+      request_parent_execution_attempt_id: firstAttempt.execution_attempt_id,
+    };
+    store.submitEvent(childRequest, noop);
+    const [deliveryB] = store.claimDeliveries("bridge:b", 1, noop);
+    store.reportDeliveryStatus({
+      bridge_id: "bridge:b",
+      delivery_id: deliveryB.delivery_id,
+      state: "injected_to_runtime",
+    }, noop);
+    const childResult = store.recordRuntimeTurnResult({
+      delivery_id: deliveryB.delivery_id,
+      outcome: "completed",
+      text: "Delegated evidence",
+    }, noop);
+    expect(childResult.request_resolved).toBe(true);
+
+    store.recordRuntimeTurnResult({
+      delivery_id: firstA.delivery_id,
+      outcome: "completed",
+      text: "Waiting for delegated evidence",
+    }, noop);
+    store.reportDeliveryStatus({
+      bridge_id: "bridge:a",
+      delivery_id: firstA.delivery_id,
+      state: "acknowledged",
+    }, noop);
+    store.reportTurnEnd(A, noop);
+
+    const [resumedA] = store.claimDeliveries("bridge:a", 1, noop);
+    expect(resumedA.events[0]).toMatchObject({
+      event_id: childResult.return_event?.event_id,
+      type: "request.result",
+      context_id: firstA.context_id,
+    });
+    expect(resumedA.scope_execution_id).toBe(firstA.scope_execution_id);
+    expect(resumedA.composition_revision_id).toBe(firstA.composition_revision_id);
+    expect(resumedA.node_execution_id).toBe(firstA.node_execution_id);
+    expect(resumedA.target_node_id).toBe(firstA.target_node_id);
+    expect(resumedA.context_id).toBe(firstA.context_id);
+
+    const resumedAttempt = store.reportDeliveryStatus({
+      bridge_id: "bridge:a",
+      delivery_id: resumedA.delivery_id,
+      state: "injected_to_runtime",
+    }, noop) as { execution_attempt_id: string };
+    expect(resumedAttempt.execution_attempt_id).not.toBe(firstAttempt.execution_attempt_id);
+    store.recordRuntimeTurnResult({
+      delivery_id: resumedA.delivery_id,
+      outcome: "completed",
+      text: "Coordinated result",
+    }, noop);
+    store.reportDeliveryStatus({
+      bridge_id: "bridge:a",
+      delivery_id: resumedA.delivery_id,
+      state: "acknowledged",
+    }, noop);
+
+    const projection = store.getScopeExecutionProjection(started.execution.execution_id)!;
+    const coordinator = projection.node_executions.find((node) => node.node_id === "coordinator")!;
+    expect(coordinator.node_execution_id).toBe(firstA.node_execution_id);
+    expect(coordinator.context_id).toBe(firstA.context_id);
+    expect(coordinator.attempts).toHaveLength(2);
+    expect(coordinator.status).toBe("completed");
   });
 
   it("only the requested actor's natural completion resolves and resumes the exact request", () => {

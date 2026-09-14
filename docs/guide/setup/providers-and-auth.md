@@ -14,9 +14,20 @@ device flow. The packaged native helper performs the exchange; the user does
 not need to run `floe login`.
 
 After onboarding, **Settings → Model providers** connects another supported
-provider. The Floe conversation and Settings both expose the current
+provider or disconnects a connected account after a native confirmation. The
+Floe conversation and Settings both expose the current
 Workspace's provider, model, and reasoning-effort choice. The composer remains
 unavailable until a usable runtime binding resolves.
+
+A newly saved runtime binding notifies the running Bridge to attach the Actor;
+it does not require restarting Floe. Attachment does not grant access to an
+account or to Workspace capabilities.
+
+When Floe brings in a collaborator, it can delegate a permitted part of its
+access. The collaborator receives its own permissions, with the same account
+restrictions and no later expiry. Withdrawing the source permission also removes
+that delegated access. Creating a collaborator or copying permission references
+does not authorise account use.
 
 ## SecretRef and credential broker
 
@@ -44,16 +55,25 @@ The desktop native shell brokers provider connection, authenticated Bus
 requests, media, and the push stream. It returns typed results to the webview,
 not bearer or provider credentials.
 
-A standalone browser needs its own trusted authenticated session adapter. It
-cannot read the operating-system vault or turn loopback access into authority.
-The CLI may support a terminal provider flow, but it uses the same SecretRef,
-grant, and broker rules rather than printing credentials.
+The local browser establishes its authenticated session automatically when it
+connects to the installed Floe. It can use that installation's connected
+accounts under the same grants, without another provider login. Remote browser
+access requires the supported pairing flow. Neither browser can read the
+operating-system vault or turn loopback access into authority.
+
+An account connection belongs to the Floe installation's retained state, not to
+a browser tab. A separate Floe home has separate state; Pi does not make that
+second instance share the first instance's account connection automatically.
+
+The CLI supports the same provider connection flow through the packaged native
+authority broker. It does not print or receive reusable credentials. Account
+disconnection uses the same Bus-owned `credential.revoke` operation and
+Bus-authored confirmation in the desktop app and CLI.
 
 ```text
 floe login --provider <provider>
 floe auth list
 floe auth doctor
-floe logout
 ```
 
 ## Legacy files and migration

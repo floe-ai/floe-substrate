@@ -79,6 +79,7 @@ function makeDeliveryWithContext(
         thread_id: threadId,
         context_id: contextId,
         correlation_id: null,
+        artefact_version_ids: [],
         destination_json: { kind: "endpoint", endpoint_id: endpointId },
         content: { text, data: {} },
         response: { expected: false },
@@ -158,6 +159,105 @@ function makeMockContext(bus: ReturnType<typeof makeBusWith>): any {
 // ---------------------------------------------------------------------------
 
 describe("C-1: Session key per (agent, context)", () => {
+  it("replaces Delivery-scoped credential authority when reusing a session", async () => {
+    const model = { ...MOCK_MODEL, provider: "openai", id: "gpt-5.4-mini" } as any;
+    const authRuntime = {
+      ...MOCK_AUTH,
+      modelRegistry: {
+        find(provider: string, modelId: string) {
+          return provider === "openai" && modelId === "gpt-5.4-mini" ? model : undefined;
+        },
+      },
+    } as any;
+    const agent = new RecordingAgent();
+    let runtimeKey: (() => Promise<string>) | undefined;
+    const adapter = new PiAgentCoreAdapter(authRuntime, {
+      agentFactory: (input) => {
+        runtimeKey = input.getApiKey;
+        return agent;
+      },
+      turnFinalizeTimeoutMs: 1_000,
+    });
+    const bus = makeBusWith(new Map());
+    const credentialStore = (key: string) => ({
+      async read(providerId: string) {
+        if (providerId !== "openai") throw new Error("wrong provider");
+        return { type: "api_key" as const, key };
+      },
+      async list() { return [{ providerId: "openai", type: "api_key" as const }]; },
+      async modify(_providerId: string, fn: any) {
+        return fn({ type: "api_key", key });
+      },
+      async delete() {},
+    });
+    const runtimeConfig = { provider: "openai", model: "gpt-5.4-mini" };
+    const firstContext = { ...makeMockContext(bus), credential_store: credentialStore("delivery-key-a") };
+    const secondContext = { ...makeMockContext(bus), credential_store: credentialStore("delivery-key-b") };
+
+    await adapter.handleBundle(
+      firstContext,
+      makeDeliveryWithContext("del-key-a", "thread", "ctx_key", "first"),
+      runtimeConfig,
+    );
+    await expect(runtimeKey?.()).resolves.toBe("delivery-key-a");
+
+    await adapter.handleBundle(
+      secondContext,
+      makeDeliveryWithContext("del-key-b", "thread", "ctx_key", "second"),
+      runtimeConfig,
+    );
+    expect(agent.promptsReceived).toHaveLength(2);
+    await expect(runtimeKey?.()).resolves.toBe("delivery-key-b");
+  });
+
+  it("uses the target NodeExecution Context even when the source Event belongs to another Context", async () => {
+    const agentInstances: RecordingAgent[] = [];
+    const contextLookups: string[] = [];
+    const telemetry: any[] = [];
+    const adapter = new PiAgentCoreAdapter(MOCK_AUTH, {
+      agentFactory: () => {
+        const agent = new RecordingAgent();
+        agentInstances.push(agent);
+        return agent;
+      },
+      turnFinalizeTimeoutMs: 1_000,
+    });
+    const base = makeBusWith(new Map());
+    const bus = {
+      ...base,
+      async getContext(contextId: string) {
+        contextLookups.push(contextId);
+        return {
+          context_id: contextId,
+          workspace_id: "workspace:test",
+          parent_context_id: null,
+          created_by_endpoint_id: null,
+          scope_id: "pipeline",
+          created_at: new Date().toISOString(),
+          participants: ["actor:workspace:test:floe"],
+        };
+      },
+      async appendRuntimeTelemetry(input: any) { telemetry.push(input); },
+    };
+    const first = makeDeliveryWithContext("del-node-1", "source-thread-1", "ctx_source_1", "first input");
+    first.context_id = "ctx_node_execution";
+    first.node_execution_id = "node_execution_1";
+    const second = makeDeliveryWithContext("del-node-2", "source-thread-2", "ctx_source_2", "second input");
+    second.context_id = "ctx_node_execution";
+    second.node_execution_id = "node_execution_2";
+
+    await adapter.handleBundle(makeMockContext(bus as any), first, MOCK_RUNTIME_CONFIG);
+    await adapter.handleBundle(makeMockContext(bus as any), second, MOCK_RUNTIME_CONFIG);
+
+    expect(agentInstances).toHaveLength(1);
+    expect(contextLookups).toEqual(["ctx_node_execution", "ctx_node_execution"]);
+    expect(telemetry.length).toBeGreaterThan(0);
+    expect(telemetry.every((entry) => entry.payload.context_id === "ctx_node_execution")).toBe(true);
+    expect(telemetry.some((entry) => entry.payload.thread_id === "ctx_node_execution")).toBe(true);
+    expect(JSON.stringify(telemetry)).not.toContain("ctx_source_1");
+    expect(JSON.stringify(telemetry)).not.toContain("ctx_source_2");
+  });
+
   it("two contexts for one agent produce two independent agent instances", async () => {
     const agentInstances: RecordingAgent[] = [];
     const adapter = new PiAgentCoreAdapter(MOCK_AUTH, {
@@ -345,6 +445,7 @@ describe("Context economy: history is available but not injected", () => {
         thread_id: "thread-ctx-C",
         context_id: "ctx_card_C",
         correlation_id: null,
+        artefact_version_ids: [],
         destination_json: { kind: "endpoint", endpoint_id: "actor:workspace:test:floe" },
         content: { text: "history message from operator" },
         response: { expected: false },
@@ -408,6 +509,7 @@ describe("Context economy: history is available but not injected", () => {
         thread_id: "thread-D",
         context_id: contextId,
         correlation_id: null,
+        artefact_version_ids: [],
         destination_json: { kind: "endpoint", endpoint_id: "actor:workspace:test:floe" },
         content: { text: "old history message" },
         response: { expected: false },
@@ -424,6 +526,7 @@ describe("Context economy: history is available but not injected", () => {
         thread_id: "thread-D",
         context_id: contextId,
         correlation_id: null,
+        artefact_version_ids: [],
         destination_json: { kind: "endpoint", endpoint_id: "actor:workspace:test:floe" },
         content: { text: "delta-only message" },
         response: { expected: false },
@@ -614,6 +717,7 @@ describe("Context economy: history is available but not injected", () => {
               thread_id: "thread-F",
               context_id: contextId,
               correlation_id: null,
+              artefact_version_ids: [],
               destination_json: { kind: "endpoint", endpoint_id: "actor:workspace:test:floe" },
               content: { text: "historical message" },
               response: { expected: false },

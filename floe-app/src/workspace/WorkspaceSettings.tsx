@@ -2,21 +2,17 @@
  * WorkspaceSettings — main-area view (Slice 3), reached via the gear/"Settings"
  * affordance next to the workspace switcher in the topbar.
  *
- * Replaces the old read-only workspace "bindings" popup. Contains the single
- * "New actors inherit: [profile] -> [model] -> [effort]" control — the
- * workspace_default runtime binding — with the same profile->model constraint
- * used by the actor inspector (see ../actors/modelsForProfile.ts).
+ * Replaces the old read-only workspace "bindings" popup. "Workspace model"
+ * is the model choice for the workspace's declared `floe` Actor — the same
+ * Actor definition, Runtime Profile and binding operations used everywhere
+ * else a model is chosen (see FloeModelControl.tsx and ADR-0012). This view
+ * no longer treats `profiles.yaml` or the legacy workspace_default/agent
+ * runtime-binding projection as a source of truth.
  */
-import React, { useCallback, useEffect, useState } from "react";
-import type { AuthModelRecord, AuthProfileRecord, WorkspaceRef } from "../bus-client/types.ts";
-import {
-  getAuthProfiles,
-  getRuntimeBindings,
-  upsertRuntimeBinding,
-  clearRuntimeBindings,
-} from "../bus-client/client.ts";
-import { modelsForProfile, withSelectedModelOption, providerForProfile } from "../actors/modelsForProfile.ts";
-import { ProviderAccess } from "../providers/ProviderAccess.tsx";
+import React, { useState } from "react";
+import type { EndpointRef, WorkspaceRef } from "../bus-client/types.ts";
+import { findFloeEndpoint } from "../features/conversations/OperatorConversations.tsx";
+import { FloeModelControl } from "./FloeModelControl.tsx";
 
 // ---------------------------------------------------------------------------
 // Design tokens (matches App.tsx tk)
@@ -39,157 +35,33 @@ const tk = {
   r3: 8,
 } as const;
 
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
-
-function profileDisplayName(profile: AuthProfileRecord): string {
-  if (profile.label) return profile.label;
-  if (profile.provider === "openai-codex") return "ChatGPT";
-  if (profile.provider === "anthropic") return "Claude";
-  return profile.provider;
-}
-
-const inputStyle: React.CSSProperties = {
-  background: "rgba(255,255,255,0.04)",
-  border: `1px solid ${tk.border}`,
-  borderRadius: tk.r2,
-  padding: "7px 10px",
-  fontSize: 13,
-  color: tk.ink,
-  fontFamily: tk.fontUi,
-  outline: "none",
-};
-
-const secondaryButtonStyle: React.CSSProperties = {
-  flex: "0 0 auto",
-  background: "rgba(255,255,255,0.04)",
-  border: `1px solid ${tk.border}`,
-  borderRadius: tk.r2,
-  padding: "7px 10px",
-  color: tk.ink2,
-  fontSize: 12,
-};
-
-const linkButtonStyle: React.CSSProperties = {
-  border: "none",
-  background: "transparent",
-  color: tk.accent,
-  padding: 0,
-  fontSize: 12,
-};
-
-type SaveState = { phase: "idle" } | { phase: "saving" } | { phase: "saved" } | { phase: "error"; message: string };
-
-function SaveStatus({ state }: { state: SaveState }): React.ReactElement | null {
-  if (state.phase === "idle") return null;
-  if (state.phase === "saving") return <span style={{ fontSize: 12, color: tk.ink3 }}>Saving…</span>;
-  if (state.phase === "saved") return <span style={{ fontSize: 12, color: tk.accent }}>Saved</span>;
-  return <span role="alert" style={{ fontSize: 12, color: tk.danger }}>{state.message}</span>;
-}
-
 export type WorkspaceSettingsProps = {
   workspace: WorkspaceRef;
+  endpoints: EndpointRef[];
   onRemove: (deleteLocator?: boolean) => Promise<void>;
 };
 
-export function WorkspaceSettings({ workspace, onRemove }: WorkspaceSettingsProps): React.ReactElement {
-  const [profiles, setProfiles] = useState<AuthProfileRecord[]>([]);
-  const [models, setModels] = useState<AuthModelRecord[]>([]);
-  const [modelsLoading, setModelsLoading] = useState(false);
+type PendingRemoval = "remove" | "delete" | null;
 
-  const [profileId, setProfileId] = useState("");
-  const [modelId, setModelId] = useState("");
-  const [effort, setEffort] = useState("off");
-  const [save, setSave] = useState<SaveState>({ phase: "idle" });
-  const [showProviderSetup, setShowProviderSetup] = useState(false);
+export function WorkspaceSettings({ workspace, endpoints, onRemove }: WorkspaceSettingsProps): React.ReactElement {
+  const [, setModelReady] = useState(false);
+  const floeEndpoint = findFloeEndpoint(endpoints);
+  const [pending, setPending] = useState<PendingRemoval>(null);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
-  const loadResolution = useCallback(() => {
-    // workspace_default has no single endpoint to resolve against — read the
-    // raw bindings list for this workspace (includes global_default rows too,
-    // per GET /v1/runtime/bindings?workspace_id=...) and pick out the
-    // workspace_default / global_default rows directly.
-    getRuntimeBindings(workspace.workspace_id)
-      .then((bindings) => {
-        const wsBinding = bindings.find((b) => b.scope === "workspace_default" && b.workspace_id === workspace.workspace_id) ?? null;
-        setProfileId(wsBinding?.auth_profile ?? "");
-        setModelId(wsBinding?.model ?? "");
-        setEffort(wsBinding?.thinking_level ?? "off");
-      })
-      .catch(() => {});
-  }, [workspace.workspace_id]);
-
-  useEffect(() => {
-    setSave({ phase: "idle" });
-    loadResolution();
-  }, [workspace.workspace_id, loadResolution]);
-
-  const loadProfiles = useCallback(() => {
-    let cancelled = false;
-    getAuthProfiles()
-      .then((res) => { if (!cancelled) setProfiles(res.profiles.filter(profile => profile.provider !== "openai-codex-app-server")); })
-      .catch(() => { if (!cancelled) setProfiles([]); });
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => loadProfiles(), [loadProfiles]);
-
-  useEffect(() => {
-    if (!profileId) {
-      setModels([]);
-      return;
-    }
-    let cancelled = false;
-    setModelsLoading(true);
-    modelsForProfile(profiles, profileId)
-      .then((list) => { if (!cancelled) { setModels(list); setModelsLoading(false); } })
-      .catch(() => { if (!cancelled) { setModels([]); setModelsLoading(false); } });
-    return () => { cancelled = true; };
-  }, [profiles, profileId]);
-
-  const provider = providerForProfile(profiles, profileId || null);
-  const modelOptions = withSelectedModelOption(models, modelId, provider);
-  const selectedModel = modelOptions.find((m) => m.id === modelId);
-  const reasoningSupported = !!selectedModel?.reasoning;
-
-  async function saveBinding(next: { profileId: string; modelId: string; effort: string }) {
-    setSave({ phase: "saving" });
+  async function confirmRemoval() {
+    if (!pending) return;
+    setRemoving(true);
+    setRemoveError(null);
     try {
-      if (!next.profileId) {
-        await clearRuntimeBindings({ scope: "workspace_default", workspace_id: workspace.workspace_id });
-      } else {
-        await upsertRuntimeBinding({
-          scope: "workspace_default",
-          workspace_id: workspace.workspace_id,
-          auth_profile: next.profileId,
-          model: next.modelId || null,
-          thinking_level: next.modelId ? next.effort || null : null,
-        });
-      }
-      setSave({ phase: "saved" });
-      loadResolution();
+      await onRemove(pending === "delete");
     } catch (err) {
-      setSave({ phase: "error", message: err instanceof Error ? err.message : "Failed to save" });
+      setRemoveError(err instanceof Error ? err.message : "Floe could not complete this action.");
+    } finally {
+      setRemoving(false);
+      setPending(null);
     }
-  }
-
-  function handleProfileChange(value: string) {
-    setProfileId(value);
-    setModelId("");
-    setEffort("off");
-    void saveBinding({ profileId: value, modelId: "", effort: "off" });
-  }
-
-  function handleModelChange(value: string) {
-    const nextModel = modelOptions.find((m) => m.id === value);
-    const nextReasoningSupported = !!nextModel?.reasoning;
-    const nextEffort = nextReasoningSupported ? effort : "off";
-    setModelId(value);
-    setEffort(nextEffort);
-    void saveBinding({ profileId, modelId: value, effort: nextEffort });
-  }
-
-  function handleEffortChange(value: string) {
-    setEffort(value);
-    void saveBinding({ profileId, modelId, effort: value });
   }
 
   return (
@@ -217,86 +89,14 @@ export function WorkspaceSettings({ workspace, onRemove }: WorkspaceSettingsProp
           Choose what Floe normally uses in {workspace.name || "this workspace"}. More specialised actors can still use a different model when needed.
         </p>
 
-        {profiles.length === 0 ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: 12, color: tk.ink4 }}>Connect a provider to choose a workspace model.</span>
-            <button type="button" onClick={() => setShowProviderSetup(true)} style={secondaryButtonStyle}>Add provider</button>
-          </div>
+        {floeEndpoint ? (
+          <FloeModelControl
+            workspaceId={workspace.workspace_id}
+            endpointId={floeEndpoint.endpoint_id}
+            onReadyChange={setModelReady}
+          />
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
-              <label style={{ display: "flex", flex: 1, flexDirection: "column", gap: 4, fontSize: 11, color: tk.ink3 }}>
-                Provider
-                <select
-                  aria-label="Default profile"
-                  value={profileId}
-                  onChange={(e) => handleProfileChange(e.target.value)}
-                  style={inputStyle}
-                >
-                  <option value="">Choose a provider</option>
-                  {profiles.map((p) => (
-                    <option key={p.id} value={p.id}>{profileDisplayName(p)}</option>
-                  ))}
-                </select>
-              </label>
-              <button type="button" onClick={() => setShowProviderSetup(true)} style={secondaryButtonStyle}>Add provider</button>
-            </div>
-
-            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: tk.ink3 }}>
-              Model
-              <select
-                aria-label="Default model"
-                value={modelId}
-                onChange={(e) => handleModelChange(e.target.value)}
-                disabled={!profileId || modelsLoading}
-                style={inputStyle}
-              >
-                <option value="">{modelsLoading ? "Loading models…" : "Select model"}</option>
-                {modelOptions.map((m) => (
-                  <option key={m.id} value={m.id}>{m.name}{m.reasoning ? " · reasoning" : ""}</option>
-                ))}
-              </select>
-            </label>
-
-            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: tk.ink3 }}>
-              Effort
-              <select
-                aria-label="Default effort"
-                value={effort}
-                onChange={(e) => handleEffortChange(e.target.value)}
-                disabled={!profileId || !modelId || !reasoningSupported}
-                style={inputStyle}
-              >
-                {THINKING_LEVELS.map((level) => (
-                  <option key={level} value={level}>{level}</option>
-                ))}
-              </select>
-            </label>
-            {profileId && modelId && !reasoningSupported && (
-              <p style={{ fontSize: 11, color: tk.ink4, margin: 0, fontStyle: "italic" }}>
-                Selected model doesn't support reasoning effort.
-              </p>
-            )}
-
-            <SaveStatus state={save} />
-          </div>
-        )}
-
-        {showProviderSetup && (
-          <div style={{ marginTop: 18, paddingTop: 18, borderTop: `1px solid ${tk.border}` }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <h3 style={{ margin: 0, color: tk.ink, fontSize: 13.5, fontWeight: 540 }}>Add a provider</h3>
-              <button type="button" onClick={() => setShowProviderSetup(false)} style={linkButtonStyle}>Close</button>
-            </div>
-            <ProviderAccess
-              compact
-              purpose="add"
-              onReady={() => {
-                loadProfiles();
-                setShowProviderSetup(false);
-              }}
-            />
-          </div>
+          <span style={{ fontSize: 12, color: tk.ink4 }}>Floe has not finished setting up this workspace's collaborator yet.</span>
         )}
       </section>
 
@@ -314,7 +114,7 @@ export function WorkspaceSettings({ workspace, onRemove }: WorkspaceSettingsProp
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <button
-            onClick={() => void onRemove(false)}
+            onClick={() => { setRemoveError(null); setPending("remove"); }}
             style={{
               display: "flex", alignItems: "center", gap: 10,
               padding: "9px 14px", borderRadius: tk.r2,
@@ -334,7 +134,7 @@ export function WorkspaceSettings({ workspace, onRemove }: WorkspaceSettingsProp
             </span>
           </button>
           <button
-            onClick={() => void onRemove(true)}
+            onClick={() => { setRemoveError(null); setPending("delete"); }}
             style={{
               display: "flex", alignItems: "center", gap: 10,
               padding: "9px 14px", borderRadius: tk.r2,
@@ -354,7 +154,43 @@ export function WorkspaceSettings({ workspace, onRemove }: WorkspaceSettingsProp
             </span>
           </button>
         </div>
+
+        {pending && (
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid rgba(184,90,90,0.25)` }}>
+            <p style={{ fontSize: 12.5, color: tk.ink2, margin: "0 0 10px" }} role="alert">
+              {pending === "delete"
+                ? `Permanently delete "${workspace.name || workspace.workspace_id}" and all its project files from disk? This cannot be undone.`
+                : `Remove "${workspace.name || workspace.workspace_id}" from Floe? The files will remain on disk.`}
+            </p>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                disabled={removing}
+                onClick={() => void confirmRemoval()}
+                style={{
+                  padding: "7px 14px", borderRadius: tk.r2,
+                  background: "rgba(184,90,90,0.16)", border: `1px solid rgba(184,90,90,0.4)`,
+                  color: tk.danger, fontSize: 12.5, fontFamily: tk.fontUi, cursor: "pointer",
+                }}
+              >
+                {removing ? "Working…" : pending === "delete" ? "Delete permanently" : "Remove workspace"}
+              </button>
+              <button
+                disabled={removing}
+                onClick={() => setPending(null)}
+                style={{
+                  padding: "7px 14px", borderRadius: tk.r2,
+                  background: "rgba(255,255,255,0.04)", border: `1px solid ${tk.border}`,
+                  color: tk.ink2, fontSize: 12.5, fontFamily: tk.fontUi, cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+        {removeError && <p role="alert" style={{ marginTop: 10, fontSize: 12, color: tk.danger }}>{removeError}</p>}
       </section>
     </div>
   );
 }
+

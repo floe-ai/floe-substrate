@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -61,7 +60,7 @@ struct ProviderLoginChild<'a>(&'a ProviderLoginProcess);
 
 impl Drop for ProviderLoginChild<'_> {
     fn drop(&mut self) {
-        if let Ok(mut active) = self.0.0.lock() {
+        if let Ok(mut active) = self.0 .0.lock() {
             if let Some(child) = active.take() {
                 let _ = child.kill();
             }
@@ -84,24 +83,9 @@ pub struct AuthProfileRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProfilesDocument {
-    pub version: u32,
-    pub profiles: Vec<AuthProfileRecord>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfilesResponse {
     pub profiles: Vec<AuthProfileRecord>,
     pub default_auth_profile: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuthStorageItem {
-    pub r#type: String, // "api_key" or "oauth"
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,74 +105,16 @@ pub struct ModelProviderStatus {
     pub connected: bool,
     pub profile_id: String,
     pub models: Vec<ModelProviderModel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_ref_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelProvidersResponse {
     pub r#type: String,
     pub providers: Vec<ModelProviderStatus>,
-}
-
-fn get_floe_auth_dir() -> Result<PathBuf, String> {
-    let home = env::var("USERPROFILE")
-        .or_else(|_| env::var("HOME"))
-        .map_err(|_| "Could not determine user home directory".to_string())?;
-    Ok(PathBuf::from(home).join(".floe").join("auth"))
-}
-
-fn read_profiles(path: &PathBuf) -> Result<ProfilesDocument, String> {
-    if !path.exists() {
-        return Ok(ProfilesDocument {
-            version: 1,
-            profiles: Vec::new(),
-        });
-    }
-    let content =
-        fs::read_to_string(path).map_err(|e| format!("Failed to read profiles.yaml: {}", e))?;
-    if content.trim().is_empty() {
-        return Ok(ProfilesDocument {
-            version: 1,
-            profiles: Vec::new(),
-        });
-    }
-    serde_yaml::from_str(&content).map_err(|e| format!("Failed to parse profiles.yaml: {}", e))
-}
-
-fn write_profiles(path: &PathBuf, doc: &ProfilesDocument) -> Result<(), String> {
-    let updated = serde_yaml::to_string(doc)
-        .map_err(|e| format!("Failed to serialize profiles.yaml: {}", e))?;
-    fs::write(path, updated).map_err(|e| format!("Failed to write profiles.yaml: {}", e))
-}
-
-fn upsert_profile(doc: &mut ProfilesDocument, profile: AuthProfileRecord) {
-    if let Some(existing) = doc.profiles.iter_mut().find(|item| item.id == profile.id) {
-        *existing = profile;
-    } else {
-        doc.profiles.push(profile);
-        doc.profiles.sort_by(|a, b| a.id.cmp(&b.id));
-    }
-}
-
-fn read_auth_storage(path: &PathBuf) -> Result<HashMap<String, AuthStorageItem>, String> {
-    if !path.exists() {
-        return Ok(HashMap::new());
-    }
-    let content =
-        fs::read_to_string(path).map_err(|e| format!("Failed to read auth.json: {}", e))?;
-    if content.trim().is_empty() {
-        return Ok(HashMap::new());
-    }
-    serde_json::from_str(&content).map_err(|e| format!("Failed to parse auth.json: {}", e))
-}
-
-fn write_auth_storage(
-    path: &PathBuf,
-    data: &HashMap<String, AuthStorageItem>,
-) -> Result<(), String> {
-    let updated = serde_json::to_string_pretty(data)
-        .map_err(|e| format!("Failed to serialize auth.json: {}", e))?;
-    fs::write(path, format!("{}\n", updated))
-        .map_err(|e| format!("Failed to write auth.json: {}", e))
 }
 
 fn get_floe_config_path() -> Result<PathBuf, String> {
@@ -245,119 +171,46 @@ fn read_runtime_adapter_from_config() -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-pub fn get_substrate_auth_profiles() -> Result<ProfilesResponse, String> {
-    let auth_dir = get_floe_auth_dir()?;
-    let profiles_yaml_path = auth_dir.join("profiles.yaml");
-
-    let mut profiles = Vec::new();
-    if profiles_yaml_path.exists() {
-        let content = fs::read_to_string(&profiles_yaml_path)
-            .map_err(|e| format!("Failed to read profiles.yaml: {}", e))?;
-        if !content.trim().is_empty() {
-            let doc: ProfilesDocument = serde_yaml::from_str(&content)
-                .map_err(|e| format!("Failed to parse profiles.yaml: {}", e))?;
-            profiles = doc.profiles;
-        }
-    }
-
+pub async fn get_substrate_auth_profiles(
+    bus_broker: tauri::State<'_, crate::bus_broker::DesktopBusBroker>,
+) -> Result<ProfilesResponse, String> {
+    let profiles = bus_broker
+        .provider_accounts()
+        .await?
+        .into_iter()
+        .filter(|account| account.connected)
+        .map(|account| AuthProfileRecord {
+            id: format!("{}-subscription", account.provider_id),
+            provider: account.provider_id.clone(),
+            model: None,
+            label: Some(provider_display_name(&account.provider_id)),
+            created_at: None,
+            updated_at: None,
+        })
+        .collect();
     Ok(ProfilesResponse {
         profiles,
         default_auth_profile: None,
     })
 }
 
-fn save_profile_to_dir(
-    auth_dir: &PathBuf,
-    profile: AuthProfileRecord,
-    api_key: Option<String>,
-) -> Result<(), String> {
-    fs::create_dir_all(auth_dir).map_err(|e| format!("Failed to create auth directory: {}", e))?;
-
-    let profiles_yaml_path = auth_dir.join("profiles.yaml");
-    let auth_json_path = auth_dir.join("auth.json");
-
-    let mut doc = read_profiles(&profiles_yaml_path)?;
-    upsert_profile(&mut doc, profile.clone());
-    write_profiles(&profiles_yaml_path, &doc)?;
-
-    // 2. Update auth.json securely if key is specified
-    if let Some(key) = api_key {
-        let mut auth_data = read_auth_storage(&auth_json_path)?;
-
-        if key.is_empty() {
-            auth_data.remove(&profile.provider);
-        } else {
-            auth_data.insert(
-                profile.provider.clone(),
-                AuthStorageItem {
-                    r#type: "api_key".to_string(),
-                    key: Some(key),
-                    extra: HashMap::new(),
-                },
-            );
-        }
-        write_auth_storage(&auth_json_path, &auth_data)?;
+fn provider_display_name(provider: &str) -> String {
+    match provider {
+        "openai-codex" => "ChatGPT".to_string(),
+        "anthropic" => "Claude".to_string(),
+        "github-copilot" => "GitHub Copilot".to_string(),
+        "google-gemini-cli" => "Gemini".to_string(),
+        value => value.to_string(),
     }
-
-    Ok(())
-}
-
-#[tauri::command]
-pub fn save_substrate_auth_profile(
-    profile: AuthProfileRecord,
-    api_key: Option<String>,
-) -> Result<(), String> {
-    save_profile_to_dir(&get_floe_auth_dir()?, profile, api_key)
-}
-
-#[tauri::command]
-pub fn delete_substrate_auth_profile(profile_id: String) -> Result<(), String> {
-    let auth_dir = get_floe_auth_dir()?;
-    let profiles_yaml_path = auth_dir.join("profiles.yaml");
-    let auth_json_path = auth_dir.join("auth.json");
-
-    let mut removed_provider: Option<String> = None;
-    let mut profile_id_is_active_provider = false;
-    if profiles_yaml_path.exists() {
-        let mut doc = read_profiles(&profiles_yaml_path)?;
-        removed_provider = doc
-            .profiles
-            .iter()
-            .find(|profile| profile.id == profile_id)
-            .map(|profile| profile.provider.clone());
-        doc.profiles.retain(|profile| profile.id != profile_id);
-        profile_id_is_active_provider = doc
-            .profiles
-            .iter()
-            .any(|profile| profile.provider == profile_id);
-        write_profiles(&profiles_yaml_path, &doc)?;
-        if let Some(provider) = &removed_provider {
-            if doc
-                .profiles
-                .iter()
-                .any(|profile| &profile.provider == provider)
-            {
-                removed_provider = None;
-            }
-        }
-    }
-
-    if auth_json_path.exists() {
-        let mut auth_data = read_auth_storage(&auth_json_path)?;
-        if !profile_id_is_active_provider {
-            auth_data.remove(&profile_id); // clean up credentials written by the older desktop format
-        }
-        if let Some(provider) = removed_provider {
-            auth_data.remove(&provider);
-        }
-        write_auth_storage(&auth_json_path, &auth_data)?;
-    }
-
-    Ok(())
 }
 
 fn parse_model_providers(stdout: &str) -> Result<Vec<ModelProviderStatus>, String> {
-    for line in stdout.lines().rev().map(str::trim).filter(|line| !line.is_empty()) {
+    for line in stdout
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
         if let Ok(response) = serde_json::from_str::<ModelProvidersResponse>(line) {
             if response.r#type == "provider_statuses" {
                 return Ok(response.providers);
@@ -372,28 +225,57 @@ fn parse_model_providers(stdout: &str) -> Result<Vec<ModelProviderStatus>, Strin
 }
 
 #[tauri::command]
-pub async fn get_model_providers(app: tauri::AppHandle) -> Result<Vec<ModelProviderStatus>, String> {
-    let auth_dir = get_floe_auth_dir()?;
-    let script = app.path().resolve("resources/floe-desktop.js", BaseDirectory::Resource)
+pub async fn get_model_providers(
+    app: tauri::AppHandle,
+    bus_broker: tauri::State<'_, crate::bus_broker::DesktopBusBroker>,
+) -> Result<Vec<ModelProviderStatus>, String> {
+    let script = app
+        .path()
+        .resolve("resources/floe-desktop.js", BaseDirectory::Resource)
         .map_err(|e| format!("Failed to locate provider setup: {}", e))?;
-    let script_dir = script.parent()
+    let script_dir = script
+        .parent()
         .ok_or_else(|| "The provider setup resource has no parent directory".to_string())?;
     let output = app
         .shell()
         .sidecar("floe-node")
         .map_err(|e| format!("Failed to prepare provider setup: {}", e))?
         .current_dir(script_dir)
-        .args(["floe-desktop.js".as_ref(), "auth".as_ref(), "providers".as_ref(), auth_dir.as_os_str()])
+        .args(["floe-desktop.js", "auth", "providers"])
         .output()
         .await
         .map_err(|e| format!("Failed to inspect model providers: {}", e))?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if detail.is_empty() { "The provider helper did not respond".to_string() } else { detail });
+        return Err(if detail.is_empty() {
+            "The provider helper did not respond".to_string()
+        } else {
+            detail
+        });
     }
     let stdout = String::from_utf8(output.stdout)
         .map_err(|_| "The provider helper returned invalid output".to_string())?;
-    parse_model_providers(&stdout)
+    let mut providers = parse_model_providers(&stdout)?;
+    let accounts = bus_broker.provider_accounts().await?;
+    for provider in &mut providers {
+        let account = accounts
+            .iter()
+            .find(|account| account.provider_id == provider.provider);
+        provider.connected = account.map(|account| account.connected).unwrap_or(false);
+        provider.secret_ref_id = account.map(|account| account.secret_ref_id.clone());
+        provider.credential_revision = account.map(|account| {
+            format!(
+                "generation:{}:{}",
+                account.generation,
+                if account.connected {
+                    "resolved"
+                } else {
+                    "unresolved"
+                },
+            )
+        });
+    }
+    Ok(providers)
 }
 
 #[tauri::command]
@@ -404,55 +286,102 @@ pub async fn connect_model_provider(
     login_process: tauri::State<'_, ProviderLoginProcess>,
 ) -> Result<ModelProviderStatus, String> {
     let _login_guard = ProviderLoginGuard::acquire()?;
-    let auth_dir = get_floe_auth_dir()?;
-    let script = app.path().resolve("resources/floe-desktop.js", BaseDirectory::Resource)
+    let bus_broker = app.state::<crate::bus_broker::DesktopBusBroker>();
+    let ingress = bus_broker
+        .begin_provider_account_connection(&provider, &provider)
+        .await?;
+    let script = app
+        .path()
+        .resolve("resources/floe-desktop.js", BaseDirectory::Resource)
         .map_err(|e| format!("Failed to locate provider setup: {}", e))?;
-    let script_dir = script.parent()
+    let script_dir = script
+        .parent()
         .ok_or_else(|| "The provider setup resource has no parent directory".to_string())?;
-    let (mut receiver, child) = app
+    let (mut receiver, mut child) = app
         .shell()
         .sidecar("floe-node")
         .map_err(|e| format!("Failed to prepare provider setup: {}", e))?
         .current_dir(script_dir)
-        .args([
-            "floe-desktop.js".as_ref(),
-            "auth".as_ref(),
-            "login".as_ref(),
-            auth_dir.as_os_str(),
-            provider.as_ref(),
+        .args(vec![
+            "floe-desktop.js".to_string(),
+            "auth".to_string(),
+            "login".to_string(),
+            provider.clone(),
+            ingress.ingress_session_id.clone(),
+            ingress.audience.clone(),
+            ingress.purpose.clone(),
         ])
         .spawn()
         .map_err(|e| format!("Failed to start provider sign-in: {}", e))?;
-    login_process.start(child)?;
+    if child.write(ingress.bearer_token.as_bytes()).is_err() || child.write(b"\n").is_err() {
+        let _ = child.kill();
+        bus_broker
+            .cancel_provider_account_connection(&ingress)
+            .await;
+        return Err("Floe could not initialise the protected provider sign-in session".to_string());
+    }
+    if let Err(error) = login_process.start(child) {
+        bus_broker
+            .cancel_provider_account_connection(&ingress)
+            .await;
+        return Err(error);
+    }
     let _child_guard = ProviderLoginChild(&login_process);
 
-    let mut stderr = String::new();
     let mut result: Option<ModelProviderStatus> = None;
     let mut exit_code: Option<i32> = None;
-    while let Some(event) = receiver.recv().await {
-        match event {
-            CommandEvent::Stdout(bytes) => {
-                let line = String::from_utf8_lossy(&bytes);
-                let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else { continue };
-                if value.get("type").and_then(|item| item.as_str()) == Some("provider_status") {
-                    result = serde_json::from_value(value)
-                        .map_err(|e| format!("The provider helper returned invalid account status: {}", e))?;
-                } else {
-                    on_event.send(value).map_err(|e| format!("Could not update the sign-in screen: {}", e))?;
+    let sign_in_result: Result<ModelProviderStatus, String> = async {
+        while let Some(event) = receiver.recv().await {
+            match event {
+                CommandEvent::Stdout(bytes) => {
+                    let line = String::from_utf8_lossy(&bytes);
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+                        continue;
+                    };
+                    if value.get("type").and_then(|item| item.as_str()) == Some("provider_status") {
+                        result = serde_json::from_value(value).map_err(|e| {
+                            format!("The provider helper returned invalid account status: {}", e)
+                        })?;
+                    } else {
+                        on_event
+                            .send(value)
+                            .map_err(|e| format!("Could not update the sign-in screen: {}", e))?;
+                    }
                 }
+                CommandEvent::Stderr(_) => {}
+                CommandEvent::Error(_) => {
+                    return Err("Provider sign-in stopped unexpectedly".to_string())
+                }
+                CommandEvent::Terminated(payload) => exit_code = payload.code,
+                _ => {}
             }
-            CommandEvent::Stderr(bytes) => stderr.push_str(&String::from_utf8_lossy(&bytes)),
-            CommandEvent::Error(error) => return Err(error),
-            CommandEvent::Terminated(payload) => exit_code = payload.code,
-            _ => {}
         }
-    }
 
-    if exit_code != Some(0) {
-        let detail = stderr.trim();
-        return Err(if detail.is_empty() { "Provider sign-in did not complete".to_string() } else { detail.to_string() });
+        if exit_code != Some(0) {
+            return Err("Provider sign-in did not complete".to_string());
+        }
+        result.ok_or_else(|| "Provider sign-in completed without account status".to_string())
     }
-    let status = result.ok_or_else(|| "Provider sign-in completed without account status".to_string())?;
+    .await;
+    let mut status = match sign_in_result {
+        Ok(status) => status,
+        Err(error) => {
+            bus_broker
+                .cancel_provider_account_connection(&ingress)
+                .await;
+            return Err(error);
+        }
+    };
+    if let Err(error) = bus_broker
+        .finish_provider_account_connection(&ingress)
+        .await
+    {
+        bus_broker
+            .cancel_provider_account_connection(&ingress)
+            .await;
+        return Err(error);
+    }
+    status.connected = true;
     write_runtime_adapter_to_config("pi-agent-core")?;
     Ok(status)
 }
@@ -497,33 +426,6 @@ pub fn set_runtime_adapter(adapter: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = env::temp_dir().join(format!(
-            "floe-auth-{}-{}-{}",
-            name,
-            std::process::id(),
-            unique
-        ));
-        fs::create_dir_all(&path).unwrap();
-        path
-    }
-
-    fn profile(id: &str, provider: &str) -> AuthProfileRecord {
-        AuthProfileRecord {
-            id: id.to_string(),
-            provider: provider.to_string(),
-            model: None,
-            label: None,
-            created_at: None,
-            updated_at: None,
-        }
-    }
 
     fn providers_status_json() -> String {
         serde_json::json!({
@@ -535,9 +437,12 @@ mod tests {
                 "auth_name": "OpenAI (ChatGPT Plus/Pro)",
                 "connected": true,
                 "profile_id": "openai-codex-subscription",
-                "models": []
+                "models": [],
+                "secret_ref_id": null,
+                "credential_revision": null
             }]
-        }).to_string()
+        })
+        .to_string()
     }
 
     #[test]
@@ -552,7 +457,10 @@ mod tests {
 
     #[test]
     fn rejects_empty_or_unrelated_provider_helper_output_without_json_parser_noise() {
-        assert_eq!(parse_model_providers("\r\n").unwrap_err(), "The provider helper returned no status");
+        assert_eq!(
+            parse_model_providers("\r\n").unwrap_err(),
+            "The provider helper returned no status"
+        );
         assert_eq!(
             parse_model_providers("browser launcher output\n").unwrap_err(),
             "The provider helper returned invalid status"
@@ -571,23 +479,9 @@ mod tests {
     }
 
     #[test]
-    fn api_key_is_stored_by_provider_not_profile_id() {
-        let dir = temp_dir("provider-key");
-        save_profile_to_dir(
-            &dir,
-            profile("openai-personal", "openai"),
-            Some("secret".to_string()),
-        )
-        .unwrap();
-
-        let auth = read_auth_storage(&dir.join("auth.json")).unwrap();
-        assert_eq!(
-            auth.get("openai").and_then(|item| item.key.as_deref()),
-            Some("secret")
-        );
-        assert!(!auth.contains_key("openai-personal"));
-
-        fs::remove_dir_all(dir).unwrap();
+    fn presents_provider_accounts_without_inventing_profile_storage() {
+        assert_eq!(provider_display_name("openai-codex"), "ChatGPT");
+        assert_eq!(provider_display_name("github-copilot"), "GitHub Copilot");
+        assert_eq!(provider_display_name("provider-x"), "provider-x");
     }
-
 }

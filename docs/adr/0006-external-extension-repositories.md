@@ -18,10 +18,11 @@ evolve independently without changing those core concerns.
 The Floe monorepo contains substrate only. Extensions live in independent
 repositories and build against the substrate contract.
 
-Extension discovery remains a runtime substrate capability: the bus exposes
-`GET /v1/extensions` and publishes `extensions_updated`. An extension may
-declare a view, but runtime loading of external extension view components is
-not implemented. Such a view renders a placeholder.
+Extension discovery remains a substrate capability through canonical semantic
+operations and the active-contribution projection defined by ADR-0002. An
+Extension may declare a bounded product surface over canonical projection and
+action operations. The app does not load executable view components from an
+Extension or proxy an Extension-owned HTTP relay.
 
 ## Consequences
 
@@ -29,6 +30,8 @@ not implemented. Such a view renders a placeholder.
   repository.
 - Substrate documentation describes extension contracts and invariants without
   treating an extension as a worked-in product.
-- Runtime discovery remains available to external extensions.
-- The design for loading external extension view components is an open question;
-  this ADR does not choose one.
+- Canonical discovery remains available to external extensions.
+- `.floe/extensions/NAME/` remains an installation location, not canonical
+  source or a competing registration ledger.
+- Bounded product surfaces follow ADR-0002; a universal renderer framework is
+  not implied.

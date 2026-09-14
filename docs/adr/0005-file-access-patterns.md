@@ -2,6 +2,11 @@
 
 **Status:** accepted (2026-06-19)
 
+**Credential amendment:** ADR-0012 supersedes the credential-file examples
+below. Provider credentials now enter through the trusted native broker and
+remain in the operating-system vault; neither Tauri presentation commands nor
+the Bus write `auth.json` or `profiles.yaml` as canonical state.
+
 As Floe evolves from a browser-based frontend (`floe-web`) to a desktop-native application (`floe-app`), managing how files are read and written across the local disk, the daemon (`floe-bus`), and autonomous agents is a critical security and architectural concern. 
 
 Exposing generic file-writing endpoints over standard HTTP daemon routes can lead to severe security vectors, such as remote directory traversal or unauthorized profile modification. A clear, first-principles policy must define file-system boundaries for every role in the ecosystem.
@@ -9,9 +14,22 @@ Exposing generic file-writing endpoints over standard HTTP daemon routes can lea
 ## Decisions
 
 ### 1. Human Operator via Local Desktop App (`floe-app`)
-All human-initiated file reads and writes for configuration (such as global auth profiles `profiles.yaml` or credentials `auth.json`) **must** go through the secure **Tauri IPC (Inter-Process Communication) boundary**.
-* The desktop application's native Rust layer handles all direct filesystem I/O, utilizing the logged-in user's native system privileges.
-* This bypass-routes the daemon (`floe-bus`) completely for local configuration, ensuring that credential secrets are never transmitted over local network ports.
+Human-initiated host file reads and writes use the trusted Tauri IPC boundary.
+Provider credentials are the exception clarified by ADR-0012: Tauri invokes a
+typed native authority broker, a single-use credential ingress transfers the
+result, and the headless Bus stores it through the operating-system protector.
+The webview never receives reusable provider or host-control credentials.
+The explicitly enabled local browser adapter uses the same account operations,
+single-use ingress and protected broker for provider sign-in. Its presentation
+receives only sign-in questions, provider links and safe account status; it does
+not gain generic host authority. See ADR-0012 for the local access policy.
+
+Operator-selected Context attachments also cross a typed Tauri boundary. The
+native broker transfers the selected bytes through a one-use, principal-,
+Workspace-, and Context-bound ingress. The canonical Context operation commits
+the Event and immutable ArtefactVersion references together. New Events never
+publish a source-machine path; the app retains path parsing only for existing
+pre-canonical conversation history.
 
 ### 2. Autonomous Agent via Daemon (`floe-bus`)
 File-system writes initiated by an agent (as part of `tool_code` or workspace actions) **may** write directly to the local disk, provided they are sandboxed and gated by the daemon.

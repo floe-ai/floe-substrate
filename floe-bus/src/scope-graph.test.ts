@@ -13,7 +13,7 @@ async function makeServer(): Promise<{ handle: ServerHandle; tmp: string }> {
   const cfgPath = join(tmp, "config.yaml");
   const cfg: LocalConfig = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const handle = await createBusServer(cfgPath, cfg);
+  const handle = await createBusServer(cfgPath, cfg, { allow_unauthenticated_test_requests: true });
   await handle.app.ready();
   return { handle, tmp };
 }
@@ -24,6 +24,7 @@ async function registerWorkspace(handle: ServerHandle, tmp: string): Promise<str
   const res = await handle.app.inject({
     method: "POST",
     url: "/v1/workspaces/register",
+    headers: { authorization: `Bearer ${handle.localControlToken}` },
     payload: { locator, name: "scope-graph" }
   });
   expect(res.statusCode).toBe(201);
@@ -383,7 +384,7 @@ describe("Scope Graph API", () => {
     expect(event.source_endpoint_id).toBeNull();
   });
 
-  it("wires a command node into the graph's Context identically to an actor node", async () => {
+  it("refuses to create a second live Command path through legacy subscription graphs", async () => {
     const workspaceId = await registerWorkspace(handle, tmp);
     const checker = `endpoint:${workspaceId}:docs_vocabulary_check`;
     registerEndpoint(handle, workspaceId, checker);
@@ -405,28 +406,14 @@ describe("Scope Graph API", () => {
         ]
       }
     });
-    expect(created.statusCode).toBe(201);
-    const graph = created.json().graph;
-
-    // A command node is wired IDENTICALLY to an actor node: participant +
-    // subscription via the existing Context primitives. No bespoke record.
-    const participant = handle.store.db.prepare(
-      "SELECT * FROM context_participants WHERE context_id = ? AND endpoint_id = ?"
-    ).get(graph.context_id, checker);
-    expect(participant).toBeTruthy();
-    const subscription = handle.store.contextStore.getContextSubscriptions(graph.context_id);
-    expect(subscription).toEqual([{ endpoint_id: checker, event_types: ["*"], subscribed_at: expect.any(String) }]);
-
-    // Firing the trigger wakes the command node exactly as it would an actor.
-    const fired = await handle.app.inject({
-      method: "POST",
-      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs/${graph.graph_id}/nodes/watcher/fire`,
-      payload: { content: {} }
+    expect(created.statusCode).toBe(400);
+    expect(created.json()).toMatchObject({
+      error: "scope_graph_invalid",
+      reason: expect.stringContaining("non-executable evidence"),
     });
-    expect(fired.statusCode).toBe(201);
-    const events = fired.json().events;
-    expect(events).toHaveLength(1);
-    expect(events[0].destination_json).toEqual({ kind: "endpoint", endpoint_id: checker });
+    expect(handle.store.db.prepare(
+      "SELECT COUNT(*) AS count FROM context_participants WHERE endpoint_id = ?"
+    ).get(checker)).toEqual({ count: 0 });
   });
 
   it("rejects a command node missing a command", async () => {
@@ -514,16 +501,17 @@ describe("Scope Graph API", () => {
     const removed = await handle.app.inject({
       method: "POST",
       url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/delete`,
+      headers: { authorization: `Bearer ${handle.localControlToken}` },
       payload: { delete_locator: false }
     });
     expect(removed.statusCode).toBe(200);
 
     const reRegisteredWorkspaceId = await registerWorkspace(handle, tmp);
-    expect(reRegisteredWorkspaceId).toBe(workspaceId);
+    expect(reRegisteredWorkspaceId).not.toBe(workspaceId);
 
     const graphs = await handle.app.inject({
       method: "GET",
-      url: `/v1/workspaces/${encodeURIComponent(workspaceId)}/graphs`
+      url: `/v1/workspaces/${encodeURIComponent(reRegisteredWorkspaceId)}/graphs`
     });
     expect(graphs.statusCode).toBe(200);
     expect(graphs.json()).toEqual({ graphs: [] });

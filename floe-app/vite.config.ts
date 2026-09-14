@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { modelPreviewPlugin } from "./scripts/model-preview-plugin.ts";
 
 const appRoot = dirname(fileURLToPath(import.meta.url));
 const appPackage = JSON.parse(readFileSync(resolve(appRoot, "package.json"), "utf8")) as { version: string };
@@ -25,6 +26,7 @@ export default defineConfig({
   },
   plugins: [
     react(),
+    modelPreviewPlugin(),
     {
       name: "floe-health",
       configureServer(server) {
@@ -42,6 +44,9 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     port: 5379,
-    strictPort: true
+    strictPort: true,
+    proxy: {
+      "/v1": { target: process.env.VITE_FLOE_BUS_BASE ?? "http://127.0.0.1:5377", ws: true },
+    },
   }
 });

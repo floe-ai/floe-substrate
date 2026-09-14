@@ -42,7 +42,6 @@ const RULES: VocabularyRule[] = [
     roots: ["docs", "CONTEXT.md", "PRODUCT.md", "AGENTS.md", "README.md"],
     extensions: [".md"],
     allowed: {
-      "CONTEXT.md": "names the retired term in _Avoid_ lists",
       "docs/guide/reference/glossary.md":
         "user guide's Retired terms table — names the term to keep it from creeping back",
       "PRODUCT.md": "states the ban (no inventing a Default Scope)",
@@ -60,7 +59,6 @@ const RULES: VocabularyRule[] = [
     roots: ["docs", "CONTEXT.md", "PRODUCT.md", "AGENTS.md"],
     extensions: [".md"],
     allowed: {
-      "CONTEXT.md": "names the retired term in _Avoid_ lists and the resolved-rename note",
       "docs/plans/slice-2-scope-field-remainder.md":
         "unexecuted 2026-06 plan pending operator review; retained as live analysis"
     }
@@ -71,7 +69,6 @@ const RULES: VocabularyRule[] = [
     roots: ["docs", "CONTEXT.md", "PRODUCT.md", "AGENTS.md", "README.md", "floe-bus/src"],
     extensions: [".md", ".ts", ".tsx"],
     allowed: {
-      "CONTEXT.md": "names the retired term in _Avoid_ lists",
       "docs/guide/reference/glossary.md":
         "user guide's Retired terms table — names the term to keep it from creeping back",
       "docs/adr/0003-field-substrate-primitive.md": "superseded decision record",
@@ -86,7 +83,9 @@ const RULES: VocabularyRule[] = [
     pattern: /is_default/,
     roots: ["floe-bus/src"],
     extensions: [".ts", ".tsx"],
-    allowed: {}
+    allowed: {
+      "floe-bus/src/pi-provider-login.ts": "provider model preference in the shared account adapter, unrelated to Scope identity"
+    }
   },
   {
     name: 'chat-shaped "read receipt" framing (use Endpoint Watermark / Event Cursor)',
@@ -94,7 +93,6 @@ const RULES: VocabularyRule[] = [
     roots: ["docs", "CONTEXT.md", "PRODUCT.md", "AGENTS.md", "floe-bus/src"],
     extensions: [".md", ".ts", ".tsx"],
     allowed: {
-      "CONTEXT.md": "names the banned term in the Endpoint Watermark _Avoid_ list",
       "docs/guide/reference/glossary.md":
         "user guide's Retired terms table — names the term to keep it from creeping back"
     }
@@ -105,7 +103,6 @@ const RULES: VocabularyRule[] = [
     roots: ["floe-bus/src", "docs", "CONTEXT.md", "PRODUCT.md", "AGENTS.md"],
     extensions: [".ts", ".tsx", ".md"],
     allowed: {
-      "CONTEXT.md": "names the rejected substrate in _Avoid_ lists",
       "docs/ROADMAP.md": "proof point 9 states the ban",
       "docs/adr/0003-field-substrate-primitive.md": "decision record that rejected it",
       "floe-bus/src/scope-projection.test.ts": "asserts the substrate stays absent",

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { ensureConfig } from "./config.js";
 import { createBusServer } from "./server.js";
+import { applyLocalFloeDelegationPolicy, applyLocalFloeExportPolicy, applyLocalFloeApprovalResponsePolicy, localProductWorkspacePolicy } from "./local-product-policy.js";
 
 function getArgValue(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -17,7 +18,18 @@ async function main(): Promise<void> {
   }
   const configPathArg = getArgValue("--config");
   const { configPath, config } = ensureConfig(configPathArg);
-  const server = await createBusServer(configPath, config);
+  // The trusted native owner supplies this secret out-of-band. Remove it from
+  // the inherited environment before any child process can observe it.
+  const hostControlToken = process.env.FLOE_HOST_CONTROL_TOKEN;
+  delete process.env.FLOE_HOST_CONTROL_TOKEN;
+  const server = await createBusServer(configPath, config, {
+    host_control_token: hostControlToken,
+    local_browser_access: true,
+    workspace_configuration_policy: localProductWorkspacePolicy,
+  });
+  applyLocalFloeDelegationPolicy(server.store);
+  applyLocalFloeExportPolicy(server.store);
+  applyLocalFloeApprovalResponsePolicy(server.store);
   await server.listen();
 }
 

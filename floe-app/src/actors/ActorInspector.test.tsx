@@ -5,14 +5,27 @@ import { ActorInspector, ActorContexts, ActorLifecycleNote, actorExtensionName, 
 import * as client from "../bus-client/client.ts";
 import * as modelsForProfileHelper from "./modelsForProfile.ts";
 
+const actorOperations = vi.hoisted(() => ({
+  inspect: vi.fn(),
+  revise: vi.fn(),
+  createConversation: vi.fn(),
+}));
+
 vi.mock("../bus-client/client.ts", () => ({
-  registerEndpoint: vi.fn(),
   getAuthProfiles: vi.fn(),
   resolveRuntimeBinding: vi.fn(),
   upsertRuntimeBinding: vi.fn(),
   clearRuntimeBindings: vi.fn(),
   listContextsByParticipant: vi.fn(),
-  createDirectContext: vi.fn(),
+}));
+
+vi.mock("./actorDefinitionOperations.ts", () => ({
+  inspectActorDefinition: actorOperations.inspect,
+  reviseActorDefinition: actorOperations.revise,
+}));
+
+vi.mock("../features/conversations/contextCommunication.ts", () => ({
+  createDirectConversation: actorOperations.createConversation,
 }));
 
 vi.mock("./modelsForProfile.ts", () => ({
@@ -56,11 +69,22 @@ describe("Actor lifecycle presentation", () => {
 describe("ActorInspector - Effort reset behavior", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    actorOperations.inspect.mockRejectedValue(new Error("No canonical definition in this fixture"));
+    actorOperations.revise.mockResolvedValue({
+      actor: {
+        actor_id: "ep-1", workspace_id: "ws-1", status: "active",
+        current_definition_revision_id: "revision:2", created_at: "", updated_at: "2026-01-02T00:00:00Z", retired_at: null,
+      },
+      revision: { content: { label: "My Actor" } },
+    });
     vi.mocked(client.getAuthProfiles).mockResolvedValue({ profiles: mockProfiles, default_auth_profile: null });
     vi.mocked(client.resolveRuntimeBinding).mockResolvedValue({
       endpoint_auth_profile: "profile-1",
       workspace_auth_profile: null,
       global_auth_profile: null,
+      endpoint_provider: "anthropic",
+      workspace_provider: null,
+      global_provider: null,
       endpoint_model: "o1",
       workspace_model: null,
       global_model: null,
@@ -103,8 +127,47 @@ describe("ActorInspector - Effort reset behavior", () => {
       workspace_id: "ws-1",
       endpoint_id: "ep-1",
       auth_profile: "profile-1",
+      provider: "openai",
       model: "gpt-4o",
       thinking_level: "off",
+    });
+  });
+
+  it("publishes a new canonical Actor definition when its name changes", async () => {
+    actorOperations.revise.mockImplementation(async (_workspaceId, _actorId, change) => {
+      const content = change({
+        label: "My Actor",
+        charter: "Build",
+        responsibilities: [],
+        instructions: "Work carefully.",
+        knowledge_refs: [],
+        capability_grant_ids: [],
+        policy_refs: { budget: null, trust: null, approval: null },
+        escalation_rules: [],
+      });
+      return {
+        actor: {
+          actor_id: "ep-1", workspace_id: "ws-1", status: "active",
+          current_definition_revision_id: "revision:2", created_at: "", updated_at: "2026-01-02T00:00:00Z", retired_at: null,
+        },
+        revision: { content },
+      } as never;
+    });
+    render(<ActorInspector actor={mockActor} workspaceId="ws-1" />);
+
+    const input = screen.getByRole("textbox", { name: "Actor name" });
+    fireEvent.change(input, { target: { value: "Delivery Builder" } });
+    fireEvent.blur(input);
+
+    await waitFor(() => expect(actorOperations.revise).toHaveBeenCalledWith(
+      "ws-1",
+      "ep-1",
+      expect.any(Function),
+    ));
+    const change = actorOperations.revise.mock.calls[0]?.[2] as (value: Record<string, unknown>) => Record<string, unknown>;
+    expect(change({ label: "Old", instructions: "Keep me" })).toEqual({
+      label: "Delivery Builder",
+      instructions: "Keep me",
     });
   });
 });
@@ -183,7 +246,7 @@ describe("ActorContexts - New Context picker", () => {
     expect(screen.queryByRole("button", { name: "New context" })).toBeNull();
   });
 
-  it("calls createDirectContext with correct args on confirm and calls onOpenContext", async () => {
+  it("creates a Context through the shared operation contract and opens it", async () => {
     const newCtx = {
       context_id: "ctx-new",
       workspace_id: "ws-1",
@@ -195,7 +258,7 @@ describe("ActorContexts - New Context picker", () => {
       participants: ["ep-1", "ep-2"],
       first_message_preview: null,
     };
-    vi.mocked(client.createDirectContext).mockResolvedValue(newCtx as any);
+    actorOperations.createConversation.mockResolvedValue(newCtx as any);
     const onOpenContext = vi.fn();
 
     render(
@@ -216,15 +279,12 @@ describe("ActorContexts - New Context picker", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
 
     await waitFor(() => {
-      expect(client.createDirectContext).toHaveBeenCalledWith("ws-1", {
-        participants: ["ep-1", "ep-2"],
-        created_by_endpoint_id: "ep-1",
-      });
+      expect(actorOperations.createConversation).toHaveBeenCalledWith("ws-1", ["ep-1", "ep-2"]);
     });
     expect(onOpenContext).toHaveBeenCalledWith("ctx-new");
   });
 
-  it("dismisses picker on cancel without calling createDirectContext", async () => {
+  it("dismisses picker on cancel without creating a Context", async () => {
     render(
       <ActorContexts
         endpointId="ep-1"
@@ -238,7 +298,7 @@ describe("ActorContexts - New Context picker", () => {
     expect(screen.getByRole("combobox", { name: "Select participant" })).toBeDefined();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("combobox", { name: "Select participant" })).toBeNull();
-    expect(client.createDirectContext).not.toHaveBeenCalled();
+    expect(actorOperations.createConversation).not.toHaveBeenCalled();
   });
 });
 

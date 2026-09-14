@@ -1,20 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ContextRef, EndpointRef, EventEnvelope, ScopeRef } from "../../bus-client/types.ts";
+import type { ContextRef, EndpointRef, EventEnvelope, OperationInvocationRequest, OperationRefusal, ScopeRef } from "../../bus-client/types.ts";
 import {
-  createDirectContext,
-  deleteContext,
-  emit,
-  listEvents,
   listContextsByParticipantPage,
   subscribeEvents,
 } from "../../bus-client/client.ts";
 import { ContextConversation } from "../../scope/ContextConversation.tsx";
 import { FloeModelControl } from "../../workspace/FloeModelControl.tsx";
+import { isNativeFloeApp } from "../../bus-client/transport.ts";
 import { tk } from "../../theme.ts";
 import { ContextWorkView } from "../work/ContextWorkView.tsx";
 import { ScopeWorkView } from "../work/ScopeWorkView.tsx";
 import type { RuntimeHealth } from "../../runtime/health.ts";
-import { conversationAttachments, stageConversationAttachments } from "../../fs/conversationAttachments.ts";
+import { conversationAttachments } from "../../fs/conversationAttachments.ts";
 import { appendAttachmentFiles, AttachmentPicker, pastedFiles } from "./AttachmentPicker.tsx";
 import { ProblemReportDialog } from "../feedback/ProblemReportDialog.tsx";
 import {
@@ -23,7 +20,16 @@ import {
   type ProblemReportDraft,
   type ProblemReportReceipt,
 } from "../feedback/problemReport.ts";
-import { ArtifactLineageView, findArtifactGraphPath } from "../work/ArtifactLineageView.tsx";
+import {
+  CONTEXT_ARCHIVE_OPERATION_ID,
+  CONTEXT_RESTORE_OPERATION_ID,
+  confirmContextDestruction,
+  invokeContextLifecycle,
+  listArchivedContexts,
+  prepareContextDestruction,
+} from "./contextLifecycle.ts";
+import { ContextCommunicationPendingError, createConversationSubmission } from "./contextCommunication.ts";
+import { ensureInteractiveActor } from "../../actors/interactiveActor.ts";
 
 const RECENT_LIMIT = 6;
 
@@ -33,13 +39,8 @@ export type OperatorConversation = {
   preview: string;
   needsOperator: boolean;
   activityAt: string;
+  responseStatus: "Working" | "Stopped" | "Needs attention" | null;
 };
-
-export function findOperatorEndpoint(endpoints: EndpointRef[]): EndpointRef | null {
-  return endpoints.find(endpoint => endpoint.agent_id === "operator")
-    ?? endpoints.find(endpoint => endpoint.endpoint_id.endsWith(":operator"))
-    ?? null;
-}
 
 export function findFloeEndpoint(endpoints: EndpointRef[]): EndpointRef | null {
   return endpoints.find(endpoint => endpoint.agent_id === "floe")
@@ -89,6 +90,9 @@ export function summarizeOperatorConversation(
     preview: previewText.replace(/\s+/g, " ").trim(),
     needsOperator,
     activityAt: context.last_event_at ?? context.created_at,
+    responseStatus: (context.delivery_summary?.active_count ?? 0) > 0 ? "Working"
+      : context.delivery_summary?.latest_state === "cancelled" ? "Stopped"
+      : ["failed", "dead_lettered", "deferred"].includes(context.delivery_summary?.latest_state ?? "") ? "Needs attention" : null,
   };
 }
 
@@ -111,7 +115,13 @@ export type OperatorConversationsProps = {
   runtimeHealth?: RuntimeHealth;
 };
 
-export function OperatorConversations({
+export function OperatorConversations(props: OperatorConversationsProps): React.ReactElement {
+  // Participant authority, drafts and pending requests belong to one Workspace.
+  // Reset them together before rendering or requesting anything in another one.
+  return <WorkspaceConversations key={props.workspaceId} {...props} />;
+}
+
+function WorkspaceConversations({
   workspaceId,
   workspaceLocator,
   endpoints,
@@ -122,36 +132,59 @@ export function OperatorConversations({
   onOpenSettings,
   runtimeHealth,
 }: OperatorConversationsProps): React.ReactElement {
-  const operator = useMemo(() => findOperatorEndpoint(endpoints), [endpoints]);
+  const [operator, setOperator] = useState<string | null>(null);
+  const [preparingParticipant, setPreparingParticipant] = useState(true);
   const floe = useMemo(() => findFloeEndpoint(endpoints), [endpoints]);
   const [conversations, setConversations] = useState<OperatorConversation[]>([]);
+  const [archivedConversations, setArchivedConversations] = useState<OperatorConversation[]>([]);
   const [loading, setLoading] = useState(true);
+  const [archivedLoading, setArchivedLoading] = useState(false);
+  const [archivedError, setArchivedError] = useState<string | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setOperator(null);
+    setError(null);
+    setPreparingParticipant(true);
+    void ensureInteractiveActor(workspaceId).then(actor => {
+      if (!cancelled) setOperator(actor.actor_id);
+    }).catch(error => {
+      if (!cancelled) setError(error instanceof Error ? error.message : "Floe could not prepare your workspace participant.");
+    }).finally(() => { if (!cancelled) setPreparingParticipant(false); });
+    return () => { cancelled = true; };
+  }, [workspaceId]);
   const [showAll, setShowAll] = useState(false);
   const [draftTargetId, setDraftTargetId] = useState<string | null>(null);
   const [modelReady, setModelReady] = useState(false);
   const [sending, setSending] = useState(false);
+  const [awaitingReceipt, setAwaitingReceipt] = useState(false);
+  const pendingOutcome = useRef<(() => Promise<string>) | null>(null);
+  const draftContext = useRef<ContextRef | undefined>(undefined);
   const [conversationActionPending, setConversationActionPending] = useState(false);
+  const [conversationActionRefusal, setConversationActionRefusal] = useState<OperationRefusal | null>(null);
+  const [conversationDestructionConfirmation, setConversationDestructionConfirmation] = useState<{
+    confirmation: { title: string; description: string };
+    request: OperationInvocationRequest;
+  } | null>(null);
   const [selectedSurface, setSelectedSurface] = useState<"conversation" | "work">("conversation");
   const [selectedScopeWorkId, setSelectedScopeWorkId] = useState<string | null>(null);
-  const [selectedArtifactGraphPath, setSelectedArtifactGraphPath] = useState<string | null>(null);
-  const [artifactGraphPaths, setArtifactGraphPaths] = useState<string[]>([]);
   const [reportingContextId, setReportingContextId] = useState<string | null>(null);
   const [reportDraft, setReportDraft] = useState<Partial<ProblemReportDraft> | undefined>();
   const [problemReports, setProblemReports] = useState<ProblemReportReceipt[]>([]);
   const [reportCopyNotice, setReportCopyNotice] = useState<string | null>(null);
   const loadSequence = useRef(0);
-  const artifactLoadSequence = useRef(0);
   const initialWorkspace = useRef<string | null>(null);
 
   useEffect(() => {
     setReportingContextId(null);
     setReportDraft(undefined);
+    setConversationActionRefusal(null);
+    setConversationDestructionConfirmation(null);
   }, [selectedContextId, workspaceId]);
   const initialConversationChosen = useRef(false);
-  const draftContextId = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     if (!operator) {
@@ -163,14 +196,14 @@ export function OperatorConversations({
     setError(null);
     try {
       const page = await listContextsByParticipantPage({
-        participant: operator.endpoint_id,
+        participant: operator,
         workspace_id: workspaceId,
         limit: 20,
       });
       const summaries = page.contexts.map(context => summarizeOperatorConversation(
         context,
         context.latest_message ? [context.latest_message] : [],
-        operator.endpoint_id,
+        operator,
         endpoints,
       ));
       if (sequence !== loadSequence.current) return;
@@ -181,7 +214,9 @@ export function OperatorConversations({
       if (!initialConversationChosen.current) {
         initialConversationChosen.current = true;
         if (sorted.length === 0 && floe) {
-          draftContextId.current = null;
+          pendingOutcome.current = null;
+          draftContext.current = undefined;
+          setAwaitingReceipt(false);
           setDraftTargetId(floe.endpoint_id);
         }
       }
@@ -193,24 +228,28 @@ export function OperatorConversations({
     }
   }, [endpoints, floe, onOpenContext, operator, workspaceId]);
 
-  const loadArtifactPaths = useCallback(async () => {
-    const sequence = ++artifactLoadSequence.current;
-    try {
-      const pages = await Promise.all([
-        listEvents({ workspace_id: workspaceId, type: "lineage.updated", direction: "backward", limit: 100 }),
-        listEvents({ workspace_id: workspaceId, type: "artifact.lineage.updated", direction: "backward", limit: 100 }),
-      ]);
-      const paths = pages
-        .flatMap((page) => page.events)
-        .flatMap((event) => findArtifactGraphPath([event]) ?? [])
-        .filter((path, index, all) => all.indexOf(path) === index);
-      if (sequence !== artifactLoadSequence.current) return;
-      setArtifactGraphPaths(paths);
-    } catch {
-      if (sequence !== artifactLoadSequence.current) return;
-      setArtifactGraphPaths([]);
+  const loadArchived = useCallback(async () => {
+    if (!operator) {
+      setArchivedConversations([]);
+      return;
     }
-  }, [workspaceId]);
+    setArchivedLoading(true);
+    setArchivedError(null);
+    try {
+      const contexts = await listArchivedContexts(workspaceId, operator);
+      const summaries = contexts.map(context => ({
+        ...summarizeOperatorConversation(context, [], operator, endpoints),
+        preview: context.title?.trim() || "Conversation history retained.",
+      }));
+      setArchivedConversations(
+        summaries.sort((left, right) => right.activityAt.localeCompare(left.activityAt)),
+      );
+    } catch (loadError) {
+      setArchivedError(loadError instanceof Error ? loadError.message : "Failed to load archived conversations");
+    } finally {
+      setArchivedLoading(false);
+    }
+  }, [endpoints, operator, workspaceId]);
 
   const loadOlder = useCallback(async () => {
     if (!operator || !nextCursor || loadingOlder) return;
@@ -218,7 +257,7 @@ export function OperatorConversations({
     setError(null);
     try {
       const page = await listContextsByParticipantPage({
-        participant: operator.endpoint_id,
+        participant: operator,
         workspace_id: workspaceId,
         limit: 20,
         before: nextCursor,
@@ -226,7 +265,7 @@ export function OperatorConversations({
       const older = page.contexts.map(context => summarizeOperatorConversation(
         context,
         context.latest_message ? [context.latest_message] : [],
-        operator.endpoint_id,
+        operator,
         endpoints,
       ));
       setConversations(current => {
@@ -246,19 +285,22 @@ export function OperatorConversations({
     if (initialWorkspace.current !== workspaceId) {
       initialWorkspace.current = workspaceId;
       initialConversationChosen.current = false;
-      draftContextId.current = null;
+      pendingOutcome.current = null;
+      draftContext.current = undefined;
+      setAwaitingReceipt(false);
       setDraftTargetId(null);
       setShowAll(false);
+      setShowArchived(false);
+      setArchivedConversations([]);
+      setArchivedError(null);
+      setConversationDestructionConfirmation(null);
       setNextCursor(null);
       setSelectedSurface("conversation");
       setSelectedScopeWorkId(null);
-      setSelectedArtifactGraphPath(null);
-      setArtifactGraphPaths([]);
     }
     setLoading(true);
     void load();
-    void loadArtifactPaths();
-  }, [load, loadArtifactPaths, workspaceId]);
+  }, [load, workspaceId]);
 
   useEffect(() => {
     if (!workspaceLocator) {
@@ -273,37 +315,54 @@ export function OperatorConversations({
 
   useEffect(() => {
     const unsubscribe = subscribeEvents(message => {
+      if (["delivery_created", "delivery_reserved", "delivery_acknowledged", "delivery_cancelled",
+        "delivery_failed", "delivery_dead_lettered", "delivery_deferred"].includes(message.type)) void load();
       if (message.type === "event_submitted") {
         const event = (message.payload as { event?: { workspace_id?: string; type?: string } }).event;
         if (event?.workspace_id === workspaceId) {
           void load();
-          if (event.type === "lineage.updated" || event.type === "artifact.lineage.updated") void loadArtifactPaths();
         }
       }
-      if (message.type === "context_created" || message.type === "context_deleted") {
+      if (
+        message.type === "context_created"
+        || message.type === "context_archived"
+        || message.type === "context_restored"
+        || message.type === "context_tombstoned"
+      ) {
         const context = (message.payload as { context?: { workspace_id?: string }; workspace_id?: string }).context;
         const messageWorkspaceId = context?.workspace_id
           ?? (message.payload as { workspace_id?: string }).workspace_id;
-        if (messageWorkspaceId === workspaceId) void load();
+        if (messageWorkspaceId === workspaceId) {
+          void load();
+          if (showArchived) void loadArchived();
+        }
       }
-    });
+    }, { workspaceId, startAtCurrent: true, onOpen: () => { void load(); if (showArchived) void loadArchived(); } });
     return unsubscribe;
-  }, [load, loadArtifactPaths, workspaceId]);
+  }, [load, loadArchived, showArchived, workspaceId]);
 
   function openConversation(contextId: string) {
+    pendingOutcome.current = null;
+    draftContext.current = undefined;
+    setAwaitingReceipt(false);
     setSelectedScopeWorkId(null);
-    draftContextId.current = null;
     setDraftTargetId(null);
     setError(null);
+    setConversationActionRefusal(null);
+    setConversationDestructionConfirmation(null);
     setSelectedSurface("conversation");
     onOpenContext(contextId);
   }
 
   function startNewWith(targetEndpointId: string) {
+    pendingOutcome.current = null;
+    draftContext.current = undefined;
+    setAwaitingReceipt(false);
     setSelectedScopeWorkId(null);
-    draftContextId.current = null;
     setDraftTargetId(targetEndpointId);
     setError(null);
+    setConversationActionRefusal(null);
+    setConversationDestructionConfirmation(null);
     setSelectedSurface("conversation");
     onCloseContext();
   }
@@ -313,60 +372,102 @@ export function OperatorConversations({
     setSending(true);
     setError(null);
     try {
-      let contextId = draftContextId.current;
-      if (!contextId) {
-        const context = await createDirectContext(workspaceId, {
-          participants: [operator.endpoint_id, draftTargetId],
-          created_by_endpoint_id: operator.endpoint_id,
-        });
-        contextId = context.context_id;
-        draftContextId.current = contextId;
-      }
-      const attachments = files.length > 0
-        ? await stageConversationAttachments(
-            { workspace_id: workspaceId, locator: workspaceLocator ?? "" },
-            contextId,
-            files,
-          )
-        : [];
-      const content: Record<string, unknown> = {};
-      if (text) content.text = text;
-      if (attachments.length > 0) content.attachments = attachments;
-      await emit({
-        type: "message",
-        workspace_id: workspaceId,
-        source_endpoint_id: operator.endpoint_id,
-        destination: { kind: "endpoint", endpoint_id: draftTargetId },
-        context_id: contextId,
-        content,
-        response: { expected: true },
-        metadata: {},
+      pendingOutcome.current ??= createConversationSubmission(workspaceId, {
+        context: draftContext.current,
+        onContextCreated: context => { draftContext.current = context; },
+        participantIds: [operator, draftTargetId],
+        recipientParticipantId: draftTargetId,
+        text, files,
       });
+      const submission = pendingOutcome.current;
+      const contextId = await submission();
+      if (pendingOutcome.current !== submission) return;
+      pendingOutcome.current = null;
+      draftContext.current = undefined;
+      setAwaitingReceipt(false);
       setDraftTargetId(null);
-      await load();
       onOpenContext(contextId);
+      void load();
     } catch (sendError) {
+      const pending = sendError instanceof ContextCommunicationPendingError;
+      setAwaitingReceipt(pending);
+      if (!pending) pendingOutcome.current = null;
       setError(sendError instanceof Error ? sendError.message : "Failed to start conversation");
     } finally {
       setSending(false);
     }
   }
 
-  async function deleteCurrentConversation() {
-    if (!selectedContextId || conversationActionPending) return;
-    const confirmed = window.confirm(
-      "Delete this conversation and its messages? Files and other work created in the workspace will remain.",
-    );
-    if (!confirmed) return;
-
+  async function changeCurrentConversation(
+    operationId:
+      | typeof CONTEXT_ARCHIVE_OPERATION_ID
+      | typeof CONTEXT_RESTORE_OPERATION_ID,
+  ) {
+    if (!selectedConversation || conversationActionPending) return;
     setConversationActionPending(true);
     setError(null);
+    setConversationActionRefusal(null);
+    setConversationDestructionConfirmation(null);
     try {
-      await deleteContext(selectedContextId);
+      const result = await invokeContextLifecycle(workspaceId, selectedConversation.context, operationId);
+      if (result.state === "refused") {
+        setConversationActionRefusal(result.refusal);
+        return;
+      }
       onCloseContext();
       await load();
-    } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : "Failed to delete conversation");
+      if (showArchived) await loadArchived();
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Failed to change conversation");
+    } finally {
+      setConversationActionPending(false);
+    }
+  }
+
+  async function requestCurrentConversationDestruction() {
+    if (!selectedConversation || conversationActionPending) return;
+    setConversationActionPending(true);
+    setError(null);
+    setConversationActionRefusal(null);
+    setConversationDestructionConfirmation(null);
+    try {
+      const result = await prepareContextDestruction(workspaceId, selectedConversation.context);
+      if (result.state === "refused") {
+        setConversationActionRefusal(result.refusal);
+        return;
+      }
+      setConversationDestructionConfirmation({
+        confirmation: result.confirmation,
+        request: result.request,
+      });
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Failed to prepare permanent destruction");
+    } finally {
+      setConversationActionPending(false);
+    }
+  }
+
+  async function confirmCurrentConversationDestruction() {
+    if (!conversationDestructionConfirmation || conversationActionPending) return;
+    setConversationActionPending(true);
+    setError(null);
+    setConversationActionRefusal(null);
+    try {
+      const result = await confirmContextDestruction(
+        workspaceId,
+        conversationDestructionConfirmation.request,
+      );
+      if (result.state === "cancelled") return;
+      setConversationDestructionConfirmation(null);
+      if (result.state === "refused") {
+        setConversationActionRefusal(result.refusal);
+        return;
+      }
+      onCloseContext();
+      await load();
+      if (showArchived) await loadArchived();
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Failed to permanently destroy conversation");
     } finally {
       setConversationActionPending(false);
     }
@@ -374,9 +475,12 @@ export function OperatorConversations({
 
   const selectedConversation = conversations.find(
     conversation => conversation.context.context_id === selectedContextId,
+  ) ?? archivedConversations.find(
+    conversation => conversation.context.context_id === selectedContextId,
   ) ?? null;
+  const selectedConversationArchived = selectedConversation?.context.lifecycle_state === "archived";
   const selectedTargetId = selectedConversation?.context.participants.find(
-    participant => participant !== operator?.endpoint_id,
+    participant => participant !== operator,
   ) ?? null;
 
   const selectedScopeWork = scopes.find((scope) => scope.scope_id === selectedScopeWorkId) ?? null;
@@ -385,26 +489,6 @@ export function OperatorConversations({
     if (selectedScopeWork?.status === "retired") setSelectedScopeWorkId(null);
   }, [selectedScopeWork]);
 
-  if (selectedArtifactGraphPath && workspaceLocator && operator) {
-    return (
-      <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden", fontFamily: tk.fontUi }}>
-        <div style={{ padding: "12px 20px", borderBottom: `1px solid ${tk.border}`, background: tk.surface }}>
-          <button type="button" onClick={() => setSelectedArtifactGraphPath(null)} style={{ border: "none", background: "transparent", color: tk.ink3, padding: 0, cursor: "pointer", fontSize: 12.5 }}>
-            ← Workspace
-          </button>
-        </div>
-        <div style={{ flex: 1, minHeight: 0 }}>
-          <ArtifactLineageView
-            workspace={{ workspace_id: workspaceId, locator: workspaceLocator }}
-            graphPath={selectedArtifactGraphPath}
-            endpoints={endpoints}
-            operatorEndpointId={operator.endpoint_id}
-          />
-        </div>
-      </div>
-    );
-  }
-
   if (selectedScopeWork?.status !== "retired" && selectedScopeWork && operator) {
     return (
       <ScopeWorkView
@@ -412,7 +496,7 @@ export function OperatorConversations({
         workspace={workspaceLocator ? { workspace_id: workspaceId, locator: workspaceLocator } : undefined}
         scope={selectedScopeWork}
         endpoints={endpoints}
-        operatorEndpointId={operator.endpoint_id}
+        operatorEndpointId={operator}
         onBack={() => setSelectedScopeWorkId(null)}
       />
     );
@@ -422,17 +506,21 @@ export function OperatorConversations({
     return (
       <NewConversation
         workspaceId={workspaceId}
+        endpointId={draftTargetId}
         attachmentsEnabled={!!workspaceLocator}
         collaboratorName={endpointName(draftTargetId, endpoints)}
         onOpenSettings={onOpenSettings}
         onReadyChange={setModelReady}
         onCancel={() => {
-          draftContextId.current = null;
+          pendingOutcome.current = null;
+          draftContext.current = undefined;
+          setAwaitingReceipt(false);
           setDraftTargetId(null);
           setError(null);
         }}
         onStart={startOutcome}
         sending={sending}
+        awaitingReceipt={awaitingReceipt}
         modelReady={modelReady}
         error={error}
       />
@@ -445,8 +533,9 @@ export function OperatorConversations({
         <ContextWorkView
           workspaceId={workspaceId}
           rootContextId={selectedContextId}
+          scopes={scopes}
           endpoints={endpoints}
-          operatorEndpointId={operator.endpoint_id}
+          operatorEndpointId={operator}
           onBackToConversation={() => setSelectedSurface("conversation")}
         />
       );
@@ -459,9 +548,10 @@ export function OperatorConversations({
           workspaceId={workspaceId}
           workspaceLocator={workspaceLocator}
           endpoints={endpoints}
+          readOnly={selectedConversationArchived}
           runtimeHealth={runtimeHealth}
           operatorEntry={{
-            speakingAsEndpointId: operator.endpoint_id,
+            operatorEndpointId: operator,
             showContextIdentity: true,
             onOpenSettings,
             onBackToConversations: onCloseContext,
@@ -474,17 +564,33 @@ export function OperatorConversations({
               setReportDraft(draft);
               setReportingContextId(selectedContextId);
             } : undefined,
-            onNewConversation: selectedTargetId ? () => startNewWith(selectedTargetId) : undefined,
-            onDeleteConversation: deleteCurrentConversation,
+            onNewConversation: !selectedConversationArchived && selectedTargetId
+              ? () => startNewWith(selectedTargetId)
+              : undefined,
+            onArchiveConversation: !selectedConversationArchived
+              ? () => void changeCurrentConversation(CONTEXT_ARCHIVE_OPERATION_ID)
+              : undefined,
+            onRestoreConversation: selectedConversationArchived
+              ? () => void changeCurrentConversation(CONTEXT_RESTORE_OPERATION_ID)
+              : undefined,
+            onDestroyConversation: selectedConversationArchived
+              ? () => void requestCurrentConversationDestruction()
+              : undefined,
+            onConfirmDestroyConversation: conversationDestructionConfirmation
+              ? () => void confirmCurrentConversationDestruction()
+              : undefined,
+            conversationLifecycleState: selectedConversation?.context.lifecycle_state ?? "active",
             conversationActionsDisabled: conversationActionPending,
             conversationActionError: error,
+            conversationActionRefusal,
+            conversationActionConfirmation: conversationDestructionConfirmation?.confirmation ?? null,
           }}
         />
         {reportingContextId && workspaceLocator && (
           <ProblemReportDialog
             workspace={{ workspace_id: workspaceId, locator: workspaceLocator }}
             contextId={reportingContextId}
-            operatorEndpointId={operator.endpoint_id}
+            operatorEndpointId={operator}
             runtimeHealth={runtimeHealth ?? {
               state: "degraded",
               label: "Runtime status unavailable",
@@ -542,7 +648,7 @@ export function OperatorConversations({
         {error && <div role="alert" style={{ color: tk.danger, fontSize: 13 }}>{error}</div>}
 
         {!loading && !error && !operator && (
-          <StatusText>The workspace operator is not available yet.</StatusText>
+          <StatusText>{preparingParticipant ? "Preparing your conversation…" : "Your workspace participant is unavailable."}</StatusText>
         )}
         {!loading && !error && operator && conversations.length === 0 && (
           <StatusText>No conversations yet. Start with Floe and describe an outcome.</StatusText>
@@ -550,10 +656,6 @@ export function OperatorConversations({
 
         {!loading && !error && operator && activeScopes.length > 0 && (
           <ScopeSection scopes={activeScopes} onOpen={setSelectedScopeWorkId} />
-        )}
-
-        {!loading && !error && workspaceLocator && artifactGraphPaths.length > 0 && (
-          <ArtifactSection paths={artifactGraphPaths} onOpen={setSelectedArtifactGraphPath} />
         )}
 
         {!loading && !error && workspaceLocator && problemReports.length > 0 && (
@@ -631,6 +733,40 @@ export function OperatorConversations({
             Show fewer
           </button>
         )}
+
+        {!loading && !error && operator && (
+          <section style={{ marginTop: 22 }}>
+            <button
+              type="button"
+              aria-expanded={showArchived}
+              onClick={() => {
+                const next = !showArchived;
+                setShowArchived(next);
+                if (next) void loadArchived();
+              }}
+              style={{
+                background: "transparent", border: "none", color: tk.ink3,
+                fontSize: 12.5, cursor: "pointer", padding: "6px 0",
+              }}
+            >
+              {showArchived ? "Hide archived conversations" : "Archived conversations"}
+            </button>
+            {showArchived && archivedLoading && <StatusText>Loading archived conversations…</StatusText>}
+            {showArchived && archivedError && (
+              <div role="alert" style={{ color: tk.danger, fontSize: 13 }}>{archivedError}</div>
+            )}
+            {showArchived && !archivedLoading && !archivedError && archivedConversations.length === 0 && (
+              <StatusText>No archived conversations.</StatusText>
+            )}
+            {showArchived && !archivedLoading && !archivedError && archivedConversations.length > 0 && (
+              <ConversationSection
+                label="Archived"
+                conversations={archivedConversations}
+                onOpenContext={openConversation}
+              />
+            )}
+          </section>
+        )}
       </section>
     </div>
   );
@@ -681,31 +817,6 @@ function ProblemReportsSection({
   );
 }
 
-function ArtifactSection({ paths, onOpen }: { paths: string[]; onOpen: (path: string) => void }): React.ReactElement {
-  return (
-    <section style={{ marginBottom: 24 }}>
-      <div style={{ marginBottom: 8, color: tk.ink3, fontSize: 10.5, fontWeight: 590, letterSpacing: "0.1em", textTransform: "uppercase" }}>
-        Artifacts
-      </div>
-      <div role="list" aria-label="Artifacts" style={{ border: `1px solid ${tk.border}`, borderRadius: tk.r3, overflow: "hidden", background: tk.surface }}>
-        {paths.map((path, index) => (
-          <button key={path} type="button" role="listitem" onClick={() => onOpen(path)} style={{
-            width: "100%", display: "grid", gridTemplateColumns: "1fr auto", gap: 16,
-            padding: "13px 16px", textAlign: "left", background: "transparent", color: tk.ink,
-            border: "none", borderTop: index > 0 ? `1px solid ${tk.border2}` : "none", cursor: "pointer",
-          }}>
-            <span>
-              <span style={{ display: "block", marginBottom: 4, fontSize: 13.5, fontWeight: 550 }}>Artifact lineage</span>
-              <span style={{ display: "block", color: tk.ink3, fontSize: 11.5 }}>{path}</span>
-            </span>
-            <span style={{ alignSelf: "center", color: tk.ink4, fontSize: 11.5 }}>Explore →</span>
-          </button>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 function ScopeSection({
   scopes,
   onOpen,
@@ -750,6 +861,7 @@ function ScopeSection({
 
 function NewConversation({
   workspaceId,
+  endpointId,
   attachmentsEnabled,
   collaboratorName,
   onOpenSettings,
@@ -757,10 +869,12 @@ function NewConversation({
   onCancel,
   onStart,
   sending,
+  awaitingReceipt,
   modelReady,
   error,
 }: {
   workspaceId: string;
+  endpointId: string;
   attachmentsEnabled: boolean;
   collaboratorName: string;
   onOpenSettings?: () => void;
@@ -768,6 +882,7 @@ function NewConversation({
   onCancel: () => void;
   onStart: (text: string, files: File[]) => Promise<void>;
   sending: boolean;
+  awaitingReceipt: boolean;
   modelReady: boolean;
   error: string | null;
 }): React.ReactElement {
@@ -806,7 +921,9 @@ function NewConversation({
         </p>
         <div style={{ marginBottom: 16 }}>
           <FloeModelControl
+            readOnly={!isNativeFloeApp()}
             workspaceId={workspaceId}
+            endpointId={endpointId}
             onReadyChange={onReadyChange}
             onOpenSettings={onOpenSettings}
           />
@@ -839,7 +956,7 @@ function NewConversation({
                 }
               }}
               placeholder={modelReady ? "Describe an outcome…" : "Choose a provider and model above"}
-              disabled={sending || !modelReady}
+              disabled={sending || !modelReady || awaitingReceipt}
               rows={4}
               style={{
                 width: "100%", boxSizing: "border-box", resize: "vertical", minHeight: 104,
@@ -850,7 +967,7 @@ function NewConversation({
               }}
             />
             {attachmentsEnabled && (
-              <AttachmentPicker files={files} onChange={setFiles} disabled={sending || !modelReady} />
+              <AttachmentPicker files={files} onChange={setFiles} disabled={sending || !modelReady || awaitingReceipt} />
             )}
           </div>
           <button
@@ -863,7 +980,7 @@ function NewConversation({
               fontWeight: 590, opacity: sending || !modelReady || !hasMessage ? 0.5 : 1,
             }}
           >
-            {sending ? "Starting…" : "Start"}
+            {sending ? "Starting…" : awaitingReceipt ? "Retry start" : "Start"}
           </button>
         </div>
       </section>
@@ -909,6 +1026,12 @@ function ConversationSection({
               <span style={{ minWidth: 0 }}>
                 <span style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                   <span style={{ fontSize: 14, fontWeight: 550 }}>{conversation.context.title || conversation.collaborators}</span>
+                  {conversation.responseStatus && (
+                    <span style={{ color: tk.ink2, background: tk.surfaceHov, borderRadius: 999,
+                      padding: "2px 7px", fontSize: 10.5, fontWeight: 590 }}>
+                      {conversation.responseStatus}
+                    </span>
+                  )}
                   {conversation.needsOperator && (
                     <span style={{
                       color: tk.accent, background: "rgba(151,185,172,0.10)", borderRadius: 999,
@@ -922,7 +1045,7 @@ function ConversationSection({
                   display: "block", color: tk.ink3, fontSize: 12.5, lineHeight: 1.45,
                   overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                 }}>
-                  {conversation.preview}
+                  {conversation.responseStatus ? "Last message: " : ""}{conversation.preview}
                 </span>
               </span>
               <span style={{ color: tk.ink4, fontSize: 11.5, whiteSpace: "nowrap", paddingTop: 2 }}>

@@ -23,12 +23,13 @@ describe("SUBSTRATE_GUIDANCE", () => {
   });
 
   it("explains real Scope composition without inventing workflow enforcement", () => {
-    expect(SUBSTRATE_GUIDANCE).toContain("use `discover_capabilities`");
+    expect(SUBSTRATE_GUIDANCE).toContain("search with `discover_capabilities`");
+    expect(SUBSTRATE_GUIDANCE).toContain("selected `operation_id` to load its exact input contract");
     expect(SUBSTRATE_GUIDANCE).toContain("call `use_capability`");
-    expect(SUBSTRATE_GUIDANCE).toContain("Bus-owned description and input schema");
-    expect(SUBSTRATE_GUIDANCE).toContain("the current Bus discovery result wins");
+    expect(SUBSTRATE_GUIDANCE).toContain("Bus-owned description, version, target rules, availability, and input schema");
+    expect(SUBSTRATE_GUIDANCE).toContain("Current discovery overrides older recipes");
     expect(SUBSTRATE_GUIDANCE).not.toContain("`compose_scope`");
-    expect(SUBSTRATE_GUIDANCE).toContain("not arbitrary workflow-policy enforcement");
+    expect(SUBSTRATE_GUIDANCE).toContain("Composition provides routing, not workflow policy");
   });
 });
 

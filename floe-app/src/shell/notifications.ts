@@ -90,7 +90,8 @@ export type DecisionNotificationsOptions = {
 
 /**
  * Start listening for decision-relevant events on the bus stream and raise
- * a browser notification (or console fallback) when one arrives.
+ * a browser notification (or console fallback) when one arrives. Start with new
+ * activity; reconnects still catch up on events missed by this listener.
  *
  * Returns an unsubscribe function — call it to stop listening.
  *
@@ -129,7 +130,7 @@ export function startDecisionNotifications(
           : `Event: ${msg.type}`;
 
       showNotification({ title, body, tag: msg.type });
-    });
+    }, { workspaceId, startAtCurrent: true });
   } catch {
     // subscribeEvents may throw in environments where WebSocket is unavailable.
     // Degrade silently — the app works without notifications.

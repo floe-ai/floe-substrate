@@ -2,9 +2,8 @@
  * ActorInspector — right-inspector content for a selected actor (Slice 3).
  *
  * Inline-editable, v6 style (no modal):
- *  - Name: editable, saves via registerEndpoint with the FULL current endpoint
- *    shape (endpoint_id, workspace_id, agent_id, bridge_id, status, metadata)
- *    so a name change doesn't clobber other fields.
+ *  - Name and instructions: editable through immutable Actor-definition
+ *    revisions; Endpoint rows remain an addressability projection.
  *  - Profile -> Model -> Effort (scope="agent"): selecting a profile constrains
  *    the Model dropdown to that profile's provider (see modelsForProfile.ts,
  *    using the shared profile/provider model helper).
@@ -22,18 +21,17 @@ import type {
   RuntimeBindingResolution,
 } from "../bus-client/types.ts";
 import {
-  registerEndpoint,
   getAuthProfiles,
   resolveRuntimeBinding,
   upsertRuntimeBinding,
   clearRuntimeBindings,
   listContextsByParticipant,
-  createDirectContext,
 } from "../bus-client/client.ts";
+import { inspectActorDefinition, reviseActorDefinition } from "./actorDefinitionOperations.ts";
+import { createDirectConversation } from "../features/conversations/contextCommunication.ts";
 import { modelsForProfile, withSelectedModelOption, providerForProfile } from "./modelsForProfile.ts";
 import { contextLabel } from "../scope/ScopeDetail.tsx";
-import { fileAccessAvailable, readWorkspaceFile, writeWorkspaceFile, type WorkspaceFsRef } from "../fs/workspaceFs.ts";
-import { parseAgentFile, serializeAgentFile, type AgentFrontmatter } from "./agentFile.ts";
+import type { WorkspaceFsRef } from "../fs/workspaceFs.ts";
 import { ActorBodyEditor } from "./ActorBodyEditor.tsx";
 
 // ---------------------------------------------------------------------------
@@ -221,10 +219,7 @@ export function ActorContexts({
     if (!selectedParticipant) return;
     setCreateState({ phase: "saving" });
     try {
-      const newCtx = await createDirectContext(workspaceId, {
-        participants: [endpointId, selectedParticipant],
-        created_by_endpoint_id: endpointId,
-      });
+      const newCtx = await createDirectConversation(workspaceId, [endpointId, selectedParticipant]);
       setCreateState({ phase: "saved" });
       setPickerOpen(false);
       setSelectedParticipant("");
@@ -371,19 +366,15 @@ export function ActorLifecycleNote({ actor }: { actor: EndpointRef }): React.Rea
 }
 
 // ---------------------------------------------------------------------------
-// File-backed definition (frontmatter + body) for bridge-registered actors
+// Canonical definition for bridge-addressable actors
 // ---------------------------------------------------------------------------
-// The actor's `.floe/agents/<id>.md` file is the source of truth for its
-// frontmatter + instructions. Path = ".floe/" + JSON.parse(metadata_json).file
-// (set by floe-bridge's daemon.ts reconcileFromBus, ~line 257-258). Editing
-// here writes the file directly via the Tauri FS bridge; we do NOT call
-// registerEndpoint — the bridge's disk-drift sync (every ~30s) re-reads the
-// file and updates the endpoint.
+// Existing `.floe/agents/<id>.md` files remain preserved import sources. The
+// app edits the published Actor definition through the shared operation
+// contract instead of creating a second direct-write authority.
 
-type FileLoadState =
-  | { phase: "unavailable" } // no FS backend, or actor has no on-disk file
+type DefinitionLoadState =
   | { phase: "loading" }
-  | { phase: "loaded"; relPath: string; frontmatter: AgentFrontmatter; body: string }
+  | { phase: "loaded"; revisionId: string; body: string }
   | { phase: "error"; message: string };
 
 /** Returns the extension name if this actor is supplied by an extension (sentinel file). */
@@ -414,56 +405,37 @@ export function actorFileRelPath(actor: EndpointRef): string | null {
 
 export function ActorFileSection({
   actor,
-  workspace,
 }: {
   actor: EndpointRef;
   workspace: WorkspaceFsRef | null;
 }): React.ReactElement | null {
-  const [state, setState] = useState<FileLoadState>({ phase: "unavailable" });
-  const [frontmatter, setFrontmatter] = useState<AgentFrontmatter | null>(null);
+  const [state, setState] = useState<DefinitionLoadState>({ phase: "loading" });
   const [body, setBody] = useState("");
-  const [scopePaths, setScopePaths] = useState("");
-  const [skills, setSkills] = useState("");
-  const [extensions, setExtensions] = useState("");
-  const [mcp, setMcp] = useState("");
-  const [engine, setEngine] = useState("pi");
   const [saveState, setSaveState] = useState<SaveState>({ phase: "idle" });
-  const [fsAvailable, setFsAvailable] = useState<boolean | null>(null);
   const relPath = actorFileRelPath(actor);
 
   useEffect(() => {
     let cancelled = false;
-    fileAccessAvailable().then((available) => { if (!cancelled) setFsAvailable(available); });
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
     setSaveState({ phase: "idle" });
-    if (!fsAvailable || !workspace || !relPath) {
-      setState({ phase: "unavailable" });
-      return;
-    }
-    let cancelled = false;
     setState({ phase: "loading" });
-    readWorkspaceFile(workspace, relPath)
-      .then((contents) => {
+    inspectActorDefinition(actor.workspace_id, actor.endpoint_id)
+      .then((inspection) => {
         if (cancelled) return;
-        const parsed = parseAgentFile(contents);
-        setFrontmatter(parsed.frontmatter);
-        setBody(parsed.body);
-        setScopePaths((parsed.frontmatter.scope?.paths ?? []).join(", "));
-        setSkills((parsed.frontmatter.skills ?? []).join(", "));
-        setExtensions((parsed.frontmatter.extensions ?? []).join(", "));
-        setMcp((parsed.frontmatter.mcp ?? []).join(", "));
-        setEngine(parsed.frontmatter.runtime?.engine ?? "pi");
-        setState({ phase: "loaded", relPath, frontmatter: parsed.frontmatter, body: parsed.body });
+        const current = inspection.current_definition;
+        if (!current) throw new Error("This Actor has no published definition.");
+        setBody(current.content.instructions);
+        setState({
+          phase: "loaded",
+          revisionId: current.actor_definition_revision_id,
+          body: current.content.instructions,
+        });
       })
       .catch((err) => {
         if (cancelled) return;
         setState({ phase: "error", message: err instanceof Error ? err.message : "Failed to read actor file" });
       });
     return () => { cancelled = true; };
-  }, [actor.endpoint_id, workspace, relPath, fsAvailable]);
+  }, [actor.endpoint_id, actor.workspace_id]);
 
   // Extension-provided actors have no on-disk config file — show a read-only note
   // regardless of FS availability (their definition lives in the extension, not on disk).
@@ -497,29 +469,6 @@ export function ActorFileSection({
     );
   }
 
-  if (fsAvailable === null) {
-    return (
-      <div style={{ padding: "12px 16px", borderBottom: `1px solid ${tk.border2}` }}>
-        <span style={{ fontSize: 12, color: tk.ink3 }}>Loading…</span>
-      </div>
-    );
-  }
-
-  if (!fsAvailable) {
-    return (
-      <div style={{ padding: "12px 16px", borderBottom: `1px solid ${tk.border2}` }}>
-        <p style={{ fontSize: 12, color: tk.ink4, fontStyle: "italic", margin: 0 }}>
-          File editing is unavailable: the bus has no local filesystem access configured
-          (workspace_access.local_paths is off) and this isn't the desktop app.
-        </p>
-      </div>
-    );
-  }
-
-  if (!relPath) {
-    return null; // no on-disk file to edit (e.g. actor registered without metadata.file)
-  }
-
   if (state.phase === "loading") {
     return (
       <div style={{ padding: "12px 16px", borderBottom: `1px solid ${tk.border2}` }}>
@@ -536,38 +485,21 @@ export function ActorFileSection({
     );
   }
 
-  if (state.phase !== "loaded" || !frontmatter) return null;
-  const loadedFrontmatter = frontmatter;
+  if (state.phase !== "loaded") return null;
 
   async function handleSave() {
-    if (!workspace || !relPath) return;
     setSaveState({ phase: "saving" });
     try {
-      // Spread preserves every existing field verbatim (including `label`
-      // on legacy files, and `name` only if the file already had one — see
-      // agentFile.ts's AgentFrontmatter.name comment); we only override
-      // runtime.engine and the list fields below.
-      const nextFrontmatter: AgentFrontmatter = {
-        ...loadedFrontmatter,
-        schema: loadedFrontmatter.schema,
-        agent_id: loadedFrontmatter.agent_id,
-        runtime: { engine: engine.trim() || "pi" },
-      };
-      const scopeList = scopePaths.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
-      const skillsList = skills.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
-      const extensionsList = extensions.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
-      const mcpList = mcp.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
-      if (scopeList.length > 0) nextFrontmatter.scope = { paths: scopeList };
-      else delete nextFrontmatter.scope;
-      if (skillsList.length > 0) nextFrontmatter.skills = skillsList;
-      else delete nextFrontmatter.skills;
-      if (extensionsList.length > 0) nextFrontmatter.extensions = extensionsList;
-      else delete nextFrontmatter.extensions;
-      if (mcpList.length > 0) nextFrontmatter.mcp = mcpList;
-      else delete nextFrontmatter.mcp;
-
-      const contents = serializeAgentFile(nextFrontmatter, body);
-      await writeWorkspaceFile(workspace, relPath, contents);
+      const published = await reviseActorDefinition(
+        actor.workspace_id,
+        actor.endpoint_id,
+        definition => ({ ...definition, instructions: body }),
+      );
+      setState({
+        phase: "loaded",
+        revisionId: published.revision.actor_definition_revision_id,
+        body: published.revision.content.instructions,
+      });
       setSaveState({ phase: "saved" });
     } catch (err) {
       setSaveState({ phase: "error", message: err instanceof Error ? err.message : "Failed to save actor file" });
@@ -577,39 +509,14 @@ export function ActorFileSection({
   return (
     <div style={{ padding: "12px 16px", borderBottom: `1px solid ${tk.border2}`, display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ fontSize: 10.5, letterSpacing: "0.10em", textTransform: "uppercase", color: tk.ink3, fontWeight: 510 }}>
-        Definition (file)
+        Definition
       </div>
-      <StatRow label="File" value={<code style={{ fontSize: 11 }}>{relPath}</code>} />
-
-      <FieldLabel>
-        Runtime engine
-        <input
-          aria-label="Runtime engine"
-          value={engine}
-          onChange={(e) => setEngine(e.target.value)}
-          style={inputStyle}
-        />
-      </FieldLabel>
-
-      <FieldLabel>
-        Scope paths (comma separated)
-        <input aria-label="Scope paths" value={scopePaths} onChange={(e) => setScopePaths(e.target.value)} style={inputStyle} />
-      </FieldLabel>
-
-      <FieldLabel>
-        Skills (comma separated)
-        <input aria-label="Skills" value={skills} onChange={(e) => setSkills(e.target.value)} style={inputStyle} />
-      </FieldLabel>
-
-      <FieldLabel>
-        Extensions (comma separated)
-        <input aria-label="Extensions" value={extensions} onChange={(e) => setExtensions(e.target.value)} style={inputStyle} />
-      </FieldLabel>
-
-      <FieldLabel>
-        MCP servers (comma separated)
-        <input aria-label="MCP servers" value={mcp} onChange={(e) => setMcp(e.target.value)} style={inputStyle} />
-      </FieldLabel>
+      <StatRow label="Revision" value={<code style={{ fontSize: 11 }}>{state.revisionId}</code>} />
+      {relPath && (
+        <p style={{ fontSize: 11, color: tk.ink4, lineHeight: 1.5, margin: 0 }}>
+          The existing <code>{relPath}</code> file is preserved as imported configuration. Changes here create a new canonical Actor definition revision.
+        </p>
+      )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         <span style={{ fontSize: 11, color: tk.ink3 }}>Instructions (markdown body)</span>
@@ -627,12 +534,9 @@ export function ActorFileSection({
             fontFamily: tk.fontUi,
           }}
         >
-          {saveState.phase === "saving" ? "Saving…" : "Save definition"}
+          {saveState.phase === "saving" ? "Saving…" : "Save instructions"}
         </button>
         <SaveStatus state={saveState} />
-        {saveState.phase === "saved" && (
-          <span style={{ fontSize: 11, color: tk.ink4 }}>Bridge picks up changes within ~30s.</span>
-        )}
       </div>
     </div>
   );
@@ -739,15 +643,17 @@ export function ActorInspector({
     if (!trimmed || trimmed === actor.name) return;
     setNameSave({ phase: "saving" });
     try {
-      const updated = await registerEndpoint({
-        endpoint_id: actor.endpoint_id,
-        workspace_id: actor.workspace_id,
-        name: trimmed,
-        agent_id: actor.agent_id ?? null,
-        bridge_id: actor.bridge_id ?? null,
-        status: actor.status,
-        metadata: actor.metadata_json ? (JSON.parse(actor.metadata_json) as Record<string, unknown>) : undefined,
-      });
+      const published = await reviseActorDefinition(
+        workspaceId,
+        actor.endpoint_id,
+        definition => ({ ...definition, label: trimmed }),
+      );
+      const updated: EndpointRef = {
+        ...actor,
+        name: published.revision.content.label,
+        status: published.actor.status,
+        updated_at: published.actor.updated_at,
+      };
       setNameSave({ phase: "saved" });
       onSaved?.(updated);
     } catch (err) {
@@ -761,11 +667,14 @@ export function ActorInspector({
       if (!next.profileId) {
         await clearRuntimeBindings({ scope: "agent", workspace_id: workspaceId, endpoint_id: actor.endpoint_id });
       } else {
+        const selectedProvider = providerForProfile(profiles, next.profileId);
+        if (!selectedProvider) throw new Error("The selected provider account is no longer connected.");
         await upsertRuntimeBinding({
           scope: "agent",
           workspace_id: workspaceId,
           endpoint_id: actor.endpoint_id,
           auth_profile: next.profileId,
+          provider: selectedProvider,
           model: next.modelId || null,
           thinking_level: next.modelId ? next.effort || null : null,
         });

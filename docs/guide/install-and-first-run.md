@@ -68,9 +68,40 @@ floe desktop
 
 Starts services if they aren't already running, waits for the 5379 frontend to answer a health check, then opens a native Tauri window attached to that same running frontend — it never starts a second frontend. First launch compiles Rust and takes about 2–5 minutes; the build output streams to your terminal. Later launches are fast.
 
-Once the native shell opens, it renders a lightweight **Starting Floe…** state immediately and checks the local substrate while it becomes ready. The packaged app verifies the substrate's HTTP health rather than only checking that its port is occupied. On Windows it replaces an unresponsive packaged sidecar left by an earlier Floe run. If startup still fails, the wait is bounded and the app shows a recovery message instead of remaining on the starting screen. After startup, a compact green/amber/red status at the bottom of the navigation continues to reflect the live Bus connection and model-runtime attachment without polling. Opening a failed status shows the packaged process detail and can restart stopped local services without closing the application.
+Once the native shell opens, it renders a lightweight **Starting Floe…** state immediately and checks the local substrate while it becomes ready. The packaged app verifies the substrate's HTTP health rather than only checking that its port is occupied. If an unresponsive process occupies that port, Floe leaves it untouched and explains the connection failure. If startup fails, the wait is bounded and the app shows a recovery message instead of remaining on the starting screen. After startup, a compact green/amber/red status at the bottom of the navigation continues to reflect the live Bus connection and model-runtime attachment without polling. Opening a failed status shows the packaged process detail and can restart stopped local services without closing the application.
+
+Closing the desktop leaves the local service running. Work can continue through
+an authenticated browser session, and reopening the desktop attaches to that
+same service. Losing the desktop's console connection does not stop work.
 
 ## First-use onboarding
+
+### Browser connection
+
+On the same computer, open the local browser entry to continue working. Floe
+connects automatically; no pairing code or approval is required. Reload and
+local reconnection also restore access automatically. The local browser can
+register a Workspace, including creating its folder, through the same operation
+as the desktop app. This also works before the first Workspace exists.
+
+For remote access:
+
+1. Open the browser entry and select **Connect this browser**.
+2. In the updated Floe desktop app, choose the Workspace and open **Remote access**.
+3. Match the displayed code, select **Allow workspace access**, and accept the native confirmation.
+4. Select **Continue** in the browser.
+
+The remote connection request expires after five minutes; access lasts one hour.
+Use **Disconnect browser** to revoke it. A substrate restart requires a new remote connection.
+The local browser supports provider setup and model settings. Actions requiring
+a trusted native confirmation still use the desktop app. The browser entry is
+currently served by the source frontend; the
+packaged installer does not yet publish a standalone web entry.
+
+An authorization refusal opens this connection flow immediately. It is not
+reported as a stopped or stuck local service.
+
+### Desktop onboarding
 
 A [[Workspace]] is a portable identity and isolation boundary. A local repo or
 folder is its host-local locator binding. On a clean desktop installation,
@@ -93,6 +124,11 @@ A freshly attached workspace lands in the conversation with Floe and asks what o
 
 ## If it breaks
 
+If a message's result is uncertain, the composer keeps the message and its attachments and offers
+**Retry send** (or **Retry start** for a new conversation). This checks the original send. Editing
+resumes once Floe confirms the result or refuses the send. The desktop app saves the exact selected
+attachment content; model actors can inspect supported images when the work requires them.
+
 If local state needs repair, use the bounded repair instruction for the
 affected state. Do not delete the whole Floe home or operating-system credential
 entry blindly. Workspace identity, history, SecretRefs, and provider credentials
@@ -101,14 +137,19 @@ recovery rather than silently replaced.
 
 ## Implementation
 
-The desktop installer includes the Node runtime used by Floe and one bundled
-desktop companion script. Together they run the Bus and Bridge as the background
+The desktop installer includes the Node runtime used by Floe, the desktop
+companion, and the isolated Command and Extension helper scripts. Together they run the Bus and Bridge as the background
 substrate and perform provider-neutral Pi authentication when requested by the
 Tauri shell. The native shell loads host authority from the operating-system
 vault, passes it privately to a newly started sidecar, obtains a short-lived
 Workspace session, and brokers authenticated requests and push events. If an
 already-running Bus has incompatible authority, Floe shows recovery required
 instead of silently replacing it.
+
+The sidecar build runs the packaged Node executable against both helper scripts
+in a temporary directory without the source checkout or npm dependencies. This
+checks actual Command invocation and Extension sandbox activation, invocation,
+and shutdown. Installer and operator acceptance remain separate checks.
 
 - `floe-cli/src/cli.ts` — `setup`, `start`, `desktop`, `open` commands; `registerCurrentWorkspace`, `findAncestorWithFloe`
 - `floe-cli/src/desktop.ts` — `checkCargoAvailable`, `missingCargoMessage`

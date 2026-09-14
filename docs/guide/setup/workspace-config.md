@@ -64,7 +64,7 @@ Fields: `schema`, `agent_id`, `label`, `runtime.engine`, `extensions` (list of [
 
 This is a hard invariant: `.floe/floe.yaml` is committed project configuration, not runtime scratch state. Ordinary workspace attachment reads it without modification. A deliberate actor-management operation may add, update, or remove an actor definition and then request a config snapshot so the active runtime follows the committed configuration change.
 
-Before registering an Actor Endpoint, the Bridge sends a deterministic,
+During attachment, the Bridge sends a deterministic,
 secret-free inventory of the current files and Runtime selection to the Bus.
 The Bus creates or versions the canonical ActorDefinition, RuntimeProfile and
 ActorRuntimeBinding records, then records an import receipt. Only an applied
@@ -72,6 +72,14 @@ receipt advances the Workspace's active configuration hash. An unresolved
 credential or operation-authority binding keeps that Actor unavailable; it is
 not treated as a usable Runtime. Actors omitted from a later inventory are
 preserved rather than silently retired.
+
+Runtime attachment separately reads current published Actors and their saved
+runtime bindings. Changing an Actor or model through the app therefore survives
+restart even when an older file import conflicts. The refused import remains
+available as evidence and cannot replace the saved settings. Unimported file
+changes do not start legacy Event sources. Disabled or retired runtimes remain
+unavailable. Instructions and model choices for work come from the exact records
+pinned by its Delivery.
 
 The compatibility authority used for a verified retained Workspace is a
 closed, versioned policy with a bounded expiry. New, copied and forked
@@ -87,14 +95,17 @@ a scoped Context or Context subscriptions as wiring. Older top-level `watchers`
 and mutable Scope graphs remain migration input, not the normal composition
 path.
 
-The current in-process Extension loader may project bundled Actor definitions in
-memory without writing `.floe/floe.yaml` or `.floe/agents/`. This is a legacy
-implementation boundary beneath the accepted isolated Extension lifecycle. A
-clean attachment must not dirty tracked workspace files.
+Extensions supply Actor definitions through the canonical lifecycle. The Bridge
+does not load Extension source into model sessions. A clean attachment must not
+dirty tracked workspace files.
 
 ## Git behaviour on write
 
-When an actor tool does write to the workspace (creating a new agent file, for example), what happens to the resulting git changes is a workspace setting, not something floe decides for you: leave the change alone, show it to you, or commit it automatically. This distinguishes a genuine tool-driven edit (which the workspace setting governs) from the bundled-agent registration above (which never touches disk at all).
+Actor management uses discovered semantic operations and the active runtime's
+authority. It does not create Actor Markdown files as a second authoring API.
+Workspace files remain import sources and may be maintained deliberately through
+ordinary file tools. Committing those file changes is a workspace choice, not an
+automatic consequence of creating or changing a canonical Actor.
 
 ## Implementation
 
@@ -105,12 +116,8 @@ When an actor tool does write to the workspace (creating a new agent file, for e
   configuration import and compatibility policy boundary
 - `floe-bridge/src/workspace-config-inventory.ts` — deterministic secret-free
   inventory construction
-- `floe-bridge/src/tools/actor-tools.ts` — legacy file adapter for Actor
-  definition sources
-- `floe-bridge/src/extension-loader.ts` — `loadBundledAgentsInMemory` (bundled agents loaded from the extension manifest, never persisted to `.floe/`)
-- `floe-bridge/src/daemon.ts` — imports file-backed Actors before Endpoint
-  registration; legacy bundled Extension Actors remain unavailable until the
-  canonical Extension lifecycle supplies their records
+- `floe-bridge/src/daemon.ts` — imports file-backed configuration and separately
+  attaches current canonical Actor runtimes
 
 Git-behaviour-on-write as a workspace setting ("leave it / show it / commit it"): Not built yet.
 

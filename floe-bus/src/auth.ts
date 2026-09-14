@@ -1,26 +1,16 @@
 /**
  * @invariant This module is the bus-local read model for Floe auth metadata.
- * It must merge pi-ai built-ins with local auth overlays from models.json and profiles.yaml
- * without exposing credentials, commands, or other secret-bearing auth state to the web.
- * Live model-list intersection (filtering retired pi catalog entries) is applied at list time
- * via live-model-probe. All failure modes are fail-open: a probe error never shrinks the list.
+ * It must merge pi-ai built-ins with local model/profile metadata without
+ * opening credentials. Credential use and refresh belong exclusively to an
+ * exact brokered operation or isolated runtime Delivery.
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getModels, getProviders, type Model } from "@earendil-works/pi-ai/compat";
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import type {
-  AuthOperationOptions,
-  Credential,
-  CredentialInfo,
-  CredentialStore,
-} from "@earendil-works/pi-ai";
 import YAML from "yaml";
 import { z } from "zod";
 import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
-import { fetchLiveModelIds, intersectWithLive } from "./live-model-probe.js";
-import type { FetchFn, ResolvedCredential } from "./live-model-probe.js";
 
 const ProfileSchema = z.object({
   id: z.string().min(1),
@@ -87,13 +77,6 @@ type FloeAuthPaths = {
   profilesYamlPath: string;
 };
 
-/** Credential shape stored in ~/.floe/auth/auth.json (subset used for probing). */
-type StoredCredential =
-  | { type: "api_key"; key: string }
-  | { type: "oauth"; refresh: string; access: string; expires: number; [key: string]: unknown };
-
-type AuthStorageData = Record<string, StoredCredential>;
-
 export function listAuthProfiles(configPath: string, config: LocalConfig): AuthProfileRecord[] {
   const paths = getFloeAuthPaths(configPath, config);
   ensureAuthFiles(paths);
@@ -110,96 +93,12 @@ export async function listAuthModels(
   configPath: string,
   config: LocalConfig,
   provider?: string,
-  fetchFn?: FetchFn,
+  _legacyFetchFn?: unknown,
 ): Promise<AuthModelRecord[]> {
   const paths = getFloeAuthPaths(configPath, config);
   ensureAuthFiles(paths);
-  const authData = readAuthStorage(paths.authJsonPath);
   const registry = new BusModelRegistry(paths.modelsJsonPath);
-  return registry.list(provider, authData, paths.authJsonPath, fetchFn);
-}
-
-function readAuthStorage(authJsonPath: string): AuthStorageData {
-  try {
-    return JSON.parse(readFileSync(authJsonPath, "utf8")) as AuthStorageData;
-  } catch {
-    return {};
-  }
-}
-
-function writeAuthStorage(authJsonPath: string, data: AuthStorageData): void {
-  writeFileSync(authJsonPath, JSON.stringify(data, null, 2) + "\n", "utf8");
-  chmodSafe(authJsonPath, 0o600);
-}
-
-class BusCredentialStore implements CredentialStore {
-  constructor(
-    private readonly authJsonPath: string,
-    private readonly authData: AuthStorageData,
-  ) {}
-
-  async read(providerId: string, _options?: AuthOperationOptions): Promise<Credential | undefined> {
-    return this.authData[providerId];
-  }
-
-  async list(_options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
-    return Object.entries(this.authData).map(([providerId, credential]) => ({
-      providerId,
-      type: credential.type,
-    }));
-  }
-
-  async modify(
-    providerId: string,
-    fn: (current: Credential | undefined) => Promise<Credential | undefined>,
-    _options?: AuthOperationOptions,
-  ): Promise<Credential | undefined> {
-    const current = this.authData[providerId];
-    const next = await fn(current);
-    if (next !== undefined) {
-      this.authData[providerId] = next as StoredCredential;
-      writeAuthStorage(this.authJsonPath, this.authData);
-      return next;
-    }
-    return current;
-  }
-
-  async delete(providerId: string, _options?: AuthOperationOptions): Promise<void> {
-    delete this.authData[providerId];
-    writeAuthStorage(this.authJsonPath, this.authData);
-  }
-}
-
-/**
- * Resolve a stored credential to a probe-ready token.
- * For OAuth credentials: resolves through pi's provider-owned auth contract, which refreshes expired tokens.
- * Persists refreshed credentials back to auth.json (same 0600 care as ensureAuthFiles).
- * Returns undefined (fail-open) on any error.
- */
-async function resolveStoredCredential(
-  provider: string,
-  credential: StoredCredential | undefined,
-  authJsonPath: string,
-  authData: AuthStorageData,
-): Promise<ResolvedCredential | undefined> {
-  if (!credential) return undefined;
-  if (credential.type === "api_key") {
-    const token = credential.key.trim();
-    return token ? { token, isOAuth: false } : undefined;
-  }
-  if (credential.type === "oauth") {
-    try {
-      const models = builtinModels({
-        credentials: new BusCredentialStore(authJsonPath, authData),
-      });
-      const resolved = await models.getAuth(provider);
-      const token = resolved?.auth.apiKey?.trim();
-      return token ? { token, isOAuth: true } : undefined;
-    } catch {
-      return undefined;
-    }
-  }
-  return undefined;
+  return registry.list(provider);
 }
 
 function getFloeAuthPaths(configPath: string, config: LocalConfig): FloeAuthPaths {
@@ -230,8 +129,6 @@ function ensureAuthFiles(paths: FloeAuthPaths): void {
 
 class BusModelRegistry {
   private readonly models: Model<any>[] = [];
-  /** Keys of models that came from models.json custom entries — never filtered out. */
-  private readonly customModelKeys = new Set<string>();
 
   constructor(private readonly modelsPath: string) {
     const builtIns = getProviders().flatMap((provider) => getModels(provider as any)) as Model<any>[];
@@ -239,30 +136,9 @@ class BusModelRegistry {
     this.applyOverlays();
   }
 
-  async list(provider: string | undefined, authData: AuthStorageData, authJsonPath: string, fetchFn?: FetchFn): Promise<AuthModelRecord[]> {
-    // Group models by provider so we do at most one probe per provider.
-    const providerSet = provider
-      ? new Set([provider])
-      : new Set(this.models.map((m) => m.provider));
-
-    // Resolve credentials (refreshing expired OAuth tokens) then probe concurrently.
-    // Failures return undefined (fail-open) at both the resolve and probe stages.
-    const liveIdsByProvider = new Map<string, Set<string> | undefined>();
-    await Promise.all(
-      [...providerSet].map(async (prov) => {
-        const rawCredential = authData[prov] as StoredCredential | undefined;
-        const resolved = await resolveStoredCredential(prov, rawCredential, authJsonPath, authData);
-        const liveIds = await fetchLiveModelIds(prov, resolved, fetchFn);
-        liveIdsByProvider.set(prov, liveIds);
-      }),
-    );
-
+  async list(provider: string | undefined): Promise<AuthModelRecord[]> {
     return this.models
       .filter((model) => !provider || model.provider === provider)
-      .filter((model) => {
-        const liveIds = liveIdsByProvider.get(model.provider);
-        return intersectWithLive([model], this.customModelKeys, liveIds).length > 0;
-      })
       .map((model) => ({
         id: model.id,
         name: model.name,
@@ -298,7 +174,6 @@ class BusModelRegistry {
           const existingIndex = this.models.findIndex((model) => model.provider === provider && model.id === modelDef.id);
           if (existingIndex >= 0) this.models[existingIndex] = custom;
           else this.models.push(custom);
-          this.customModelKeys.add(`${provider}/${modelDef.id}`);
         }
       }
     } catch {

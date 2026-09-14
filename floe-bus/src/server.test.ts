@@ -18,8 +18,19 @@ async function makeServer(): Promise<{ handle: ServerHandle; cleanup: () => Prom
   const cfgPath = join(tmp, "config.yaml");
   const cfg: LocalConfig = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const handle = await createBusServer(cfgPath, cfg);
+  const handle = await createBusServer(cfgPath, cfg, { allow_unauthenticated_test_requests: true });
   await handle.app.ready();
+  const timestamp = new Date().toISOString();
+  handle.store.workspaceIdentityStore.restoreWorkspace({
+    snapshot: {
+      workspace_id: WS,
+      name: "Test WS",
+      creation_kind: "created",
+      source_workspace_id: null,
+      created_at: timestamp,
+      updated_at: timestamp,
+    },
+  });
   for (const id of [E1, E2, E3]) {
     handle.store.registerEndpoint({
       endpoint_id: id,
@@ -306,7 +317,7 @@ describe("Slice 2 — Context API HTTP routes", () => {
   });
 
   describe("DELETE /v1/contexts/:id", () => {
-    it("hard deletes a conversation and removes it from context lists and event reads", async () => {
+    it("archives a conversation without deleting retained history", async () => {
       const r1 = emit(handle, { source: E1, destination: E2, text: "delete me" });
       const ctx = r1.event.context_id;
       emit(handle, { source: E1, destination: E2, text: "delete me too", context_id: ctx });
@@ -323,7 +334,8 @@ describe("Slice 2 — Context API HTTP routes", () => {
         ok: true,
         context_id: ctx,
         workspace_id: WS,
-        events_deleted: 2
+        archived: true,
+        events_deleted: 0,
       });
 
       const afterList = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });
@@ -331,11 +343,13 @@ describe("Slice 2 — Context API HTTP routes", () => {
       expect((afterList.json().contexts as any[]).map((item) => item.context_id)).toContain(otherCtx);
 
       const afterEvents = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(ctx)}/events` });
-      expect(afterEvents.statusCode).toBe(404);
+      expect(afterEvents.statusCode).toBe(200);
+      expect(afterEvents.json().events).toHaveLength(2);
+      expect(handle.store.contextStore.getContext(ctx)?.lifecycle_state).toBe("archived");
 
       const workspaceEvents = await handle.app.inject({ method: "GET", url: `/v1/events?workspace_id=${encodeURIComponent(WS)}` });
       const workspaceContextIds = (workspaceEvents.json().events as any[]).map((event) => event.context_id);
-      expect(workspaceContextIds).not.toContain(ctx);
+      expect(workspaceContextIds).toContain(ctx);
       expect(workspaceContextIds).toContain(otherCtx);
     });
 
@@ -348,10 +362,7 @@ describe("Slice 2 — Context API HTTP routes", () => {
 
   describe("POST /v1/workspaces/:workspace_id/contexts", () => {
     function ensureWorkspace(h: ServerHandle) {
-      h.store.db.prepare(`
-        INSERT OR IGNORE INTO workspaces (workspace_id, name, locator, status, init_authorized, created_at, updated_at)
-        VALUES (?, ?, ?, 'registered', 0, datetime('now'), datetime('now'))
-      `).run(WS, "Test WS", WS);
+      expect(h.store.getWorkspace(WS)?.workspace_id).toBe(WS);
     }
 
     it("creates a workspace-level context with scope_id null and returns 201", async () => {
@@ -368,7 +379,8 @@ describe("Slice 2 — Context API HTTP routes", () => {
         workspace_id: WS,
         scope_id: null,
         participants: expect.arrayContaining([E1, E2]),
-        created_by_endpoint_id: E1,
+        created_by_endpoint_id: null,
+        created_by_principal_id: "principal:test-bypass",
       });
       expect(typeof body.context.context_id).toBe("string");
     });
@@ -475,10 +487,7 @@ describe("Slice 2 — Context API HTTP routes", () => {
 
   describe("Context linking (Slice 1 Track B)", () => {
     function ensureWorkspace(h: ServerHandle) {
-      h.store.db.prepare(`
-        INSERT OR IGNORE INTO workspaces (workspace_id, name, locator, status, init_authorized, created_at, updated_at)
-        VALUES (?, ?, ?, 'registered', 0, datetime('now'), datetime('now'))
-      `).run(WS, "Test WS", WS);
+      expect(h.store.getWorkspace(WS)?.workspace_id).toBe(WS);
     }
 
     it("creates a context with parent_context_id and returns it in the response", async () => {
@@ -552,7 +561,7 @@ describe("Slice 2 — Context API HTTP routes", () => {
         payload: JSON.stringify({ participants: [E1], context_id: ownId, parent_context_id: ownId }),
       });
       expect(res.statusCode).toBe(400);
-      expect(res.json().error).toBe("invalid_request");
+      expect(res.json().error).toBe("context_parent_cycle");
     });
 
     it("rejects link to a non-existent parent context", async () => {
@@ -564,7 +573,7 @@ describe("Slice 2 — Context API HTTP routes", () => {
         payload: JSON.stringify({ participants: [E1], parent_context_id: "ctx_does_not_exist" }),
       });
       expect(res.statusCode).toBe(404);
-      expect(res.json().error).toBe("parent_context_not_found");
+      expect(res.json().error).toBe("context_parent_not_found");
     });
 
     it("rejects a parent_context_id that would create a cycle", async () => {
@@ -597,7 +606,7 @@ describe("Slice 2 — Context API HTTP routes", () => {
       // The cycle guard fires first because grandparent's chain includes grandparentId
       expect([400, 409, 500].includes(res.statusCode)).toBe(true);
       if (res.statusCode === 400) {
-        expect(res.json().error).toBe("invalid_request");
+        expect(res.json().error).toBe("context_parent_cycle");
       }
     });
 
@@ -627,99 +636,17 @@ describe("Slice 2 — Context API HTTP routes", () => {
       });
       // Should be rejected — either 400 cycle or self-reference (bId chain → aId === context_id aId)
       expect(res.statusCode).toBe(400);
-      expect(res.json().error).toBe("invalid_request");
+      expect(res.json().error).toBe("context_parent_cycle");
     });
   });
 
-  describe("Extension registry (GET /v1/extensions + POST /v1/extensions/report)", () => {
-    it("GET /v1/extensions returns empty list initially", async () => {
-      const res = await handle.app.inject({ method: "GET", url: "/v1/extensions" });
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toMatchObject({ extensions: [] });
-    });
-
-    it("POST /v1/extensions/report registers extensions and GET returns them", async () => {
-      const reportRes = await handle.app.inject({
-        method: "POST",
-        url: "/v1/extensions/report",
-        headers: { "content-type": "application/json" },
-        payload: JSON.stringify({
-          workspace_id: WS,
-          extensions: [
-            {
-              name: "acme",
-              views: [{ slot: "scope-detail-tab", label: "Board", component: "BoardView" }],
-              errors: [],
-              relay_url: null
-            }
-          ]
-        }),
-      });
-      expect(reportRes.statusCode).toBe(201);
-
-      const getRes = await handle.app.inject({
-        method: "GET",
-        url: `/v1/extensions?workspace_id=${encodeURIComponent(WS)}`,
-      });
-      expect(getRes.statusCode).toBe(200);
-      const body = getRes.json() as { extensions: any[] };
-      expect(body.extensions).toHaveLength(1);
-      expect(body.extensions[0].name).toBe("acme");
-      expect(body.extensions[0].views).toHaveLength(1);
-      expect(body.extensions[0].views[0].slot).toBe("scope-detail-tab");
-      expect(body.extensions[0].views[0].label).toBe("Board");
-    });
-
-    it("GET /v1/extensions/:name/* returns 404 for unknown extension", async () => {
-      const res = await handle.app.inject({
-        method: "GET",
-        url: `/v1/extensions/unknown-ext/board?workspace_id=${encodeURIComponent(WS)}`,
-      });
-      expect(res.statusCode).toBe(404);
-    });
-
-    it("GET /v1/extensions/:name/* returns 503 when relay_url is null", async () => {
-      await handle.app.inject({
-        method: "POST",
-        url: "/v1/extensions/report",
-        headers: { "content-type": "application/json" },
-        payload: JSON.stringify({
-          workspace_id: WS,
-          extensions: [{ name: "no-relay", views: [], errors: [], relay_url: null }]
-        }),
-      });
-      const res = await handle.app.inject({
-        method: "GET",
-        url: `/v1/extensions/no-relay/board?workspace_id=${encodeURIComponent(WS)}`,
-      });
-      expect(res.statusCode).toBe(503);
-      expect(res.json()).toMatchObject({ error: "extension_relay_not_available" });
-    });
-
-    it("POST /v1/extensions/report broadcasts extensions_updated to WS subscribers", async () => {
-      const address = await handle.app.listen({ port: 0, host: "127.0.0.1" });
-      const wsUrl = address.replace(/^http/, "ws") + "/v1/events/stream";
-      const wsMod = await import("ws" as any);
-      const WsCtor = (wsMod as any).WebSocket ?? (wsMod as any).default;
-      const ws = new WsCtor(wsUrl);
-      const messages: any[] = [];
-      await new Promise<void>((resolve, reject) => {
-        ws.on("open", () => resolve());
-        ws.on("error", (err: any) => reject(err));
-      });
-      ws.on("message", (data: any) => { messages.push(JSON.parse(data.toString())); });
-
-      // Trigger the broadcast the same way the POST route does
-      handle.broadcast("extensions_updated", { workspace_id: WS });
-
-      await new Promise(resolve => setTimeout(resolve, 150));
-      ws.close();
-
-      const updated = messages.find((m: any) => m.type === "extensions_updated");
-      expect(updated).toBeDefined();
-      expect(updated.payload?.workspace_id).toBe(WS);
-    });
+  it("does not expose the retired in-memory Extension registry or HTTP relay", () => {
+    expect(handle.app.hasRoute({ method: "GET", url: "/v1/extensions" })).toBe(false);
+    expect(handle.app.hasRoute({ method: "POST", url: "/v1/extensions/report" })).toBe(false);
+    expect(handle.app.hasRoute({ method: "GET", url: "/v1/extensions/:name/*" })).toBe(false);
+    expect(handle.app.hasRoute({ method: "POST", url: "/v1/extensions/:name/*" })).toBe(false);
   });
+
 });
 
 describe("Endpoint lifecycle routes", () => {
@@ -812,17 +739,18 @@ describe("Runtime config truth and auth registry routes", () => {
   afterEach(async () => { await cleanup(); });
 
   it("reports the live bridge runtime adapter from bridge capabilities", async () => {
+    const bridgeCredential = handle.issueBridgeServiceCredential("bridge:runtime");
     const register = await handle.app.inject({
       method: "POST",
       url: "/v1/bridges/register",
+      headers: { authorization: `Bearer ${bridgeCredential.bearer_token}` },
       payload: {
-        bridge_id: "bridge:runtime",
         capabilities: { runtime_adapters: ["pi-agent-core"] }
       }
     });
     expect(register.statusCode).toBe(201);
 
-    // D4: liveness is socket-based. Open a WS and send bridge_hello to mark the bridge online.
+    // D4: liveness is socket-based. Authenticate a Bridge WS to mark it online.
     const address = await handle.app.listen({ port: 0, host: "127.0.0.1" });
     const wsUrl = address.replace(/^http/, "ws") + "/v1/events/stream";
     const wsMod = await import("ws" as any);
@@ -831,18 +759,29 @@ describe("Runtime config truth and auth registry routes", () => {
     const lifecycleMessages: any[] = [];
     observer.on("message", (data: any) => lifecycleMessages.push(JSON.parse(data.toString())));
     await new Promise<void>((resolve, reject) => {
-      observer.on("open", () => resolve());
+      observer.on("open", () => observer.send(JSON.stringify({
+        type: "authenticate",
+        bearer_token: handle.localControlToken,
+      })));
+      observer.on("message", (data: any) => {
+        if (JSON.parse(data.toString()).type === "authenticated") resolve();
+      });
       observer.on("error", (err: any) => reject(err));
     });
     const ws = new WsCtor(wsUrl);
     await new Promise<void>((resolve, reject) => {
       ws.on("open", () => {
-        ws.send(JSON.stringify({ type: "bridge_hello", bridge_id: "bridge:runtime" }));
-        resolve();
+        ws.send(JSON.stringify({
+          type: "authenticate",
+          bearer_token: bridgeCredential.bearer_token,
+        }));
+      });
+      ws.on("message", (data: any) => {
+        if (JSON.parse(data.toString()).type === "authenticated") resolve();
       });
       ws.on("error", (err: any) => reject(err));
     });
-    // Give the server a tick to process the bridge_hello message.
+    // Give the server a tick to publish the authenticated Bridge connection.
     await new Promise(resolve => setTimeout(resolve, 50));
 
     const res = await handle.app.inject({ method: "GET", url: "/v1/runtime/status" });
@@ -910,6 +849,7 @@ describe("Runtime config truth and auth registry routes", () => {
         scope: "workspace_default",
         workspace_id: WS,
         auth_profile: "copilot-atvi",
+        provider: "github-copilot",
         model: "gpt-5.4",
         thinking_level: "high"
       }
@@ -919,6 +859,7 @@ describe("Runtime config truth and auth registry routes", () => {
       scope: "workspace_default",
       workspace_id: WS,
       auth_profile: "copilot-atvi",
+      provider: "github-copilot",
       model: "gpt-5.4",
       thinking_level: "high"
     });
@@ -939,6 +880,7 @@ describe("Runtime config truth and auth registry routes", () => {
     expect(resolved.statusCode).toBe(200);
     expect(resolved.json()).toMatchObject({
       workspace_auth_profile: "copilot-atvi",
+      workspace_provider: "github-copilot",
       workspace_model: "gpt-5.4",
       workspace_thinking_level: "high"
     });

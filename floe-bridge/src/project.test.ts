@@ -119,7 +119,7 @@ describe("ensureProjectTemplate – default agent file (Issue 1)", () => {
     expect(content).toContain("Treat the operator's words as outcomes and experience");
     expect(content).toContain("compose existing mechanisms before assuming something new must be built");
     expect(content).toContain("A generated script plus a command for the operator to run is not an automated Floe outcome");
-    expect(content).toContain("represent that labour as a Floe actor");
+    expect(content).toContain("represent that responsibility as a Floe actor");
     expect(content).toContain("must not replace the actor by invoking Codex or another model CLI");
     expect(content).toContain("Do not treat a detached operating-system process as persistent Floe operation");
     expect(content).toContain("use the runtime's capability discovery for that concrete need");

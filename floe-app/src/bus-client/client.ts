@@ -7,6 +7,14 @@ import type {
   WorkspaceRef,
   ScopeRef,
   ScopeComposition,
+  ScopeCompositionRevisionPage,
+  ScopeExecutionPage,
+  ScopeExecutionRecord,
+  ScopeExecutionProjection,
+  SemanticOperationDescriptor,
+  OperationInvocationRequest,
+  OperationInvocationReceipt,
+  OperationInvocationResponse,
   ScopeProjection,
   ScopeProjectionLayout,
   ContextRef,
@@ -35,18 +43,29 @@ import type {
   ResolvedEndpoint,
 } from "./types.ts";
 import { subscribeEvents as _subscribeEvents } from "./stream.ts";
-
-const BUS_BASE = import.meta.env.VITE_FLOE_BUS_BASE ?? "http://127.0.0.1:5377";
+import { FloeHttpError } from "../runtime/startup.ts";
+import { getBrowserSession } from "./browser.ts";
+import {
+  busFetch,
+  confirmAndInvokeHostOperation as confirmAndInvokeHostOperationTransport,
+  confirmAndInvokeOperation as confirmAndInvokeOperationTransport,
+  discoverHostOperations as discoverHostOperationsTransport,
+  invokeHostOperation as invokeHostOperationTransport,
+  isNativeFloeApp,
+  localRuntimeStatusFetch,
+  localWorkspaceBindingsFetch,
+  workspaceMediaObjectUrl,
+} from "./transport.ts";
 const BUS_MUTATION_TIMEOUT_MS = 5_000;
 
-async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(`${BUS_BASE}${path}`, { signal });
-  if (!res.ok) throw new Error(`Bus GET ${path} → ${res.status}`);
+async function get<T>(path: string, signal?: AbortSignal, workspaceId?: string): Promise<T> {
+  const res = await busFetch(path, { signal }, workspaceId);
+  if (!res.ok) throw new FloeHttpError(res.status, path);
   return res.json() as Promise<T>;
 }
 
 async function put<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BUS_BASE}${path}`, {
+  const res = await busFetch(path, {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -55,17 +74,17 @@ async function put<T>(path: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
+async function post<T>(path: string, body: unknown, workspaceId?: string): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), BUS_MUTATION_TIMEOUT_MS);
   let res: Response;
   try {
-    res = await fetch(`${BUS_BASE}${path}`, {
+    res = await busFetch(path, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
       signal: controller.signal,
-    });
+    }, workspaceId);
   } catch (error) {
     if (controller.signal.aborted) {
       throw new Error("Floe's local service stopped responding. Close and reopen Floe, then try again.", { cause: error });
@@ -79,7 +98,7 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function patch<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BUS_BASE}${path}`, {
+  const res = await busFetch(path, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -89,7 +108,7 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function del<T>(path: string): Promise<T> {
-  const res = await fetch(`${BUS_BASE}${path}`, { method: "DELETE" });
+  const res = await busFetch(path, { method: "DELETE" });
   if (!res.ok) throw new Error(`Bus DELETE ${path} → ${res.status}`);
   // 204 No Content has no body
   if (res.status === 204) return undefined as unknown as T;
@@ -101,7 +120,9 @@ async function del<T>(path: string): Promise<T> {
 // ---------------------------------------------------------------------------
 
 export async function listWorkspaces(signal?: AbortSignal): Promise<WorkspaceRef[]> {
-  const data = await get<{ workspaces: WorkspaceRef[] }>("/v1/workspaces", signal);
+  const response = await localWorkspaceBindingsFetch({ path: "/v1/local/workspaces", init: { signal } });
+  if (!response.ok) throw new FloeHttpError(response.status, "/v1/local/workspaces");
+  const data = await response.json() as { workspaces: WorkspaceRef[] };
   return data.workspaces;
 }
 
@@ -112,35 +133,119 @@ export class DirectoryNotFoundError extends Error {
   }
 }
 
-/** POST /v1/workspaces/register — register a new workspace by filesystem locator */
+export class SemanticOperationError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly refusal?: { required_action?: { title?: string; description?: string } | null },
+  ) {
+    super(message);
+    this.name = "SemanticOperationError";
+  }
+}
+
+/** Discover host-bound actions from the same Bus contract used by Actors. */
+export async function listHostOperations(
+  query?: string,
+  target?: { kind: string; id: string },
+): Promise<SemanticOperationDescriptor[]> {
+  const response = await discoverHostOperationsTransport(query, target);
+  if (!response.ok) throw new Error(`Floe could not load actions for this computer (HTTP ${response.status}).`);
+  const data = await response.json() as { operations: SemanticOperationDescriptor[] };
+  return data.operations;
+}
+
+/** Invoke one host operation only after its Bus-owned native confirmation. */
+export async function confirmAndInvokeHostOperation(
+  request: OperationInvocationRequest,
+): Promise<{ confirmed: false } | { confirmed: true; receipt: OperationInvocationReceipt }> {
+  const result = await confirmAndInvokeHostOperationTransport(request);
+  if (!result.confirmed) return { confirmed: false };
+  if (!result.response) {
+    throw new Error("Floe did not receive a result for the confirmed action.");
+  }
+  if (!result.response.ok) {
+    throw new Error(`Bus confirmed host operation → ${result.response.status}`);
+  }
+  return {
+    confirmed: true,
+    receipt: receiptFromOperationResponse(await result.response.json() as OperationInvocationResponse),
+  };
+}
+
+/** Invoke an exact host-bound descriptor. Authority is supplied by the desktop broker. */
+export async function invokeHostOperation(
+  request: OperationInvocationRequest,
+): Promise<OperationInvocationReceipt> {
+  const response = await invokeHostOperationTransport(request);
+  if (!response.ok) throw new Error(`Bus POST /v1/local/operations/invoke → ${response.status}`);
+  return receiptFromOperationResponse(await response.json() as OperationInvocationResponse);
+}
+
+/** Register a host-local Workspace through the discovered host operation. */
 export async function registerWorkspace(input: {
   locator: string;
   name?: string;
   init_authorized?: boolean;
   create_directory?: boolean;
 }): Promise<WorkspaceRef> {
-  const res = await fetch(`${BUS_BASE}/v1/workspaces/register`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(input),
-  });
-  if (res.status === 400) {
-    const body = await res.json() as { error?: string; message?: string };
-    if (body.error === "directory_not_found") {
-      throw new DirectoryNotFoundError(body.message || "Directory not found");
-    }
-    throw new Error(`Bus POST /v1/workspaces/register → 400: ${JSON.stringify(body)}`);
+  const operation = (await listHostOperations("register workspace"))
+    .find((candidate) => candidate.operation_id === "workspace.register");
+  if (!operation) {
+    throw new SemanticOperationError(
+      "This Floe installation cannot add a Workspace yet.",
+      "workspace_register_unavailable",
+    );
   }
-  if (!res.ok) throw new Error(`Bus POST /v1/workspaces/register → ${res.status}`);
-  const data = await res.json() as { workspace: WorkspaceRef };
-  return data.workspace;
+  if (!operation.availability.available) {
+    throw new SemanticOperationError(
+      operation.availability.refusal.message,
+      operation.availability.refusal.code,
+      operation.availability.refusal,
+    );
+  }
+  const receipt = await invokeHostOperation({
+    operation_id: operation.operation_id,
+    operation_version: operation.operation_version,
+    input_schema_version: operation.input.version,
+    idempotency_key: createClientIdempotencyKey("workspace-register"),
+    input,
+  });
+  if (receipt.refusal?.code === "workspace_directory_not_found") {
+    throw new DirectoryNotFoundError(receipt.refusal.message);
+  }
+  if (receipt.refusal) {
+    throw new SemanticOperationError(receipt.refusal.message, receipt.refusal.code, receipt.refusal);
+  }
+  const workspaceId = (receipt.result as { workspace?: { workspace_id?: unknown } } | null)
+    ?.workspace?.workspace_id;
+  if (typeof workspaceId !== "string" || !workspaceId) {
+    throw new SemanticOperationError(
+      "Floe added the Workspace but did not return its identity.",
+      "workspace_register_result_invalid",
+    );
+  }
+  const localProjection = (await listWorkspaces()).find((workspace) => workspace.workspace_id === workspaceId);
+  if (!localProjection) {
+    throw new SemanticOperationError(
+      "Floe added the Workspace but its local folder is not available on this computer.",
+      "workspace_binding_unavailable",
+    );
+  }
+  return localProjection;
 }
 
 /** POST /v1/workspaces/:id/select — mark a workspace as selected */
 export async function selectWorkspace(ws: string): Promise<WorkspaceRef> {
+  if (isNativeFloeApp()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const response = await invoke<{ status: number; body: string }>("select_workspace", { workspaceId: ws });
+    if (response.status !== 200) throw new FloeHttpError(response.status, `/v1/workspaces/${ws}/select`);
+    return (JSON.parse(response.body) as { workspace: WorkspaceRef }).workspace;
+  }
   const data = await post<{ workspace: WorkspaceRef }>(
     `/v1/workspaces/${encodeURIComponent(ws)}/select`,
-    {}
+    {},
   );
   return data.workspace;
 }
@@ -150,9 +255,18 @@ export async function deleteWorkspace(
   ws: string,
   options?: { delete_locator?: boolean }
 ): Promise<{ ok: true; workspace_id: string; locator_deleted: boolean }> {
+  if (isNativeFloeApp()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const response = await invoke<{ status: number; body: string }>("delete_workspace", {
+      workspaceId: ws,
+      deleteLocator: options?.delete_locator ?? false,
+    });
+    if (response.status !== 200) throw new FloeHttpError(response.status, `/v1/workspaces/${ws}/delete`);
+    return JSON.parse(response.body) as { ok: true; workspace_id: string; locator_deleted: boolean };
+  }
   return post(
     `/v1/workspaces/${encodeURIComponent(ws)}/delete`,
-    options ?? {}
+    options ?? {},
   );
 }
 
@@ -200,9 +314,9 @@ export async function busReadFile(workspaceId: string, relPath: string): Promise
   return data.contents;
 }
 
-/** Workspace-contained raster preview URL for a plain-browser console. */
-export function busWorkspaceMediaUrl(workspaceId: string, relPath: string): string {
-  return `${BUS_BASE}/v1/workspaces/${encodeURIComponent(workspaceId)}/fs/media?path=${encodeURIComponent(relPath)}`;
+/** Authenticated Workspace image preview exposed as a revocable object URL. */
+export function busWorkspaceMediaSource(workspaceId: string, relPath: string): Promise<string> {
+  return workspaceMediaObjectUrl(workspaceId, relPath);
 }
 
 /** PUT /v1/workspaces/:id/fs/file — write a file under the workspace root, creating parent dirs as needed. */
@@ -224,6 +338,125 @@ export async function listScopeCompositions(ws: string, scope: string): Promise<
     `/v1/workspaces/${encodeURIComponent(ws)}/scopes/${encodeURIComponent(scope)}/graphs`
   );
   return data.graphs;
+}
+
+/** Current and retained canonical Scope plan revisions. */
+export async function listScopeCompositionRevisions(
+  ws: string,
+  scope: string,
+): Promise<ScopeCompositionRevisionPage> {
+  return get<ScopeCompositionRevisionPage>(
+    `/v1/workspaces/${encodeURIComponent(ws)}/scopes/${encodeURIComponent(scope)}/compositions`,
+  );
+}
+
+/** Bounded canonical executions of one Scope, newest first. */
+export async function listScopeExecutions(
+  ws: string,
+  scope: string,
+  options: { limit?: number; before?: string } = {},
+): Promise<ScopeExecutionPage> {
+  const params = new URLSearchParams();
+  if (options.limit != null) params.set("limit", String(options.limit));
+  if (options.before) params.set("before", options.before);
+  const query = params.toString();
+  return get<ScopeExecutionPage>(
+    `/v1/workspaces/${encodeURIComponent(ws)}/scopes/${encodeURIComponent(scope)}/executions${query ? `?${query}` : ""}`,
+  );
+}
+
+/** Exact execution evidence pinned to the plan revision it used. */
+export async function getScopeExecutionProjection(
+  ws: string,
+  executionId: string,
+): Promise<ScopeExecutionProjection> {
+  const data = await get<{ projection?: ScopeExecutionProjection } & Partial<ScopeExecutionProjection>>(
+    `/v1/workspaces/${encodeURIComponent(ws)}/scope-executions/${encodeURIComponent(executionId)}`,
+  );
+  return data.projection ?? data as ScopeExecutionProjection;
+}
+
+/** Executions explicitly caused by one conversation Event. Context membership is not routing. */
+export async function listContextScopeExecutions(
+  ws: string,
+  contextId: string,
+): Promise<ScopeExecutionRecord[]> {
+  const data = await get<{ executions: ScopeExecutionRecord[] }>(
+    `/v1/workspaces/${encodeURIComponent(ws)}/contexts/${encodeURIComponent(contextId)}/scope-executions`,
+  );
+  return data.executions;
+}
+
+/** Discover the shared operation contract in the authority of an authenticated app session. */
+export async function listOperations(
+  ws: string,
+  target?: { kind: string; id: string },
+): Promise<SemanticOperationDescriptor[]> {
+  const params = new URLSearchParams();
+  if (target) {
+    params.set("target_kind", target.kind);
+    params.set("target_id", target.id);
+  }
+  const query = params.toString();
+  const res = await busFetch(
+    `/v1/workspaces/${encodeURIComponent(ws)}/operations${query ? `?${query}` : ""}`,
+    {},
+    ws,
+  );
+  if (!res.ok) throw new Error(`Bus GET operations → ${res.status}`);
+  const data = await res.json() as { operations: SemanticOperationDescriptor[] };
+  return data.operations;
+}
+
+/** Read canonical completion after an asynchronous operation returned a receipt. */
+export async function getOperationReceipt(ws: string, receiptId: string): Promise<OperationInvocationReceipt> {
+  const response = await get<{ receipt: OperationInvocationReceipt }>(`/v1/workspaces/${encodeURIComponent(ws)}/operation-receipts/${encodeURIComponent(receiptId)}`, undefined, ws);
+  return response.receipt;
+}
+
+/** Invoke the exact descriptor returned by listOperations. Authority never travels in the body. */
+export async function invokeOperation(
+  ws: string,
+  request: OperationInvocationRequest,
+): Promise<OperationInvocationReceipt> {
+  const data = await post<OperationInvocationResponse>(
+    `/v1/workspaces/${encodeURIComponent(ws)}/operations/invoke`,
+    request,
+  );
+  return receiptFromOperationResponse(data);
+}
+
+/** Invoke one confirmed operation through the native, non-reusable trust boundary. */
+export async function confirmAndInvokeOperation(
+  ws: string,
+  request: OperationInvocationRequest,
+): Promise<{ confirmed: false } | { confirmed: true; receipt: OperationInvocationReceipt }> {
+  const result = await confirmAndInvokeOperationTransport(ws, request);
+  if (!result.confirmed) return { confirmed: false };
+  if (!result.response) {
+    throw new Error("Floe did not receive a result for the confirmed action.");
+  }
+  if (!result.response.ok) {
+    throw new Error(`Bus confirmed operation → ${result.response.status}`);
+  }
+  return {
+    confirmed: true,
+    receipt: receiptFromOperationResponse(await result.response.json() as OperationInvocationResponse),
+  };
+}
+
+function receiptFromOperationResponse(response: OperationInvocationResponse): OperationInvocationReceipt {
+  if (response.kind === "receipt") return response.receipt;
+  if (response.kind === "conflict") {
+    throw new SemanticOperationError(response.refusal.message, response.refusal.code, response.refusal);
+  }
+  throw new SemanticOperationError(response.refusal.message, response.refusal.code, response.refusal);
+}
+
+function createClientIdempotencyKey(prefix: string): string {
+  const suffix = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}:${suffix}`;
 }
 
 export async function getScopeProjection(ws: string, scope: string): Promise<ScopeProjection> {
@@ -249,11 +482,16 @@ export async function createScope(
   ws: string,
   input: { scope_id?: string; title: string; description?: string | null }
 ): Promise<ScopeRef> {
-  const data = await post<{ scope: ScopeRef }>(
-    `/v1/workspaces/${encodeURIComponent(ws)}/scopes`,
-    input
-  );
-  return data.scope;
+  const operation = (await listOperations(ws)).find(item => item.operation_id === "scope.create");
+  if (!operation) throw new Error("This Floe installation cannot create a Scope yet.");
+  if (!operation.availability.available) throw new Error(operation.availability.refusal.message);
+  const receipt = await invokeOperation(ws, {
+    operation_id: operation.operation_id, operation_version: operation.operation_version,
+    input_schema_version: operation.input.version, input, idempotency_key: createClientIdempotencyKey("scope-create"),
+  });
+  if (receipt.refusal) throw new SemanticOperationError(receipt.refusal.message, receipt.refusal.code, receipt.refusal);
+  if (receipt.state !== "completed" || !receipt.result) throw new Error("Floe has not confirmed the Scope. Refresh its saved state before retrying.");
+  return (receipt.result as { scope: ScopeRef }).scope;
 }
 
 /** PATCH /v1/workspaces/:ws/scopes/:scope — update scope title/description */
@@ -297,8 +535,8 @@ export class ScopeNotEmptyError extends Error {
 /** DELETE /v1/workspaces/:ws/scopes/:scope — delete an empty scope.
  *  Throws ScopeNotEmptyError on HTTP 409 scope_not_empty. */
 export async function deleteScope(ws: string, scope: string): Promise<void> {
-  const res = await fetch(
-    `${BUS_BASE}/v1/workspaces/${encodeURIComponent(ws)}/scopes/${encodeURIComponent(scope)}`,
+  const res = await busFetch(
+    `/v1/workspaces/${encodeURIComponent(ws)}/scopes/${encodeURIComponent(scope)}`,
     { method: "DELETE" }
   );
   if (res.status === 409) {
@@ -378,34 +616,35 @@ export async function listContextsByParticipantPage(q: {
   return get<{ contexts: ContextRef[]; next_cursor: string | null }>(`/v1/contexts?${params.toString()}`);
 }
 
-export async function getContext(id: string): Promise<ContextRef> {
-  return get<ContextRef>(`/v1/contexts/${encodeURIComponent(id)}`);
+export async function getContext(id: string, workspaceId?: string): Promise<ContextRef> {
+  return get<ContextRef>(`/v1/contexts/${encodeURIComponent(id)}`, undefined, workspaceId);
 }
 
-export async function listContextTree(id: string, limit = 200): Promise<{
+export async function listContextTree(id: string, limit = 200, workspaceId?: string): Promise<{
   contexts: ContextRef[];
   truncated: boolean;
 }> {
-  return get(`/v1/contexts/${encodeURIComponent(id)}/tree?limit=${encodeURIComponent(String(limit))}`);
+  return get(`/v1/contexts/${encodeURIComponent(id)}/tree?limit=${encodeURIComponent(String(limit))}`, undefined, workspaceId);
 }
 
 /** POST /v1/contexts/:id/participants — idempotently add an endpoint as participant */
 export async function addContextParticipant(
   contextId: string,
-  endpointId: string
+  endpointId: string,
+  workspaceId?: string,
 ): Promise<{ ok: boolean }> {
   return post(`/v1/contexts/${encodeURIComponent(contextId)}/participants`, {
     endpoint_id: endpointId,
-  });
+  }, workspaceId);
 }
 
-export async function listContextEvents(id: string, options?: { limit?: number; all?: boolean }): Promise<EventEnvelope[]> {
+export async function listContextEvents(id: string, options?: { limit?: number; all?: boolean; workspace_id?: string }): Promise<EventEnvelope[]> {
   if (options?.all) {
     const events: EventEnvelope[] = [];
     let since: string | undefined;
     const pageSize = 500;
     while (true) {
-      const page = await listEvents({ context_id: id, since, limit: pageSize });
+      const page = await listEvents({ context_id: id, workspace_id: options.workspace_id, since, limit: pageSize });
       events.push(...page.events);
       if (page.events.length < pageSize || !page.next_cursor || page.next_cursor === since) break;
       since = page.next_cursor;
@@ -416,7 +655,9 @@ export async function listContextEvents(id: string, options?: { limit?: number; 
   if (options?.limit != null) params.set("limit", String(options.limit));
   const qs = params.toString();
   const data = await get<{ events: EventEnvelope[] }>(
-    `/v1/contexts/${encodeURIComponent(id)}/events${qs ? `?${qs}` : ""}`
+    `/v1/contexts/${encodeURIComponent(id)}/events${qs ? `?${qs}` : ""}`,
+    undefined,
+    options?.workspace_id,
   );
   return data.events;
 }
@@ -429,10 +670,11 @@ export type ContextEventHistoryPage = {
 /** Read one chronological page from the newest end of a Context. */
 export async function listContextEventHistoryPage(
   id: string,
-  options?: { before?: string; limit?: number; type?: string },
+  options?: { before?: string; limit?: number; type?: string; workspace_id?: string },
 ): Promise<ContextEventHistoryPage> {
   const page = await listEvents({
     context_id: id,
+    workspace_id: options?.workspace_id,
     type: options?.type,
     before: options?.before,
     direction: "backward",
@@ -497,18 +739,6 @@ export async function assignContextScope(
   );
 }
 
-/** DELETE /v1/contexts/:id — delete a context and all its events */
-export async function deleteContext(id: string): Promise<{
-  ok: true;
-  context_id: string;
-  workspace_id: string;
-  events_deleted: number;
-  delivery_bundles_deleted: number;
-  pulse_subscribers_deleted: number;
-}> {
-  return del(`/v1/contexts/${encodeURIComponent(id)}`);
-}
-
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
@@ -535,7 +765,7 @@ export async function listEvents(q: {
   if (q.direction) params.set("direction", q.direction);
   if (q.limit != null) params.set("limit", String(q.limit));
   const qs = params.toString();
-  return get<{ events: EventEnvelope[]; next_cursor: string | null; previous_cursor?: string | null }>(`/v1/events${qs ? `?${qs}` : ""}`);
+  return get<{ events: EventEnvelope[]; next_cursor: string | null; previous_cursor?: string | null }>(`/v1/events${qs ? `?${qs}` : ""}`, undefined, q.workspace_id);
 }
 
 export async function getEventTrace(eventId: string): Promise<EventTrace> {
@@ -544,7 +774,7 @@ export async function getEventTrace(eventId: string): Promise<EventTrace> {
 
 /** POST /v1/events/emit */
 export async function emit(event: EmitInput): Promise<EventEnvelope> {
-  const data = await post<{ event: EventEnvelope }>("/v1/events/emit", event);
+  const data = await post<{ event: EventEnvelope }>("/v1/events/emit", event, event.workspace_id);
   return data.event;
 }
 
@@ -562,7 +792,7 @@ export async function registerEndpoint(input: {
   status?: string;
   metadata?: Record<string, unknown>;
 }): Promise<EndpointRef> {
-  const data = await post<{ endpoint: EndpointRef }>("/v1/endpoints/register", input);
+  const data = await post<{ endpoint: EndpointRef }>("/v1/endpoints/register", input, input.workspace_id);
   return data.endpoint;
 }
 
@@ -613,13 +843,15 @@ export async function reportTurnEnd(endpointId: string): Promise<EndpointRef> {
 // Deliveries
 // ---------------------------------------------------------------------------
 
-/** GET /v1/delivery?workspace_id=...&limit=... — list delivery bundles (raw rows) */
+/** Context filtering includes explicitly requested work, with active responses first. */
 export async function listDeliveries(q?: {
   workspace_id?: string;
+  context_id?: string;
   limit?: number;
 }): Promise<DeliveryRow[]> {
   const params = new URLSearchParams();
   if (q?.workspace_id) params.set("workspace_id", q.workspace_id);
+  if (q?.context_id) params.set("context_id", q.context_id);
   if (q?.limit != null) params.set("limit", String(q.limit));
   const qs = params.toString();
   const data = await get<{ deliveries: DeliveryRow[] }>(`/v1/delivery${qs ? `?${qs}` : ""}`);
@@ -792,6 +1024,10 @@ export async function getContextDiagnosticEvidence(
 
 /** GET /v1/runtime/bindings?workspace_id=... */
 export async function getRuntimeBindings(workspace_id?: string): Promise<RuntimeBindingRecord[]> {
+  if (!isNativeFloeApp()) {
+    const session = await getBrowserSession(undefined, workspace_id);
+    return session.bindings.filter(binding => !workspace_id || binding.workspace_id === workspace_id);
+  }
   const qs = workspace_id ? `?workspace_id=${encodeURIComponent(workspace_id)}` : "";
   const data = await get<{ bindings: RuntimeBindingRecord[] }>(`/v1/runtime/bindings${qs}`);
   return data.bindings;
@@ -803,7 +1039,7 @@ export async function resolveRuntimeBinding(
   endpoint_id: string
 ): Promise<RuntimeBindingResolution> {
   return get<RuntimeBindingResolution>(
-    `/v1/runtime/bindings/resolve?workspace_id=${encodeURIComponent(workspace_id)}&endpoint_id=${encodeURIComponent(endpoint_id)}`
+    `/v1/runtime/bindings/resolve?workspace_id=${encodeURIComponent(workspace_id)}&endpoint_id=${encodeURIComponent(endpoint_id)}`,
   );
 }
 
@@ -813,6 +1049,7 @@ export async function upsertRuntimeBinding(input: {
   workspace_id?: string | null;
   endpoint_id?: string | null;
   auth_profile: string;
+  provider: string;
   model?: string | null;
   thinking_level?: string | null;
 }): Promise<RuntimeBindingRecord> {
@@ -838,13 +1075,24 @@ export async function getAuthProfiles(signal?: AbortSignal): Promise<{
   profiles: AuthProfileRecord[];
   default_auth_profile: string | null;
 }> {
-  return get("/v1/auth/profiles", signal);
+  if (isNativeFloeApp()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("get_substrate_auth_profiles");
+  }
+  const session = await getBrowserSession(signal);
+  return { profiles: session.profiles, default_auth_profile: null };
 }
 
 /** GET /v1/auth/models?provider=... */
 export async function getAuthModels(provider?: string): Promise<AuthModelRecord[]> {
+  if (isNativeFloeApp()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const response = await invoke<{ status: number; body: string }>("get_auth_models", { provider: provider ?? null });
+    if (response.status !== 200) throw new FloeHttpError(response.status, "/v1/auth/models");
+    return (JSON.parse(response.body) as { models: AuthModelRecord[] }).models;
+  }
   const qs = provider ? `?provider=${encodeURIComponent(provider)}` : "";
-  const data = await get<{ models: AuthModelRecord[] }>(`/v1/auth/models${qs}`);
+  const data = await get<{ models: AuthModelRecord[] }>(`/v1/browser/session/models${qs}`);
   return data.models;
 }
 
@@ -889,7 +1137,10 @@ export async function ingestWebhook(
 
 /** GET /v1/runtime/status — bridge liveness and runtime adapter */
 export async function getRuntimeStatus(): Promise<RuntimeStatus> {
-  return get("/v1/runtime/status");
+  if (!isNativeFloeApp()) return (await getBrowserSession()).runtime;
+  const response = await localRuntimeStatusFetch();
+  if (!response.ok) throw new FloeHttpError(response.status, "/v1/runtime/status");
+  return response.json() as Promise<RuntimeStatus>;
 }
 
 /** GET /v1/local-config/status — local config paths and sections */

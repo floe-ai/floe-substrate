@@ -3,10 +3,9 @@
  * It must resolve provider, model, auth profile, and workspace-level runtime options from
  * the shared Floe auth files without leaking secrets or bypassing binding precedence.
  */
-import { execSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getEnvApiKey, getModels, getProviders, type Model } from "@earendil-works/pi-ai/compat";
+import { getModels, getProviders, type Model } from "@earendil-works/pi-ai/compat";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type {
   AuthOperationOptions,
@@ -18,6 +17,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import YAML from "yaml";
 import { z } from "zod";
+import type { BusClient } from "./bus-client.js";
 import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
 
@@ -51,7 +51,6 @@ const ModelThinkingCapabilitySchema = z.enum(["adaptive", "budget", "always-on",
 
 const ModelsConfigSchema = z.object({
   providers: z.record(z.string(), z.object({
-    apiKey: z.string().optional(),
     models: z.array(z.object({
       id: z.string().min(1),
       name: z.string().optional(),
@@ -133,6 +132,8 @@ export type RuntimeAuthErrorCode =
   | "runtime_provider_required"
   | "runtime_model_required"
   | "runtime_model_unknown"
+  | "runtime_credential_unresolved"
+  | "runtime_processing_contract_mismatch"
   | "runtime_profile_provider_mismatch";
 
 export type RuntimeAuthResolved = {
@@ -140,6 +141,8 @@ export type RuntimeAuthResolved = {
   model: Model<any>;
   modelId: string;
   apiKey: string;
+  /** Resolves auth again at request time so OAuth rotation remains Delivery-scoped. */
+  getApiKey: () => Promise<string>;
   authProfileId: string | null;
   usedEnvFallback: boolean;
   /**
@@ -148,6 +151,115 @@ export type RuntimeAuthResolved = {
    */
   thinkingCapability: ModelThinkingCapability | undefined;
 };
+
+const BrokeredCredentialSchema = z.union([
+  z.object({
+    type: z.literal("api_key"),
+    key: z.string().min(1).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+  }).strict().refine((value) => Boolean(value.key || Object.keys(value.env ?? {}).length > 0)),
+  z.object({
+    type: z.literal("oauth"),
+    refresh: z.string().min(1),
+    access: z.string().min(1),
+    expires: z.number().finite(),
+  }).passthrough(),
+]);
+
+/**
+ * Pi's credential-store contract backed by one Bus-authorised SecretRef.
+ *
+ * The store is deliberately Delivery-scoped. It cannot enumerate other
+ * credentials, fall back to ambient state, or revoke a persistent credential.
+ * OAuth refresh is the only supported write and is committed by the Bus under
+ * the same exact SecretRef/CapabilityGrant checks as the read.
+ */
+export class BrokeredDeliveryCredentialStore implements CredentialStore {
+  constructor(
+    private readonly bus: Pick<BusClient, "readRuntimeCredential" | "replaceRuntimeCredential">,
+    private readonly deliveryId: string,
+    private readonly secretRefId: string,
+    private readonly providerId: string,
+  ) {
+    if (!deliveryId.trim() || !secretRefId.trim() || !providerId.trim()) {
+      throw new RuntimeAuthError(
+        "runtime_credential_unresolved",
+        "The pinned runtime credential is incomplete.",
+      );
+    }
+  }
+
+  async read(providerId: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
+    this.assertProvider(providerId);
+    options?.signal?.throwIfAborted();
+    const material = await this.readMaterial();
+    try {
+      return BrokeredCredentialSchema.parse(JSON.parse(Buffer.from(material).toString("utf8"))) as Credential;
+    } catch {
+      throw new RuntimeAuthError(
+        "runtime_credential_unresolved",
+        "The pinned runtime credential is unavailable or invalid.",
+      );
+    } finally {
+      material.fill(0);
+    }
+  }
+
+  async list(options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
+    options?.signal?.throwIfAborted();
+    const credential = await this.read(this.providerId, options);
+    return credential ? [{ providerId: this.providerId, type: credential.type }] : [];
+  }
+
+  async modify(
+    providerId: string,
+    fn: (current: Credential | undefined) => Promise<Credential | undefined>,
+    options?: AuthOperationOptions,
+  ): Promise<Credential | undefined> {
+    this.assertProvider(providerId);
+    options?.signal?.throwIfAborted();
+    const current = await this.read(providerId, options);
+    const next = await fn(current);
+    options?.signal?.throwIfAborted();
+    if (next === undefined) return current;
+    const validated = BrokeredCredentialSchema.parse(next) as Credential;
+    const material = Buffer.from(JSON.stringify(validated), "utf8");
+    try {
+      await this.bus.replaceRuntimeCredential(this.deliveryId, this.secretRefId, material);
+    } finally {
+      material.fill(0);
+    }
+    return validated;
+  }
+
+  async delete(providerId: string): Promise<void> {
+    this.assertProvider(providerId);
+    throw new RuntimeAuthError(
+      "runtime_credential_unresolved",
+      "An isolated runtime cannot revoke a persistent credential.",
+    );
+  }
+
+  private assertProvider(providerId: string): void {
+    if (providerId !== this.providerId) {
+      throw new RuntimeAuthError(
+        "runtime_credential_unresolved",
+        "The pinned runtime credential does not match this provider.",
+      );
+    }
+  }
+
+  private async readMaterial(): Promise<Uint8Array> {
+    try {
+      return await this.bus.readRuntimeCredential(this.deliveryId, this.secretRefId);
+    } catch {
+      throw new RuntimeAuthError(
+        "runtime_credential_unresolved",
+        "The pinned runtime credential is unavailable or invalid.",
+      );
+    }
+  }
+}
 
 export class RuntimeAuthError extends Error {
   constructor(readonly code: RuntimeAuthErrorCode, message: string) {
@@ -162,7 +274,6 @@ export class BridgeAuthStorage implements CredentialStore {
   private readonly oauthModels: Models;
 
   constructor(private readonly authPath: string) {
-    this.reload();
     this.oauthModels = builtinModels({ credentials: this });
   }
 
@@ -190,7 +301,6 @@ export class BridgeAuthStorage implements CredentialStore {
         return undefined;
       }
     }
-    if (process.env.FLOE_ALLOW_ENV_AUTH_FALLBACK === "1") return getEnvApiKey(provider);
     return undefined;
   }
 
@@ -243,7 +353,6 @@ export class BridgeAuthStorage implements CredentialStore {
 
 class BridgeModelRegistry {
   private models: Model<any>[] = [];
-  private providerApiKeys = new Map<string, string>();
   /** Thinking capability declarations keyed by "provider/modelId" */
   private thinkingCapabilities = new Map<string, ModelThinkingCapability>();
 
@@ -255,14 +364,12 @@ class BridgeModelRegistry {
   }
 
   refresh(): void {
-    this.providerApiKeys.clear();
     this.thinkingCapabilities.clear();
     const builtIn = getProviders().flatMap((provider) => getModels(provider as any)) as Model<any>[];
     this.models = [...builtIn];
     try {
       const parsed = ModelsConfigSchema.parse(JSON.parse(readFileSync(this.modelsPath, "utf8")));
       for (const [provider, config] of Object.entries(parsed.providers)) {
-        if (config.apiKey && config.apiKey.trim()) this.providerApiKeys.set(provider, config.apiKey.trim());
         for (const modelDef of config.models ?? []) {
           const fallback = this.models.find((model) => model.provider === provider);
           const custom: Model<any> = {
@@ -306,11 +413,7 @@ class BridgeModelRegistry {
   }
 
   async getApiKeyForProvider(provider: string): Promise<string | undefined> {
-    const stored = await this.authStorage.getApiKey(provider);
-    if (stored) return stored;
-    const configured = this.providerApiKeys.get(provider);
-    if (!configured) return undefined;
-    return resolveConfiguredValue(configured);
+    return this.authStorage.getApiKey(provider);
   }
 
   async getAuthForModel(model: Model<any>): Promise<ModelAuth | undefined> {
@@ -325,10 +428,7 @@ class BridgeModelRegistry {
     }
     const stored = await this.authStorage.getApiKey(model.provider);
     if (stored) return { apiKey: stored };
-    const configured = this.providerApiKeys.get(model.provider);
-    if (!configured) return undefined;
-    const apiKey = resolveConfiguredValue(configured);
-    return apiKey ? { apiKey } : undefined;
+    return undefined;
   }
 }
 
@@ -376,7 +476,7 @@ export async function resolveRuntimeAuth(
 
   let provider: string | undefined;
   let modelId = cleanValue(runtimeConfig?.model);
-  let usedEnvFallback = false;
+  const usedEnvFallback = false;
 
   if (isLocalBinding) {
     // A local (workspace/agent) binding was selected: the profile's provider takes precedence.
@@ -419,15 +519,6 @@ export async function resolveRuntimeAuth(
   }
 
   if (!provider || provider === "configured_by_pi_ai") {
-    provider = cleanValue(process.env.FLOE_PI_PROVIDER);
-    usedEnvFallback = usedEnvFallback || !!provider;
-  }
-  if (!modelId) {
-    modelId = cleanValue(process.env.FLOE_PI_MODEL);
-    usedEnvFallback = usedEnvFallback || !!modelId;
-  }
-
-  if (!provider) {
     throw new RuntimeAuthError(
       "runtime_provider_required",
       "No runtime provider configured. Set runtime.provider or configure it in the selected auth profile."
@@ -485,9 +576,123 @@ export async function resolveRuntimeAuth(
     model: resolvedModel,
     modelId,
     apiKey,
+    getApiKey: async () => {
+      const refreshed = getAuthForModel
+        ? await getAuthForModel(resolvedModel)
+        : { apiKey: await runtime.modelRegistry.getApiKeyForProvider(provider) };
+      if (!refreshed?.apiKey) {
+        throw new RuntimeAuthError(
+          "provider_auth_missing",
+          `Missing provider auth for '${provider}'. Connect that account in Floe Settings.`,
+        );
+      }
+      return refreshed.apiKey;
+    },
     authProfileId: profile?.id ?? null,
     usedEnvFallback,
     thinkingCapability: runtime.modelRegistry.getThinkingCapability?.(provider, modelId)
+  };
+}
+
+/**
+ * Resolve a Bus-pinned Runtime Profile using only its Delivery-scoped
+ * credential store. This path deliberately ignores auth profiles, environment
+ * variables, configured key commands, and legacy files.
+ */
+export async function resolveBrokeredRuntimeAuth(
+  runtime: BridgeAuthRuntime,
+  runtimeConfig: AgentRuntimeConfig | undefined,
+  credentialStore: CredentialStore,
+): Promise<RuntimeAuthResolved> {
+  const provider = cleanValue(runtimeConfig?.provider);
+  let modelId = cleanValue(runtimeConfig?.model);
+  if (!provider || provider === "configured_by_pi_ai") {
+    throw new RuntimeAuthError(
+      "runtime_provider_required",
+      "The pinned Runtime Profile does not select a provider.",
+    );
+  }
+  if (!modelId) {
+    throw new RuntimeAuthError(
+      "runtime_model_required",
+      "The pinned Runtime Profile does not select a model.",
+    );
+  }
+  if (modelId.includes("/")) {
+    const [qualifiedProvider, ...rest] = modelId.split("/");
+    if (qualifiedProvider !== provider || rest.length === 0) {
+      throw new RuntimeAuthError(
+        "runtime_profile_provider_mismatch",
+        "The pinned Runtime Profile model does not match its provider.",
+      );
+    }
+    modelId = rest.join("/");
+  }
+  const model = runtime.modelRegistry.find(provider, modelId);
+  if (!model) {
+    throw new RuntimeAuthError(
+      "runtime_model_unknown",
+      `Model '${provider}/${modelId}' is not present in the local model registry.`,
+    );
+  }
+
+  const models = builtinModels({ credentials: credentialStore });
+  const resolveKey = async (): Promise<string> => {
+    try {
+      const result = await models.getAuth(model);
+      if (!result?.auth.apiKey) throw new Error("unavailable");
+      return result.auth.apiKey;
+    } catch {
+      // Provider errors can include transport details. Keep the durable/runtime
+      // surface generic and never echo the credential material or provider body.
+      throw new RuntimeAuthError(
+        "runtime_credential_unresolved",
+        "The pinned runtime credential is unavailable or could not be refreshed.",
+      );
+    }
+  };
+
+  let modelAuth: ModelAuth;
+  try {
+    const result = await models.getAuth(model);
+    if (!result?.auth.apiKey) throw new Error("unavailable");
+    modelAuth = result.auth;
+  } catch {
+    throw new RuntimeAuthError(
+      "runtime_credential_unresolved",
+      "The pinned runtime credential is unavailable or could not be refreshed.",
+    );
+  }
+  const authHeaders = modelAuth.headers
+    ? Object.fromEntries(
+        Object.entries(modelAuth.headers)
+          .filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      )
+    : undefined;
+  const resolvedModel: Model<any> = modelAuth.baseUrl || authHeaders
+    ? {
+        ...model,
+        ...(modelAuth.baseUrl ? { baseUrl: modelAuth.baseUrl } : {}),
+        ...(authHeaders ? { headers: { ...model.headers, ...authHeaders } } : {}),
+      }
+    : model;
+  const initialApiKey = modelAuth.apiKey;
+  if (!initialApiKey) {
+    throw new RuntimeAuthError(
+      "runtime_credential_unresolved",
+      "The pinned runtime credential is unavailable or could not be refreshed.",
+    );
+  }
+
+  return {
+    provider,
+    model: resolvedModel,
+    modelId,
+    apiKey: initialApiKey,
+    getApiKey: resolveKey,
+    authProfileId: null,
+    usedEnvFallback: false,
+    thinkingCapability: runtime.modelRegistry.getThinkingCapability?.(provider, modelId),
   };
 }
 
@@ -531,16 +736,6 @@ function resolveProfile(profiles: ProfilesDocument, profileId?: string): AuthPro
   const id = cleanValue(profileId);
   if (!id) return undefined;
   return profiles.profiles.find((profile) => profile.id === id);
-}
-
-function resolveConfiguredValue(value: string): string | undefined {
-  if (value.startsWith("!")) {
-    const output = execSync(value.slice(1), { encoding: "utf8", windowsHide: true }).trim();
-    return output.length > 0 ? output : undefined;
-  }
-  const envValue = process.env[value];
-  if (envValue && envValue.trim().length > 0) return envValue.trim();
-  return value.length > 0 ? value : undefined;
 }
 
 function cleanValue(value: unknown): string | undefined {

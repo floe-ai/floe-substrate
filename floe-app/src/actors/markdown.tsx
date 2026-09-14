@@ -152,7 +152,7 @@ function safeLinkHref(value: string): string | null {
 const headingSize: Record<1 | 2 | 3, number> = { 1: 20, 2: 17, 3: 14.5 };
 
 /** Render a small markdown subset to React elements. No external deps. */
-export function MiniMarkdown({ source }: { source: string }): React.ReactElement {
+export function MiniMarkdown({ source, fontSize = 13 }: { source: string; fontSize?: number }): React.ReactElement {
   const blocks = parseBlocks(source);
 
   if (blocks.length === 0) {
@@ -192,7 +192,7 @@ export function MiniMarkdown({ source }: { source: string }): React.ReactElement
         if (block.type === "list") {
           const Tag = block.ordered ? "ol" : "ul";
           return (
-            <Tag key={key} style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: "#d0d6e0", lineHeight: 1.55 }}>
+            <Tag key={key} style={{ margin: 0, paddingLeft: 20, fontSize, color: "#d0d6e0", lineHeight: 1.65 }}>
               {block.items.map((item, itemIdx) => (
                 <li key={`${key}-item-${itemIdx}`}>{renderInline(item, `${key}-${itemIdx}`)}</li>
               ))}
@@ -200,7 +200,7 @@ export function MiniMarkdown({ source }: { source: string }): React.ReactElement
           );
         }
         return (
-          <p key={key} style={{ margin: 0, fontSize: 13, color: "#d0d6e0", lineHeight: 1.55 }}>
+          <p key={key} style={{ margin: 0, fontSize, color: "#d0d6e0", lineHeight: 1.65 }}>
             {renderInline(block.text, key)}
           </p>
         );

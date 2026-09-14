@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,12 +13,12 @@ function collectSourceFiles(root: string): string[] {
   const absolute = join(REPO_ROOT, root);
   if (!existsSync(absolute)) return [];
   const files: string[] = [];
-  for (const entry of readdirSync(absolute)) {
-    if (SKIPPED_DIR_NAMES.has(entry)) continue;
-    const child = join(absolute, entry);
-    if (statSync(child).isDirectory()) {
+  for (const entry of readdirSync(absolute, { withFileTypes: true })) {
+    if (SKIPPED_DIR_NAMES.has(entry.name)) continue;
+    const child = join(absolute, entry.name);
+    if (entry.isDirectory()) {
       files.push(...collectSourceFiles(relative(REPO_ROOT, child)));
-    } else if (entry.endsWith(".ts") || entry.endsWith(".tsx")) {
+    } else if (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")) {
       files.push(child);
     }
   }

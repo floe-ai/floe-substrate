@@ -17,7 +17,6 @@ import {
   listEndpoints,
   subscribeEvents,
   registerWorkspace,
-  registerEndpoint,
   deleteWorkspace,
   getAuthProfiles,
   getRuntimeStatus,
@@ -28,6 +27,7 @@ import { ScopeDetail } from "./scope/ScopeDetail.tsx";
 import { ContextConversation } from "./scope/ContextConversation.tsx";
 import { ContextInspector } from "./scope/ContextInspector.tsx";
 import { NewActorForm } from "./actors/NewActorForm.tsx";
+import { canonicalActorEndpoints } from "./actors/actorDefinitionOperations.ts";
 import { WorkspaceSettings } from "./workspace/WorkspaceSettings.tsx";
 import { Activity } from "./activity/Activity.tsx";
 
@@ -43,6 +43,11 @@ import { ScopeInspectorEmpty, DefaultInspector, useInspectorResize, readRinspWid
 import { tk } from "./theme.ts";
 import { getModelProviders, type ModelProviderStatus } from "./providers/modelProviders.ts";
 import { isTauri } from "./fs/workspaceFs.ts";
+import { startupFailure, waitForFloe } from "./runtime/startup.ts";
+import { BrowserConnection } from "./features/onboarding/BrowserConnection.tsx";
+import { BrowserAccess } from "./features/onboarding/BrowserAccess.tsx";
+import { ActionPanel } from "./features/actions/ActionPanel.tsx";
+import { connectLocalBrowser, disconnectBrowser } from "./bus-client/browser.ts";
 import {
   STARTING_RUNTIME_HEALTH,
   type RuntimeHealth,
@@ -52,6 +57,11 @@ import {
 // ---------------------------------------------------------------------------
 // Global style injection (scrollbars, html/body reset, focus ring)
 // ---------------------------------------------------------------------------
+
+const connectionButtonStyle: React.CSSProperties = {
+  padding: "5px 9px", border: `1px solid ${tk.border}`, borderRadius: tk.r2,
+  background: "transparent", color: tk.ink3, fontSize: 12,
+};
 
 function GlobalStyles(): React.ReactElement {
   useEffect(() => {
@@ -100,20 +110,12 @@ function FullPageCenter({ children }: { children: React.ReactNode }): React.Reac
 }
 
 async function listEndpointsForNewWorkspace(workspaceId: string): Promise<EndpointRef[]> {
-  const endpoints = await listEndpoints(workspaceId).catch(() => [] as EndpointRef[]);
-  if (endpoints.some(endpoint => endpoint.agent_id === "operator" || endpoint.endpoint_id.endsWith(":operator"))) {
-    return endpoints;
-  }
+  return listAppActors(workspaceId);
+}
 
-  const operator = await registerEndpoint({
-    endpoint_id: `actor:${workspaceId}:operator`,
-    workspace_id: workspaceId,
-    name: "Operator",
-    agent_id: "operator",
-    bridge_id: null,
-    status: "idle",
-  });
-  return [operator, ...endpoints];
+async function listAppActors(workspaceId: string): Promise<EndpointRef[]> {
+  const endpoints = await listEndpoints(workspaceId).catch(() => [] as EndpointRef[]);
+  return canonicalActorEndpoints(workspaceId, endpoints).catch(() => endpoints);
 }
 
 // ---------------------------------------------------------------------------
@@ -122,7 +124,10 @@ async function listEndpointsForNewWorkspace(workspaceId: string): Promise<Endpoi
 
 export function App(): React.ReactElement {
   const [appState, setAppState] = useState<"loading" | "onboarding" | "error" | "ready">("loading");
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<ReturnType<typeof startupFailure> | null>(null);
+  const [showBrowserAccess, setShowBrowserAccess] = useState(false);
+  const [showActions, setShowActions] = useState(false);
+  const [localBrowser, setLocalBrowser] = useState(false);
 
   const [workspaces, setWorkspaces] = useState<WorkspaceRef[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceRef | null>(null);
@@ -150,13 +155,14 @@ export function App(): React.ReactElement {
   }, []);
 
   const refreshRuntimeHealth = useCallback(async () => {
+    if (!activeWorkspace) return;
     try {
       const runtime = await getRuntimeStatus();
       if (nativeRuntimeFailureRef.current) return;
       if (runtime.bridge.online) {
         setRuntimeHealth({
           state: "healthy",
-          label: "Floe is ready",
+          label: "Floe is running",
           detail: runtime.bridge.runtime_adapter
             ? `Local services and the ${runtime.bridge.runtime_adapter} model runtime are connected.`
             : "Local services and the model runtime are connected.",
@@ -177,7 +183,7 @@ export function App(): React.ReactElement {
         technicalDetail: error instanceof Error ? error.message : String(error),
       });
     }
-  }, []);
+  }, [activeWorkspace?.workspace_id]);
 
   const handleRuntimeStreamState = useCallback((state: "connecting" | "open" | "closed") => {
     if (state === "open") {
@@ -241,29 +247,14 @@ export function App(): React.ReactElement {
   useEffect(() => {
     let cancelled = false;
     async function waitForSubstrate(): Promise<{ workspaces: WorkspaceRef[]; profiles: AuthProfileRecord[] }> {
-      let lastError: unknown;
-      for (let attempt = 0; attempt < 10; attempt += 1) {
-        const controller = new AbortController();
-        const timeout = window.setTimeout(() => controller.abort(), 800);
-        try {
-          const [wss, auth] = await Promise.all([
-            listWorkspaces(controller.signal),
-            getAuthProfiles(controller.signal),
-          ]);
-          return { workspaces: wss, profiles: auth.profiles };
-        } catch (error) {
-          lastError = error;
-        } finally {
-          window.clearTimeout(timeout);
+      return waitForFloe(async signal => {
+        if (!isTauri()) {
+          const local = await connectLocalBrowser(signal);
+          if (!cancelled) setLocalBrowser(local);
         }
-        await new Promise(resolve => setTimeout(resolve, Math.min(150 + attempt * 50, 500)));
-      }
-      const detail = lastError instanceof Error && lastError.name !== "AbortError"
-        ? ` (${lastError.message})`
-        : "";
-      throw new Error(
-        `Floe's local services did not respond. A previous local service may be stuck; close Floe and try again${detail}`,
-      );
+        const [wss, auth] = await Promise.all([listWorkspaces(signal), getAuthProfiles(signal)]);
+        return { workspaces: wss, profiles: auth.profiles };
+      });
     }
 
     async function boot() {
@@ -278,7 +269,7 @@ export function App(): React.ReactElement {
         setWorkspaces(wss);
         setAuthProfiles(usableProfiles);
         void providersPromise.then(providers => { if (!cancelled) setModelProviders(providers); });
-        if (wss.length === 0 || usableProfiles.length === 0) {
+        if (wss.length === 0 || (isTauri() && usableProfiles.length === 0)) {
           if (wss.length > 0) setActiveWorkspace(wss.find(w => w.selected_at !== null) ?? wss[0]!);
           setAppState("onboarding");
           return;
@@ -286,7 +277,7 @@ export function App(): React.ReactElement {
         const active = wss.find(w => w.selected_at !== null) ?? wss[0]!;
         const [scs, eps] = await Promise.all([
           listScopes(active.workspace_id),
-          listEndpoints(active.workspace_id).catch(() => [] as EndpointRef[]),
+          listAppActors(active.workspace_id),
         ]);
         if (cancelled) return;
         setActiveWorkspace(active);
@@ -295,7 +286,7 @@ export function App(): React.ReactElement {
         setAppState("ready");
       } catch (err) {
         if (cancelled) return;
-        setLoadError(err instanceof Error ? err.message : String(err));
+        setLoadError(startupFailure(err));
         setAppState("error");
       }
     }
@@ -307,16 +298,28 @@ export function App(): React.ReactElement {
   // stream tells us whether the local service is reachable, while
   // /v1/runtime/status tells us whether its model Bridge is attached.
   useEffect(() => {
+    if (!activeWorkspace) return;
     const unsubscribe = subscribeEvents((msg) => {
       if (msg.type === "bridge_registered" || msg.type === "bridge_connected" || msg.type === "bridge_disconnected") {
         void refreshRuntimeHealth();
       }
-    }, { onStateChange: handleRuntimeStreamState });
+    }, {
+      workspaceId: activeWorkspace.workspace_id,
+      startAtCurrent: true,
+      onStateChange: handleRuntimeStreamState,
+      onUnavailable: detail => {
+        setRuntimeHealth({
+          state: "offline",
+          label: "Floe needs attention",
+          detail,
+        });
+      },
+    });
     return () => {
       clearRuntimeOfflineTimer();
       unsubscribe();
     };
-  }, [clearRuntimeOfflineTimer, handleRuntimeStreamState, refreshRuntimeHealth]);
+  }, [activeWorkspace?.workspace_id, clearRuntimeOfflineTimer, handleRuntimeStreamState, refreshRuntimeHealth]);
 
   // The packaged shell can name a process exit more precisely than a lost WebSocket.
   useEffect(() => {
@@ -385,7 +388,7 @@ export function App(): React.ReactElement {
     try {
       const [scs, eps] = await Promise.all([
         listScopes(ws.workspace_id),
-        listEndpoints(ws.workspace_id).catch(() => [] as EndpointRef[]),
+        listAppActors(ws.workspace_id),
       ]);
       setScopes(scs);
       setActors(eps);
@@ -424,34 +427,24 @@ export function App(): React.ReactElement {
 
   const removeWorkspace = useCallback(async (deleteLocator?: boolean) => {
     if (!activeWorkspace) return;
-    const name = activeWorkspace.name || activeWorkspace.workspace_id;
-    if (deleteLocator) {
-      if (!window.confirm(`Permanently delete workspace "${name}" and all its project files from disk? This cannot be undone.`)) return;
+    await deleteWorkspace(activeWorkspace.workspace_id, { delete_locator: !!deleteLocator });
+    const refreshed = await listWorkspaces();
+    setWorkspaces(refreshed);
+    if (refreshed.length === 0) {
+      setAppState("onboarding");
+      setActiveWorkspace(null);
     } else {
-      if (!window.confirm(`Remove workspace "${name}" from Floe? The files will remain on disk.`)) return;
-    }
-    try {
-      await deleteWorkspace(activeWorkspace.workspace_id, { delete_locator: !!deleteLocator });
-      const refreshed = await listWorkspaces();
-      setWorkspaces(refreshed);
-      if (refreshed.length === 0) {
-        setAppState("onboarding");
-        setActiveWorkspace(null);
-      } else {
-        const next = refreshed[0]!;
-        setActiveWorkspace(next);
-        setScopes([]);
-        setActors([]);
-        nav.navigateToConversations();
-        const [scs, eps] = await Promise.all([
-          listScopes(next.workspace_id),
-          listEndpoints(next.workspace_id).catch(() => [] as EndpointRef[]),
-        ]);
-        setScopes(scs);
-        setActors(eps);
-      }
-    } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to remove workspace");
+      const next = refreshed[0]!;
+      setActiveWorkspace(next);
+      setScopes([]);
+      setActors([]);
+      nav.navigateToConversations();
+      const [scs, eps] = await Promise.all([
+        listScopes(next.workspace_id),
+        listAppActors(next.workspace_id),
+      ]);
+      setScopes(scs);
+      setActors(eps);
     }
   }, [activeWorkspace, nav]);
 
@@ -466,7 +459,7 @@ export function App(): React.ReactElement {
   const refreshActors = useCallback(async () => {
     if (!activeWorkspace) return;
     try {
-      const eps = await listEndpoints(activeWorkspace.workspace_id);
+      const eps = await listAppActors(activeWorkspace.workspace_id);
       setActors(eps);
     } catch { /* best-effort */ }
   }, [activeWorkspace]);
@@ -548,6 +541,7 @@ export function App(): React.ReactElement {
         }
       }
     }, {
+      workspaceId,
       // Subscribe first, then take a fresh snapshot. This closes the startup
       // race where the bridge registered Floe between the onboarding snapshot
       // and the live stream becoming ready.
@@ -555,6 +549,7 @@ export function App(): React.ReactElement {
         void refreshActors();
         void refreshScopes();
       },
+      startAtCurrent: true,
     });
     return unsub;
   }, [activeWorkspace?.workspace_id, refreshActors, refreshScopes]);
@@ -581,11 +576,12 @@ export function App(): React.ReactElement {
       <>
         <GlobalStyles />
         <FullPageCenter>
+          {loadError?.needsConnection && !isTauri() ? <BrowserConnection /> :
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, maxWidth: 420, textAlign: "center" }}>
-            <span style={{ color: tk.ink, fontSize: 16 }}>Floe could not start its local services</span>
-            <span style={{ color: tk.ink3 }}>{loadError}</span>
-            <button onClick={() => window.location.reload()} style={{ background: tk.accent, color: "#0c1714", border: "none", borderRadius: tk.r2, padding: "7px 14px" }}>Try starting again</button>
-          </div>
+            <span style={{ color: tk.ink, fontSize: 16 }}>{loadError?.title}</span>
+            <span style={{ color: tk.ink3 }}>{loadError?.detail}</span>
+            <button onClick={() => window.location.reload()} style={{ background: tk.accent, color: "#0c1714", border: "none", borderRadius: tk.r2, padding: "7px 14px" }}>Try connecting again</button>
+          </div>}
         </FullPageCenter>
       </>
     );
@@ -603,10 +599,13 @@ export function App(): React.ReactElement {
           existingModel={existingProfile?.model}
           modelProviders={modelProviders}
           onReady={async ({ workspace, profileId, model }) => {
+            const selectedProfile = authProfiles.find(profile => profile.id === profileId);
+            if (!selectedProfile) throw new Error("Choose a connected provider before continuing.");
             await upsertRuntimeBinding({
               scope: "workspace_default",
               workspace_id: workspace.workspace_id,
               auth_profile: profileId,
+              provider: selectedProfile.provider,
               model: model || null,
               thinking_level: model ? "high" : null,
             });
@@ -639,6 +638,7 @@ export function App(): React.ReactElement {
   return (
     <>
       <GlobalStyles />
+      {showBrowserAccess && activeWorkspace && <BrowserAccess workspaceId={activeWorkspace.workspace_id} workspaceName={activeWorkspace.name} onClose={() => setShowBrowserAccess(false)} />}
       <div
         data-testid="app"
         style={{
@@ -688,6 +688,9 @@ export function App(): React.ReactElement {
           />
 
           {/* Settings affordance */}
+          <button style={connectionButtonStyle} onClick={() => setShowActions(true)}>Actions</button>
+          {isTauri() ? <button style={connectionButtonStyle} onClick={() => setShowBrowserAccess(true)}>Remote access</button>
+            : !localBrowser && <button style={connectionButtonStyle} onClick={() => void disconnectBrowser().then(() => window.location.reload())}>Disconnect browser</button>}
           <button
             onClick={handleOpenWorkspaceSettings}
             title="Settings"
@@ -733,7 +736,7 @@ export function App(): React.ReactElement {
         {/* ---------------------------------------------------------------- */}
         {/* Body: left nav + main + inspector                                */}
         {/* ---------------------------------------------------------------- */}
-        <div style={{
+        <div className="floe-workspace-body" style={{
           flex: "1 1 auto",
           display: "flex",
           flexDirection: "row",
@@ -778,7 +781,7 @@ export function App(): React.ReactElement {
             {nav.appMode === "system" ? (
               <SubstrateSettingsView />
             ) : nav.showWorkspaceSettings ? (
-              <WorkspaceSettings workspace={activeWorkspace} onRemove={removeWorkspace} />
+              <WorkspaceSettings workspace={activeWorkspace} endpoints={actors} onRemove={removeWorkspace} />
             ) : nav.showNewActor ? (
               <NewActorForm
                 workspaceId={activeWorkspace.workspace_id}
@@ -883,6 +886,11 @@ export function App(): React.ReactElement {
           )}
         </div>
       </div>
+      {showActions && activeWorkspace && <ActionPanel key={activeWorkspace.workspace_id} workspaceId={activeWorkspace.workspace_id} workspaceName={activeWorkspace.name} onClose={() => setShowActions(false)} initialTarget={
+        nav.selectedContextId ? { ref: { kind: "context", id: nav.selectedContextId }, label: nav.selectedContextLabel ?? "Conversation" }
+          : nav.selectedActorId ? { ref: { kind: "actor", id: nav.selectedActorId }, label: actors.find(actor => actor.endpoint_id === nav.selectedActorId)?.name ?? "Actor" }
+            : selectedScope ? { ref: { kind: "scope", id: selectedScope.scope_id }, label: selectedScope.title ?? "Scope" } : undefined
+      } />}
     </>
   );
 }

@@ -1,7 +1,7 @@
-import type { BusClient, DeliveryBundle } from "../bus-client.js";
+import type { BusClient, DeliveryBundle, RuntimeOperationAuthoritySession } from "../bus-client.js";
 import type { AgentRuntimeConfig } from "../auth.js";
-import type { LoadedExtension } from "../extension-loader.js";
 import type { HookPayload, HookRegistry } from "../hooks.js";
+import type { CredentialStore } from "@earendil-works/pi-ai";
 
 export type RuntimeContext = {
   bridge_id: string;
@@ -10,10 +10,12 @@ export type RuntimeContext = {
   workspace_locator?: string;
   /** Agent ID extracted from the endpoint for work-log paths */
   agent_id?: string;
-  /** Loaded extensions filtered for this agent */
-  extensions?: LoadedExtension[];
   /** Hook registry for firing lifecycle hooks */
   hooks?: HookRegistry;
+  /** Ephemeral, Delivery-scoped Bus operation authority; never persisted. */
+  operation_authority_session?: RuntimeOperationAuthoritySession;
+  /** Exact Delivery-scoped credential access; absent only for legacy Deliveries. */
+  credential_store?: CredentialStore;
 };
 
 export interface RuntimeAdapter {

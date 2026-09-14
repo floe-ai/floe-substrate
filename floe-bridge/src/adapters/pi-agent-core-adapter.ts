@@ -8,8 +8,8 @@ import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { AgentRuntimeConfig, BridgeAuthRuntime, ModelThinkingCapability, RuntimeAuthResolved } from "../auth.js";
-import { resolveRuntimeAuth } from "../auth.js";
-import type { DeliveryBundle, EventEnvelope } from "../bus-client.js";
+import { resolveBrokeredRuntimeAuth, resolveRuntimeAuth } from "../auth.js";
+import type { DeliveryBundle, EventEnvelope, RuntimeOperationAuthoritySession } from "../bus-client.js";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
 import type { HookPayload, HookRegistry } from "../hooks.js";
 import { InjectionBaseline } from "../injection-baseline.js";
@@ -68,7 +68,24 @@ type TurnCompletion =
 type RuntimeTurnContext = {
   runtime_turn_id: string;
   delivery_id: string;
-  delivery_attempt_id: string;
+  processing_contract_id?: string;
+  operation_authority_session?: RuntimeOperationAuthoritySession;
+  stable_delivery_ids: string[];
+  execution_attempt_id: string | null;
+  scope_execution_id: string | null;
+  composition_revision_id: string | null;
+  node_execution_id: string | null;
+  target_node_id: string | null;
+  target_port_ids: string[];
+  output_ports: Array<{
+    port_id: string;
+    name: string;
+    event_types?: string[];
+    artefact_types?: string[];
+    schema_ref?: string | null;
+    min_count?: number;
+    max_count?: number | null;
+  }>;
   endpoint_id: string;
   workspace_id: string;
   scope_id: string | null;
@@ -82,6 +99,9 @@ type RuntimeTurnContext = {
   last_visible_telemetry_text: string;
   dependency_requested: boolean;
   finalized: boolean;
+  cancelled?: boolean;
+  usage_messages: WeakSet<object>;
+  usage_response_count: number;
   completion: Deferred<TurnCompletion>;
   tool_activity: Array<{ name: string; call_id?: string; summary?: string; is_error?: boolean; files_touched?: string[]; duration_ms?: number }>;
   emitted_events: Array<{ type: string; destination: string; text_preview: string; response_expected: boolean }>;
@@ -99,6 +119,7 @@ type SessionState = {
   instructionsHash: string;
   systemInstructionChars: number;
   runtimeToolsFingerprint: string;
+  getApiKey: () => Promise<string>;
   context?: RuntimeContext;
   activeTurn?: RuntimeTurnContext;
 };
@@ -128,7 +149,9 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
   }
 
   async handleBundle(context: RuntimeContext, bundle: DeliveryBundle, runtimeConfig?: AgentRuntimeConfig): Promise<void> {
-    const resolved = await resolveRuntimeAuth(this.authRuntime, runtimeConfig);
+    const resolved = context.credential_store
+      ? await resolveBrokeredRuntimeAuth(this.authRuntime, runtimeConfig, context.credential_store)
+      : await resolveRuntimeAuth(this.authRuntime, runtimeConfig);
     // Apply thinking capability clamping (Fix 2): when a model has an explicit
     // thinking capability declaration, enforce it before handing off to pi-ai.
     const clampedRuntimeConfig = applyThinkingCapabilityClamp(runtimeConfig, resolved.thinkingCapability, resolved.model.id);
@@ -177,7 +200,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       throw new Error(`Runtime turn already active for endpoint '${bundle.endpoint_id}'.`);
     }
 
-    const turn = this.startTurn(bundle);
+    const turn = this.startTurn(bundle, context.operation_authority_session);
     session.activeTurn = turn;
 
     if (resolved.usedEnvFallback) {
@@ -222,19 +245,18 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         // Build a typed origin reference symmetric with the emit destination.
         // kind="context" when the trigger event belongs to a context thread;
         // kind="thread"  when it only has a thread_id.
-        const triggerEvent = bundle.events[0];
         const origin: { id: string; kind: "context" | "thread" } | undefined =
-          triggerEvent?.context_id
-            ? { id: triggerEvent.context_id, kind: "context" as const }
-            : triggerEvent?.thread_id
-            ? { id: triggerEvent.thread_id, kind: "thread" as const }
+          turn.context_id
+            ? { id: turn.context_id, kind: "context" as const }
+            : turn.thread_id
+            ? { id: turn.thread_id, kind: "thread" as const }
             : undefined;
         const hookResults = await context.hooks.fire("BeforeTurn", {
           endpoint_id: bundle.endpoint_id,
           workspace_id: bundle.workspace_id,
           delivery_id: bundle.delivery_id,
           trigger_event_id: bundle.trigger_event_id,
-          thread_id: bundle.events[0]?.thread_id,
+          thread_id: turn.thread_id,
           origin
         });
         // Slice C (F2): apply inject-once dedup keyed on (context_id, source).
@@ -361,7 +383,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       this.writeWorkLog(context, bundle, turn, "error");
       // Invalidate session on request body errors (likely state corruption)
       if (errorMessage.includes("invalid_request_body") || errorMessage.includes("400")) {
-        const errContextId = bundle.events[0]?.context_id ?? "no-context";
+        const errContextId = bundle.context_id ?? bundle.events[0]?.context_id ?? "no-context";
         const errKey = `${bundle.endpoint_id}:${errContextId}`;
         console.log("[bridge] pi session invalidated due to error", { endpoint_id: bundle.endpoint_id, context_id: errContextId });
         this.sessions.delete(errKey);
@@ -395,6 +417,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     for (const session of this.sessions.values()) {
       if (session.activeTurn?.delivery_id !== deliveryId || session.activeTurn.finalized) continue;
       if (!session.agent.abort) return false;
+      session.activeTurn.cancelled = true;
       session.agent.abort();
       return true;
     }
@@ -405,7 +428,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     // Session key per (endpoint, context): runtime objects and tools may be reused
     // within that pair, while provider-private messages are reset before each turn.
     // A session for context A is never reused for context B.
-    const contextId = bundle.events[0]?.context_id ?? "no-context";
+    const contextId = bundle.context_id ?? bundle.events[0]?.context_id ?? "no-context";
     const key = `${bundle.endpoint_id}:${contextId}`;
     const rawInstructions = runtimeConfig?.instructions?.trim() ?? "";
     // Build the full system prompt: agent instructions + Floe substrate guidance
@@ -415,7 +438,6 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     const instructionsHash = instructionHash(systemPrompt);
     const toolsFingerprint = runtimeToolsFingerprint({
       workspaceLocator: context.workspace_locator,
-      extensions: context.extensions,
     });
 
     const existing = this.sessions.get(key);
@@ -428,6 +450,10 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       existing.runtimeToolsFingerprint === toolsFingerprint
     ) {
       existing.context = context;
+      // Agent sessions retain provider-private conversation only. Credential
+      // authority is replaced for every Delivery so a reused session cannot
+      // outlive the Delivery that currently authorises its provider request.
+      existing.getApiKey = resolved.getApiKey;
       return existing;
     }
     if (existing) {
@@ -454,6 +480,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       instructionsHash,
       systemInstructionChars: systemPrompt.length,
       runtimeToolsFingerprint: toolsFingerprint,
+      getApiKey: resolved.getApiKey,
       context
     };
 
@@ -477,7 +504,6 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       workspaceId: bundle.workspace_id,
       endpointId: bundle.endpoint_id,
       workspaceLocator: context.workspace_locator,
-      extensions: context.extensions,
       toolContext: { getActiveTurn: () => state.activeTurn },
     });
 
@@ -485,11 +511,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       model,
       tools: [emitTool, requestTool, contextHistoryTool, listEndpointsTool, resolveDestinationTool, ...runtimeTools],
       systemPrompt,
-      getApiKey: async () => {
-        const latest = await this.authRuntime.modelRegistry.getApiKeyForProvider(resolved.provider);
-        if (!latest) throw new Error(`Provider '${resolved.provider}' is missing authentication. Reconnect it in Floe Settings.`);
-        return latest;
-      },
+      getApiKey: () => state.getApiKey(),
       thinkingLevel
     });
 
@@ -538,11 +560,25 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     return {
       name: "emit",
       label: "Emit Floe Event",
-      description: "Deliberately publish an event that should cause or communicate something beyond your local turn result. Your normal final answer is already recorded in the current Context. Use 'current_context' as the destination only when you intentionally want Context subscription/effect semantics.",
+      description: "Deliberately publish an event that should cause or communicate something beyond your local turn result. Use attachments for named, openable saved results and references for named links to records returned by discovered operations, such as a saved approval. A reference is navigation, not proof of approval or authority. The returned Event reference confirms acceptance and its exact attachments. Your normal final answer is already recorded in the current Context. Use 'current_context' as the destination only when you intentionally want Context subscription/effect semantics.",
       parameters: Type.Object({
         type: Type.String(),
         destination: Type.String({ description: "A neutral actor ref from list_endpoints, or 'current_context'." }),
         text: Type.String(),
+        references: Type.Optional(Type.Array(Type.Object({
+          name: Type.String({ minLength: 1, description: "Useful name shown on the Open button, such as Local preview approval." }),
+          resource_ref: Type.Object({
+            kind: Type.String({ minLength: 1 }), id: Type.String({ minLength: 1 }),
+            revision: Type.Union([Type.String({ minLength: 1 }), Type.Null()]),
+          }, { additionalProperties: false, description: "Exact resource reference returned by an operation. Do not infer kind or revision from an ID." }),
+        }))),
+        attachments: Type.Optional(Type.Array(Type.Object({
+          artefact_version_id: Type.String({ minLength: 1, description: "Exact published ArtefactVersion to attach; it need not be repeated in artefact_version_ids." }),
+          name: Type.String({ minLength: 1, description: "Clear result name shown on the attachment button, such as Teal Lantern or Revised Courtyard." }),
+        }))),
+        artefact_version_ids: Type.Optional(Type.Array(Type.String({
+          description: "Additional exact published ArtefactVersion IDs without display names. Prefer attachments for results the operator should open; do not put attachment IDs in data.",
+        }))),
         data: Type.Optional(Type.Record(Type.String(), Type.Unknown({
           description: "Optional structured Event data. Use only when a client or extension contract requires it."
         })))
@@ -581,7 +617,15 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           destinationLabel = targetEndpoint;
         }
 
-        await context.bus.emit({
+        const attachments: Array<{ artefact_version_id: string; name: string }> = Array.isArray(params?.attachments)
+          ? params.attachments.map((attachment: { artefact_version_id: string; name: string }) => ({
+            artefact_version_id: attachment.artefact_version_id, name: attachment.name,
+          })) : [];
+        const versionIds = [...new Set<string>([
+          ...(Array.isArray(params?.artefact_version_ids) ? params.artefact_version_ids : []),
+          ...attachments.map(attachment => attachment.artefact_version_id),
+        ])];
+        const receipt = await context.bus.emit({
           type: String(params?.type ?? "message"),
           workspace_id: turn.workspace_id,
           source_endpoint_id: turn.endpoint_id,
@@ -590,8 +634,11 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           context_id: destination.kind === "context" ? turn.context_id : null,
           current_delivery_context_id: turn.context_id,
           correlation_id: null,
+          artefact_version_ids: versionIds,
           content: {
             text: String(params?.text ?? ""),
+            ...(Array.isArray(params?.references) && params.references.length ? { references: params.references } : {}),
+            ...(attachments.length ? { attachments } : {}),
             data: {
               ...(params?.data && typeof params.data === "object" && !Array.isArray(params.data)
                 ? params.data as Record<string, unknown>
@@ -599,7 +646,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
               origin: "pi_emit_tool",
               runtime_turn_id: turn.runtime_turn_id,
               delivery_id: turn.delivery_id,
-              delivery_attempt_id: turn.delivery_attempt_id
+              execution_attempt_id: turn.execution_attempt_id
             }
           },
           response: { expected: false },
@@ -608,7 +655,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
             origin: "pi_emit_tool",
             runtime_turn_id: turn.runtime_turn_id,
             delivery_id: turn.delivery_id,
-            delivery_attempt_id: turn.delivery_attempt_id
+            execution_attempt_id: turn.execution_attempt_id
           }
         });
         turn.emitted_events.push({
@@ -617,9 +664,15 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           text_preview: String(params?.text ?? "").slice(0, 120),
           response_expected: false
         });
+        const accepted = {
+          ok: true,
+          event_id: receipt?.event_id ?? null,
+          accepted_at: receipt?.accepted_at ?? null,
+          artefact_version_ids: receipt?.event?.artefact_version_ids ?? null,
+        };
         return {
-          content: [{ type: "text", text: "emit accepted" }],
-          details: { ok: true }
+          content: [{ type: "text", text: JSON.stringify(accepted) }],
+          details: accepted,
         };
       }
     };
@@ -629,10 +682,13 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     return {
       name: "request",
       label: "Request Actor Work",
-      description: "Ask one actor for work whose result you need before continuing. Floe stores the dependency, ends this processing cycle normally, and resumes you when that actor completes or fails. The return path is automatic.",
+      description: "Ask one actor for work whose result you need before continuing. Attach the exact published ArtefactVersion IDs when the work concerns saved inputs. Floe stores the dependency, ends this processing cycle normally, and resumes you when that actor completes or fails. The return path is automatic.",
       parameters: Type.Object({
         actor: Type.String({ description: "A neutral actor ref from list_endpoints." }),
-        work: Type.String({ description: "The bounded work or question for that actor." })
+        work: Type.String({ description: "The bounded work or question for that actor." }),
+        artefact_version_ids: Type.Optional(Type.Array(Type.String({
+          minLength: 1, description: "Exact published input versions for the actor to inspect with read_artefact. Omit when no saved input is needed.",
+        }))),
       }),
       execute: async (_toolCallId, params: any) => {
         const turn = session.activeTurn;
@@ -658,7 +714,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           targetEndpoint = resolved;
         }
         const requestId = `req_${randomUUID()}`;
-        await context.bus.emit({
+        const receipt = await context.bus.emit({
           type: "request",
           workspace_id: turn.workspace_id,
           source_endpoint_id: turn.endpoint_id,
@@ -667,13 +723,14 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           context_id: null,
           current_delivery_context_id: turn.context_id,
           correlation_id: requestId,
+          artefact_version_ids: [...new Set<string>(params?.artefact_version_ids ?? [])],
           content: {
             text: String(params?.work ?? ""),
             data: {
               origin: "pi_request_tool",
               runtime_turn_id: turn.runtime_turn_id,
               delivery_id: turn.delivery_id,
-              delivery_attempt_id: turn.delivery_attempt_id
+              execution_attempt_id: turn.execution_attempt_id
             }
           },
           response: {
@@ -686,10 +743,18 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
             origin: "pi_request_tool",
             request_return_context_id: turn.context_id,
             request_parent_delivery_id: turn.delivery_id,
+            // A direct Actor request is not a graph Edge. When it is made
+            // during a NodeExecution, these exact references let the result
+            // resume that same logical execution under its pinned revision.
+            request_parent_scope_execution_id: turn.scope_execution_id,
+            request_parent_composition_revision_id: turn.composition_revision_id,
+            request_parent_node_execution_id: turn.node_execution_id,
+            request_parent_target_node_id: turn.target_node_id,
+            request_parent_execution_attempt_id: turn.execution_attempt_id,
             request_continuation_event_id: turn.invocation_request_event_id,
             runtime_turn_id: turn.runtime_turn_id,
             delivery_id: turn.delivery_id,
-            delivery_attempt_id: turn.delivery_attempt_id
+            execution_attempt_id: turn.execution_attempt_id
           }
         });
         turn.dependency_requested = true;
@@ -699,10 +764,12 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           text_preview: String(params?.work ?? "").slice(0, 120),
           response_expected: true
         });
-        return {
-          content: [{ type: "text", text: "request accepted; Floe will resume you with this actor's result" }],
-          details: { ok: true, actor: actorRef }
+        const accepted = {
+          ok: true, actor: actorRef, event_id: receipt?.event_id ?? null,
+          artefact_version_ids: receipt?.event?.artefact_version_ids ?? null,
+          message: "request accepted; Floe will resume you with this actor's result",
         };
+        return { content: [{ type: "text", text: JSON.stringify(accepted) }], details: accepted };
       }
     };
   }
@@ -711,9 +778,10 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     return {
       name: "context_history",
       label: "Read Context History",
-      description: "Retrieve a bounded chronological page from the current durable Context when the present work gives you a reason to inspect earlier contributions. History is not otherwise loaded into your prompt.",
+      description: "Retrieve bounded history from the current durable Context when needed. By default start with recent contributions and page toward older history. Each page is chronological. Stop when you have the relevant evidence. Use forward explicitly to start at the oldest contribution. Follow next_cursor unchanged with the returned direction. Large fields are explicitly marked truncated or omitted; saved history is unchanged. History is not otherwise loaded into your prompt.",
       parameters: Type.Object({
         cursor: Type.Optional(Type.String({ description: "Opaque next_cursor from a previous page." })),
+        direction: Type.Optional(Type.Union([Type.Literal("backward"), Type.Literal("forward")], { description: "backward (default): recent to older pages; forward: oldest to newer pages. Keep the returned direction when following its cursor." })),
         limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 25, description: "Events to retrieve (default 10, maximum 25)." }))
       }),
       execute: async (_toolCallId, params: any) => {
@@ -721,8 +789,12 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         const context = session.context;
         if (!turn || !context || !turn.context_id) throw new Error("No current Context is available for history retrieval.");
         const limit = Math.min(Math.max(Number(params?.limit ?? 10), 1), 25);
-        const page = await context.bus.listContextEvents(turn.context_id, params?.cursor ?? null, limit);
-        const events = page.events.map((event) => ({
+        const cursor = params?.cursor ?? null;
+        const direction = params?.direction ?? "backward";
+        if (direction !== "forward" && direction !== "backward") throw new Error("History direction must be forward or backward.");
+        let page = await context.bus.listContextEvents(turn.context_id, cursor, limit, direction);
+        let readCount = 1;
+        const preview = (event: EventEnvelope): Record<string, unknown> => ({
           event_id: event.event_id,
           type: event.type,
           actor: event.source_endpoint_id
@@ -732,23 +804,52 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
               : "system",
           created_at: event.created_at,
           text: typeof event.content?.text === "string" ? event.content.text.slice(0, 4_000) : undefined,
+          truncated_fields: typeof event.content?.text === "string" && event.content.text.length > 4_000 ? ["text"] : undefined,
           data: event.content?.data ?? undefined,
-          attachments: eventAttachments(event.content)
-        }));
-        let rendered = JSON.stringify({ events, next_cursor: page.next_cursor }, null, 2);
-        if (rendered.length > 16_000) {
-          rendered = rendered.slice(0, 16_000) + "\n... (page truncated; request fewer events)";
+          references: event.content?.references ?? undefined,
+          attachments: eventAttachments(event.content, event.artefact_version_ids)
+        });
+        let events = page.events.map(preview);
+        const render = (selected = events) => JSON.stringify({ events: selected, direction, next_cursor: page.next_cursor }, null, 2);
+        let rendered = render();
+        // Keep whole contributions and obtain the matching cursor from the Bus.
+        // This bounded read narrows one request; it never polls for new work.
+        while (rendered.length > 16_000 && events.length > 1) {
+          let smallerLimit = events.length - 1;
+          while (smallerLimit > 1 && render(direction === "backward" ? events.slice(-smallerLimit) : events.slice(0, smallerLimit)).length > 16_000) smallerLimit--;
+          page = await context.bus.listContextEvents(turn.context_id, cursor, smallerLimit, direction);
+          readCount++;
+          events = page.events.map(preview);
+          rendered = render();
         }
+        // One large Event remains visible by identity. Never cut serialized JSON
+        // or silently discard a field, and never advance past an unreturned Event.
+        if (rendered.length > 16_000 && events.length === 1) {
+          const event = events[0]!;
+          const omitted: string[] = [];
+          for (const field of ["data", "attachments", "references", "text"]) {
+            if (rendered.length <= 16_000) break;
+            if (event[field] === undefined) continue;
+            delete event[field];
+            omitted.push(field);
+            event.omitted_fields = omitted;
+            rendered = render();
+          }
+        }
+        if (rendered.length > 16_000) throw new Error("This history page's identity metadata exceeds the display limit; no continuation was advanced.");
         await this.appendTelemetry(context, turn, "context_history_retrieval", {
           requested_limit: limit,
+          direction,
           returned_events: events.length,
           returned_chars: rendered.length,
+          page_reads: readCount,
+          omitted_field_count: events.reduce((count, event) => count + (Array.isArray(event.omitted_fields) ? event.omitted_fields.length : 0), 0),
           used_cursor: !!params?.cursor,
           next_cursor_available: !!page.next_cursor
         });
         return {
           content: [{ type: "text", text: rendered }],
-          details: { ok: true, count: events.length, next_cursor: page.next_cursor }
+          details: { ok: true, count: events.length, direction, next_cursor: page.next_cursor }
         };
       }
     };
@@ -826,6 +927,9 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       if (!turn || !context) return;
 
       try {
+        if (event.type === "message_end" && event.message?.role === "assistant") {
+          await this.recordResponseUsage(context, turn, event.message);
+        }
         if ((event.type === "message_update" || event.type === "message_end") && event.message?.role === "assistant") {
           const text = extractText((event as any).message);
           if (text) {
@@ -878,18 +982,21 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         if (event.type === "tool_execution_end") {
           // Collect enriched data from tool activity (set by workspace tools during execute)
           const toolEntry = turn.tool_activity.find((t) => t.call_id === event.toolCallId);
-          await this.appendTelemetry(context, turn, event.isError ? "ToolUseFailed" : "AfterToolUse", {
+          // Pi's isError covers thrown execution errors. Floe tools can also
+          // return a valid failure result, such as a nonzero command exit.
+          const isError = event.isError === true || toolEntry?.is_error === true || event.result?.details?.ok === false;
+          await this.appendTelemetry(context, turn, isError ? "ToolUseFailed" : "AfterToolUse", {
             toolCallId: event.toolCallId,
             toolName: event.toolName,
-            isError: event.isError,
+            isError,
             summary: toolEntry?.summary,
             files_touched: toolEntry?.files_touched,
             duration_ms: toolEntry?.duration_ms,
           });
           // Update tool activity with error status
-          if (toolEntry) toolEntry.is_error = event.isError;
+          if (toolEntry) toolEntry.is_error = isError;
           // Fire AfterToolUse or ToolUseFailed hook
-          const hookName = event.isError ? "ToolUseFailed" as const : "AfterToolUse" as const;
+          const hookName = isError ? "ToolUseFailed" as const : "AfterToolUse" as const;
           if (context.hooks?.hasHandlers(hookName)) {
             await context.hooks.fire(hookName, {
               endpoint_id: turn.endpoint_id,
@@ -898,7 +1005,7 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
               trigger_event_id: turn.trigger_event_id,
               toolCallId: event.toolCallId,
               toolName: event.toolName,
-              isError: event.isError
+              isError
             });
           }
         }
@@ -908,6 +1015,13 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         // finalizing on turn_end would cut the agent short when it uses multiple tools.
         if (event.type === "agent_end") {
           const messages = (event as any).messages as any[] | undefined;
+          for (const message of messages ?? []) {
+            if (message?.role === "assistant") await this.recordResponseUsage(context, turn, message);
+          }
+          await this.appendTelemetry(context, turn, "usage_coverage", {
+            agent_end_observed: true,
+            model_response_count: turn.usage_response_count,
+          });
           const lastAssistant = messages
             ?.filter((m: any) => m.role === "assistant")
             .pop() ?? null;
@@ -929,14 +1043,35 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     });
   }
 
-  private startTurn(bundle: DeliveryBundle): RuntimeTurnContext {
+  private startTurn(
+    bundle: DeliveryBundle,
+    operationAuthoritySession?: RuntimeOperationAuthoritySession,
+  ): RuntimeTurnContext {
     const trigger = bundle.events[0];
     const sourceEndpoint = trigger?.source_endpoint_id || `actor:${bundle.workspace_id}:operator`;
-    const threadId = trigger?.thread_id || `thread:${bundle.workspace_id}:pi`;
+    const contextId = bundle.context_id ?? trigger?.context_id ?? null;
+    const threadId = contextId ?? trigger?.thread_id ?? `thread:${bundle.workspace_id}:pi`;
     return {
       runtime_turn_id: `rt_${randomUUID()}`,
       delivery_id: bundle.delivery_id,
-      delivery_attempt_id: `da_${randomUUID()}`,
+      processing_contract_id: bundle.processing_contract?.processing_contract_id,
+      operation_authority_session: operationAuthoritySession,
+      stable_delivery_ids: bundle.stable_delivery_ids ?? [],
+      execution_attempt_id: bundle.execution_attempt_id ?? null,
+      scope_execution_id: bundle.scope_execution_id ?? null,
+      composition_revision_id: bundle.composition_revision_id ?? null,
+      node_execution_id: bundle.node_execution_id ?? null,
+      target_node_id: bundle.target_node_id ?? null,
+      target_port_ids: bundle.target_port_ids ?? [],
+      output_ports: (bundle.node_contract?.output_ports ?? []).map((port) => ({
+        port_id: port.port_id,
+        name: port.name,
+        event_types: port.event_types,
+        artefact_types: port.artefact_types,
+        schema_ref: port.schema_ref,
+        min_count: port.min_count,
+        max_count: port.max_count,
+      })),
       endpoint_id: bundle.endpoint_id,
       workspace_id: bundle.workspace_id,
       thread_id: threadId,
@@ -950,11 +1085,13 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           : trigger?.type === "request.result" && typeof trigger.metadata?.request_continuation_event_id === "string"
             ? trigger.metadata.request_continuation_event_id
             : null,
-      context_id: trigger?.context_id ?? null,
+      context_id: contextId,
       visible_output: "",
       last_visible_telemetry_text: "",
       dependency_requested: false,
       finalized: false,
+      usage_messages: new WeakSet<object>(),
+      usage_response_count: 0,
       completion: createDeferred<TurnCompletion>(),
       tool_activity: [],
       emitted_events: []
@@ -991,6 +1128,22 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     turn.finalized = true;
 
     try {
+      const stopReason = assistantMessage?.stopReason ?? assistantMessage?.stop_reason ?? null;
+      const piErrorMessage = assistantMessage?.errorMessage ?? null;
+      if (turn.cancelled || stopReason === "aborted") {
+        turn.completion.resolve({ outcome: "failed", error: new Error("Runtime response was stopped.") });
+        return;
+      }
+      if (stopReason === "error") {
+        const httpStatusMatch = piErrorMessage?.match(/\b(\d{3})\b/);
+        const piHttpStatus = httpStatusMatch ? parseInt(httpStatusMatch[1], 10) : null;
+        await this.appendTelemetry(context, turn, "runtime_error", {
+          note: "Pi runtime returned stop_reason 'error' without throwing.",
+          stop_reason: stopReason, error_message: piErrorMessage, http_status: piHttpStatus,
+        });
+        turn.completion.resolve({ outcome: "failed", error: new PiErrorStopReasonSignal(piErrorMessage, piHttpStatus) });
+        return;
+      }
       const output = turn.visible_output.trim() || extractText(assistantMessage)?.trim() || "";
       if (output.length > 0) {
         // A model's natural public completion is the local result of this turn.
@@ -1002,7 +1155,9 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           metadata: {
             runtime: "pi-agent-core",
             runtime_turn_id: turn.runtime_turn_id,
-            delivery_attempt_id: turn.delivery_attempt_id
+            execution_attempt_id: turn.execution_attempt_id,
+            node_execution_id: turn.node_execution_id,
+            composition_revision_id: turn.composition_revision_id
           }
         });
         console.log("[bridge] natural turn result recorded", {
@@ -1018,54 +1173,11 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
           return_event_id: recorded.return_event?.event_id ?? null
         });
       } else {
-        const stopReason = assistantMessage?.stopReason ?? assistantMessage?.stop_reason ?? null;
-        const piErrorMessage = assistantMessage?.errorMessage ?? null;
         console.log("[bridge] no visible output", {
           runtime_turn_id: turn.runtime_turn_id,
           delivery_id: turn.delivery_id,
           had_assistant_message: !!assistantMessage,
           stop_reason: stopReason
-        });
-        if (stopReason === "error") {
-          // Extract HTTP status from pi errorMessage if present (e.g. "400 Bad Request")
-          const httpStatusMatch = piErrorMessage?.match(/\b(\d{3})\b/);
-          const piHttpStatus = httpStatusMatch ? parseInt(httpStatusMatch[1], 10) : null;
-          await this.appendTelemetry(context, turn, "runtime_error", {
-            note: "Pi runtime returned stop_reason 'error' without throwing.",
-            stop_reason: stopReason,
-            error_message: piErrorMessage,
-            http_status: piHttpStatus
-          });
-          // Record usage telemetry before signalling failure
-          if (assistantMessage) {
-            await this.appendTelemetry(context, turn, "usage", {
-              usage: assistantMessage.usage ?? null,
-              model: assistantMessage.model ?? null,
-              provider: assistantMessage.provider ?? null,
-              stop_reason: stopReason,
-              error_message: piErrorMessage
-            });
-          }
-          // Complete with an explicit failure so handleBundle's catch path marks
-          // the delivery as failed. Do not temporarily reject an unobserved
-          // Promise: Node treats that as fatal while Pi is still unwinding its
-          // event loop. A terminal requested-actor failure is returned by the
-          // daemon through the same causal path as a successful result.
-          turn.completion.resolve({
-            outcome: "failed",
-            error: new PiErrorStopReasonSignal(piErrorMessage, piHttpStatus)
-          });
-          return;
-        }
-      }
-
-      if (assistantMessage) {
-        await this.appendTelemetry(context, turn, "usage", {
-          usage: assistantMessage.usage ?? null,
-          model: assistantMessage.model ?? null,
-          provider: assistantMessage.provider ?? null,
-          stop_reason: assistantMessage.stopReason ?? assistantMessage.stop_reason ?? null,
-          error_message: assistantMessage.errorMessage ?? null
         });
       }
 
@@ -1076,6 +1188,27 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
     } finally {
       if (session.activeTurn === turn) session.activeTurn = undefined;
     }
+  }
+
+  private async recordResponseUsage(
+    context: RuntimeContext,
+    turn: RuntimeTurnContext,
+    message: any,
+  ): Promise<void> {
+    // Pi emits the same final message object at message_end and agent_end.
+    // Record at message_end so completed responses survive later interruption.
+    // The agent_end pass also covers adapters that supply terminal messages only.
+    if (turn.usage_messages.has(message)) return;
+    turn.usage_messages.add(message);
+    await this.appendTelemetry(context, turn, "usage", {
+      measurement_scope: "model_response",
+      response_index: ++turn.usage_response_count,
+      usage: message.usage ?? null,
+      model: message.model ?? null,
+      provider: message.provider ?? null,
+      stop_reason: message.stopReason ?? message.stop_reason ?? null,
+      error_message: message.errorMessage ?? null,
+    });
   }
 
   private async appendTelemetry(
@@ -1092,7 +1225,9 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
       payload: {
         runtime_turn_id: turn.runtime_turn_id,
         delivery_id: turn.delivery_id,
-        delivery_attempt_id: turn.delivery_attempt_id,
+        execution_attempt_id: turn.execution_attempt_id,
+        node_execution_id: turn.node_execution_id,
+        composition_revision_id: turn.composition_revision_id,
         endpoint_id: turn.endpoint_id,
         thread_id: turn.thread_id,
         scope_id: turn.scope_id,
@@ -1239,21 +1374,21 @@ export function renderHookInjections(results: Array<{ inject?: Record<string, un
 }
 
 type EventAttachment = {
-  path: string;
+  artefact_version_id: string;
   name: string;
   media_type: string;
   bytes: number | null;
 };
 
-export function eventAttachments(content: Record<string, unknown> | null | undefined): EventAttachment[] {
+export function eventAttachments(content: Record<string, unknown> | null | undefined, versionIds?: readonly string[]): EventAttachment[] {
   const value = content?.attachments;
-  if (!Array.isArray(value)) return [];
-  return value.slice(0, 10).flatMap(item => {
+  const descriptions: EventAttachment[] = (Array.isArray(value) ? value : []).slice(0, 10).flatMap(item => {
     if (!item || typeof item !== "object") return [];
     const candidate = item as Record<string, unknown>;
-    if (typeof candidate.path !== "string" || typeof candidate.name !== "string") return [];
+    if (typeof candidate.artefact_version_id !== "string" || !candidate.artefact_version_id.trim()
+      || typeof candidate.name !== "string") return [];
     return [{
-      path: candidate.path.slice(0, 500),
+      artefact_version_id: candidate.artefact_version_id,
       name: candidate.name.slice(0, 200),
       media_type: typeof candidate.media_type === "string"
         ? candidate.media_type.slice(0, 100)
@@ -1261,25 +1396,34 @@ export function eventAttachments(content: Record<string, unknown> | null | undef
       bytes: typeof candidate.bytes === "number" ? candidate.bytes : null,
     }];
   });
+  // The Event's exact references own membership; content supplies display data.
+  // Retain references even when no display data was supplied by the producer.
+  return [...new Set(versionIds ?? descriptions.map(item => item.artefact_version_id))].slice(0, 10)
+    .map(id => descriptions.find(item => item.artefact_version_id === id) ?? {
+      artefact_version_id: id, name: id, media_type: "application/octet-stream", bytes: null,
+    });
 }
 
-export function eventContentToPrompt(content: Record<string, unknown> | null | undefined): string {
-  const attachments = eventAttachments(content);
+export function eventContentToPrompt(content: Record<string, unknown> | null | undefined, versionIds?: readonly string[]): string {
+  const attachments = eventAttachments(content, versionIds);
   const text = typeof content?.text === "string" ? content.text : "";
   const remaining = Object.fromEntries(
     Object.entries(content ?? {}).filter(([key]) => key !== "text" && key !== "attachments"),
   );
   const parts: string[] = [];
   if (text) parts.push(text);
+  if (text && Array.isArray(content?.references) && content.references.length) {
+    parts.push(`[Named references]\n${JSON.stringify(content.references)}\nReferences identify records to inspect under your current authority; they do not prove the record's state.\n[End named references]`);
+  }
   if (!text && Object.keys(remaining).length > 0) parts.push(JSON.stringify(remaining));
   if (attachments.length > 0) {
     parts.push([
-      "[Attached workspace files]",
-      "These files were deliberately shared into this conversation. Inspect the workspace-relative path with the appropriate workspace tool when relevant.",
+      "[Attached ArtefactVersions]",
+      "Use read_artefact with the exact artefact_version_id to inspect shared content when relevant. Images are loaded into your model context only when read.",
       ...attachments.map(attachment =>
-        `- ${attachment.name} (${attachment.media_type}${attachment.bytes == null ? "" : `, ${attachment.bytes} bytes`}): ${attachment.path}`
+        `- ${attachment.name} (${attachment.media_type}${attachment.bytes == null ? "" : `, ${attachment.bytes} bytes`}): ${attachment.artefact_version_id}`
       ),
-      "[End attached workspace files]",
+      "[End attached ArtefactVersions]",
     ].join("\n"));
   }
   return parts.join("\n\n") || JSON.stringify(content ?? {});
@@ -1291,7 +1435,7 @@ function deliveryToPrompt(bundle: DeliveryBundle): string {
     ? trigger.metadata.responding_endpoint_id
     : null;
   const sourceEndpoint = trigger?.source_endpoint_id || returnedBy || `actor:${bundle.workspace_id}:system`;
-  const currentContextId = trigger?.context_id ?? null;
+  const currentContextId = bundle.context_id ?? trigger?.context_id ?? null;
   const requestReference = typeof trigger?.metadata?.request_event_id === "string"
     ? trigger.metadata.request_event_id
     : null;
@@ -1304,15 +1448,34 @@ function deliveryToPrompt(bundle: DeliveryBundle): string {
     cause_reference: requestReference ? `request ${requestReference}` : null
   });
 
+  // The Bus contract identifies this work. Source IDs in an input can refer to
+  // an earlier execution, especially during redo; they are not the active target.
+  const contract = bundle.processing_contract;
+  const scopeBlock = contract?.contract_kind === "scope_node" ? [
+    "[Current Scope execution]",
+    `scope: ${contract.scope_execution.scope_id}`,
+    `execution: ${contract.scope_execution.execution_id}`,
+    `composition_revision: ${contract.scope_execution.revision_id}`,
+    `node_execution: ${contract.node_execution.node_execution_id}`,
+    `attempt: ${contract.execution_attempt.attempt_id}`,
+    `publish_operation: ${contract.outputs.publish_operation_id}`,
+    `output_ports: ${JSON.stringify(contract.outputs.ports.map((port) => ({
+      port_id: port.port_id, name: port.name, event_types: port.event_types,
+      artefact_types: port.artefact_types, schema_ref: port.schema_ref,
+      min_count: port.min_count, max_count: port.max_count,
+    })))}`,
+    "These are the current work references. Source references in inputs describe history. Read the target's current resource revision through capability discovery before changing it.",
+  ].join("\n") : "";
+
   // Only the current causes are included. Older Context events and the actor
   // directory are available through tools when the work demonstrates a need.
   const eventLines = bundle.events.map((event) => {
-    const text = eventContentToPrompt(event.content);
+    const text = eventContentToPrompt(event.content, event.artefact_version_ids);
     return `[Input ${event.event_id} / ${event.type}]\n${text}`;
   }).filter((t) => t.length > 0);
 
   const eventsBlock = eventLines.join("\n\n");
-  return `${contextBlock}\n\n${eventsBlock}`;
+  return [contextBlock, scopeBlock, eventsBlock].filter(Boolean).join("\n\n");
 }
 
 function extractText(message: any): string {

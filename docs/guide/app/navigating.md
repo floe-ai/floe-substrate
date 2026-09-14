@@ -17,6 +17,33 @@ When no supported provider is configured, the desktop app first asks the user to
 
 After onboarding, the gear beside the workspace name opens normal **Settings**. Provider connections apply to this device; the workspace model applies only to the selected workspace. Substrate Settings remains under Developer tools for diagnostics and advanced configuration.
 
+## Actions
+
+**Actions** beside the Workspace name opens the live catalogue of semantic
+actions available to your connection. Search or select a category, choose an
+action, and fill its described fields. Read actions return their result;
+changes show your choices for review before submission. Floe applies the same
+permissions, validation and audit used by other Actors. A required trusted
+confirmation still uses the installed app's confirmation path.
+
+**Actions for this work** opens actions for the selected organised run. Returned
+canonical references can open further actions without copying their identifiers.
+An action that needs a record or a current version explains that requirement.
+The catalogue does not itself supply every resource picker or specialised
+interaction; complete app capability coverage remains in progress.
+
+Approval results show the requested effect, status, reason, decision progress
+and exact saved evidence. A conversation saying that work is ready for approval
+does not create an approval request. Decisions remain governed by the request's
+current policy and the acting principal's permissions.
+
+If a response is lost, Actions retains the submitted intent for the browser
+session, including closing the panel and reloading. Retrieve the result using
+the same request before starting another action. An accepted asynchronous action
+is shown as pending; **Check action result** retrieves its recorded outcome.
+This session recovery does not establish recovery after closing the browser or
+restarting the native application.
+
 ## Conversations
 
 Conversations is the operator's normal way into work with Floe or another actor. When conversations already exist, opening or selecting a workspace leaves the operator at the shared index instead of silently choosing one. When there are none, the app opens a new outcome with Floe. Deliberately clicking Conversations returns to the index.
@@ -85,7 +112,10 @@ Clicking an actor in the nav opens the **actor view** with two tabs:
 
 ## Opening a context
 
-Clicking a context — from a scope's Contexts tab, an actor's Conversations tab, or Activity — opens it as a conversation: message list, participant pills, and a "Speaking as" composer. See [[Conversations in floe-app]].
+Clicking a Context from a Scope, Actor, or Activity opens its message history and
+participant list as a read-only developer inspection. The normal Conversations
+surface is where the authenticated operator can reply. See
+[[Conversations in floe-app]].
 
 ## Other direct contexts
 
