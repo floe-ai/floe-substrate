@@ -28,7 +28,7 @@ async function makeServer(opts?: { localPaths?: boolean }): Promise<{
   const cfg: LocalConfig = defaultConfig(tmp);
   cfg.bridge.workspace_access.local_paths = opts?.localPaths ?? true;
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const handle = await createBusServer(cfgPath, cfg, { allow_unauthenticated_test_requests: true });
+  const handle = await createBusServer(cfgPath, cfg, { unsafe_in_process_test_auth_bypass: true });
   await handle.app.ready();
 
   const workspaceDir = join(tmp, "my-workspace");

@@ -22,7 +22,7 @@ describe("context diagnostic projection", () => {
     const configPath = join(root, "config.yaml");
     const config: LocalConfig = defaultConfig(root);
     writeFileSync(configPath, YAML.stringify(config), "utf8");
-    handle = await createBusServer(configPath, config, { allow_unauthenticated_test_requests: true });
+    handle = await createBusServer(configPath, config, { unsafe_in_process_test_auth_bypass: true });
     await handle.app.ready();
     const registered = handle.store.registerWorkspace({
       locator: workspace,

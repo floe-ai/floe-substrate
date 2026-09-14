@@ -219,8 +219,15 @@ export type BusServerOptions = Readonly<{
   host_control_expires_at?: string;
   /** Local product policy: the configured loopback frontend opens without pairing. */
   local_browser_access?: boolean;
-  /** Existing tests may omit credentials; production runtime never enables this. */
-  allow_unauthenticated_test_requests?: boolean;
+  /**
+   * UNSAFE, in-process test only. When set, requests that arrive without a
+   * bearer are allowed through with a fabricated authority so old unit tests
+   * can exercise route logic without minting real credentials. This is NOT a
+   * supported configuration option: it cannot be set through config, an
+   * environment variable, or `floe start`, and production never enables it.
+   * Do not add new callers — prefer minting real credentials.
+   */
+  unsafe_in_process_test_auth_bypass?: boolean;
 }>;
 
 export async function createBusServer(
@@ -230,6 +237,8 @@ export async function createBusServer(
 ): Promise<{
   app: ReturnType<typeof Fastify>;
   store: BusStore;
+  /** Every HTTP route the Bus registered, for authority-boundary enumeration. */
+  routes: ReadonlyArray<{ method: string; url: string }>;
   /** Trusted process hand-off only. Never exposed by an HTTP response or log. */
   localControlToken: string;
   issueBridgeServiceCredential: (bridgeId: string, expiresAt?: string) => IssuedBridgeServiceCredential;
@@ -252,10 +261,19 @@ export async function createBusServer(
     { parseAs: "buffer", bodyLimit: Math.max(MAX_RUNTIME_CREDENTIAL_BYTES, MAX_ATTACHMENT_INGRESS_BYTES) },
     (_request, body, done) => done(null, body),
   );
+  // The registered transport surface, captured as each route is added so the
+  // authority-boundary test can enumerate every route from the router itself
+  // rather than a hand-maintained list a newly added route could silently
+  // escape. Read-only substrate self-description; never a product surface.
+  const registeredRoutes: Array<{ method: string; url: string }> = [];
+  app.addHook("onRoute", route => {
+    const methods = Array.isArray(route.method) ? route.method : [route.method];
+    for (const method of methods) registeredRoutes.push({ method, url: route.url });
+  });
   const store = new BusStore(configPath, config, { workspace_configuration_policy: options.workspace_configuration_policy });
-  const testCompatibility = options.allow_unauthenticated_test_requests ?? false;
+  const unsafeInProcessTestAuthBypass = options.unsafe_in_process_test_auth_bypass ?? false;
   const localControlToken = options.host_control_token
-    ?? (testCompatibility
+    ?? (unsafeInProcessTestAuthBypass
       ? `floe_test_host_${createHash("sha256").update(configPath).digest("base64url")}`
       : "");
   if (!localControlToken) {
@@ -649,7 +667,7 @@ export async function createBusServer(
     ) return;
 
     const bearer = parseBearerHeader(request.headers.authorization);
-    if (!bearer && testCompatibility) {
+    if (!bearer && unsafeInProcessTestAuthBypass) {
       testBypassedRequests.add(request);
       return;
     }
@@ -680,10 +698,12 @@ export async function createBusServer(
                   )
                 : authenticateBridgeOrHost(transportAuthenticator, bearer);
     if (!authenticated.verified) {
-      // Old HTTP route tests can opt into one explicit compatibility seam.
-      // This is never inferred from process environment and production always
-      // leaves it disabled. Strict transport tests exercise the real boundary.
-      if (testCompatibility) {
+      // Some in-process unit tests opt into one explicit, unsafe bypass so they
+      // can exercise route logic without minting real credentials. It is never
+      // inferred from environment or config, cannot be reached through
+      // `floe start`, and production always leaves it disabled. Strict
+      // transport tests exercise the real boundary.
+      if (unsafeInProcessTestAuthBypass) {
         const trustedTestHost = transportAuthenticator.authenticateHostControl(bearer);
         if (trustedTestHost.verified) {
           testBypassedRequests.add(request);
@@ -3921,6 +3941,7 @@ export async function createBusServer(
   return {
     app,
     store,
+    routes: registeredRoutes,
     localControlToken,
     issueBridgeServiceCredential: (bridgeId, expiresAt = oneDayFromNow()) =>
       store.transportCredentialStore.issueBridgeServiceCredential({
@@ -3953,14 +3974,14 @@ export async function createBusServer(
   };
 }
 
-type TransportRequirement =
+export type TransportRequirement =
   | Readonly<{ kind: "public" | "websocket" | "credential_ingress" | "attachment_ingress" | "host_control" | "bridge_or_host" }>
   | Readonly<{ kind: "bridge_service"; workspace_id: string | null }>
   | Readonly<{ kind: "workspace_operation" | "bridge_or_workspace"; workspace_id: string }>
   | Readonly<{ kind: "bridge_workspace_or_host"; workspace_id: string }>
   | Readonly<{ kind: "workspace_conflict"; workspace_ids: readonly string[] }>;
 
-function resolveTransportRequirement(request: any, store: BusStore): TransportRequirement {
+export function resolveTransportRequirement(request: any, store: BusStore): TransportRequirement {
   const route = String(request.routeOptions?.url ?? request.url?.split("?", 1)[0] ?? "");
   const method = String(request.method ?? "GET").toUpperCase();
   if (route === "/health") return { kind: "public" };

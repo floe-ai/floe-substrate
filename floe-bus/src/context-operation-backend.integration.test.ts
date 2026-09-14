@@ -28,7 +28,7 @@ describe("Bus Context operation backend", () => {
     const configPath = join(directory, "config.yaml");
     const config: LocalConfig = defaultConfig(directory);
     writeFileSync(configPath, YAML.stringify(config), "utf8");
-    handle = await createBusServer(configPath, config, { allow_unauthenticated_test_requests: true });
+    handle = await createBusServer(configPath, config, { unsafe_in_process_test_auth_bypass: true });
     await handle.app.ready();
     const locator = join(directory, "workspace");
     mkdirSync(locator, { recursive: true });

@@ -16,7 +16,7 @@ async function makeServer(): Promise<{ handle: ServerHandle; tmp: string; worksp
   const cfgPath = join(tmp, "config.yaml");
   const cfg: LocalConfig = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const handle = await createBusServer(cfgPath, cfg, { allow_unauthenticated_test_requests: true });
+  const handle = await createBusServer(cfgPath, cfg, { unsafe_in_process_test_auth_bypass: true });
   await handle.app.ready();
   const locator = join(tmp, "workspace");
   mkdirSync(locator, { recursive: true });

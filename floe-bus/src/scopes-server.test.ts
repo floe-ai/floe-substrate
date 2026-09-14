@@ -22,7 +22,7 @@ async function makeServer(): Promise<{
   const cfgPath = join(tmp, "config.yaml");
   const cfg: LocalConfig = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const handle = await createBusServer(cfgPath, cfg, { allow_unauthenticated_test_requests: true });
+  const handle = await createBusServer(cfgPath, cfg, { unsafe_in_process_test_auth_bypass: true });
   await handle.app.ready();
   return {
     handle,
@@ -234,7 +234,7 @@ describe("Scope HTTP routes", () => {
     });
 
     await handle.app.close();
-    handle = await createBusServer(cfgPath, cfg, { allow_unauthenticated_test_requests: true });
+    handle = await createBusServer(cfgPath, cfg, { unsafe_in_process_test_auth_bypass: true });
     await handle.app.ready();
 
     const scopes = await handle.app.inject({
