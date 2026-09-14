@@ -16,6 +16,7 @@ import { parseListen } from "./config.js";
 import { BROADCAST_TARGETS, BusStore, ContextAnchorError, ContextNotFoundError, ContextParticipantError, ContextScopeAssignmentError, EndpointRetirementBlockedError, PulseNotFoundError, ScopeRequiredError, ScopeRetiredError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
 import { PulseScheduler } from "./pulse-scheduler.js";
 import {
+  isValidRenderer,
   loadScopeProjectionLayout,
   upsertScopeProjectionLayout
 } from "./scope-projection-layout-store.js";
@@ -2248,9 +2249,9 @@ export async function createBusServer(
       scope_id: z.string(),
       renderer: z.string()
     }).parse(request.params);
-    if (params.renderer !== "floe-app") {
+    if (!isValidRenderer(params.renderer)) {
       reply.code(400);
-      return { error: "scope_projection_layout_renderer_invalid", message: `renderer '${params.renderer}' not supported (only 'floe-app')` };
+      return { error: "scope_projection_layout_renderer_invalid", message: `renderer '${params.renderer}' is not a valid renderer identity` };
     }
     if (!store.getWorkspace(params.workspace_id)) {
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
@@ -2285,9 +2286,9 @@ export async function createBusServer(
       scope_id: z.string(),
       renderer: z.string()
     }).parse(request.params);
-    if (params.renderer !== "floe-app") {
+    if (!isValidRenderer(params.renderer)) {
       reply.code(400);
-      return { error: "scope_projection_layout_renderer_invalid", message: `renderer '${params.renderer}' not supported (only 'floe-app')` };
+      return { error: "scope_projection_layout_renderer_invalid", message: `renderer '${params.renderer}' is not a valid renderer identity` };
     }
     if (!store.getWorkspace(params.workspace_id)) {
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });

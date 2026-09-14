@@ -7,13 +7,18 @@ import {
   ScopeProjectionLayoutIdMismatchError,
   ScopeProjectionLayoutRendererInvalidError,
   ScopeProjectionLayoutValidationError,
+  scopeProjectionLayoutSchemaId,
   upsertScopeProjectionLayout,
   type ScopeProjectionLayout
 } from "./scope-projection-layout-store.js";
 
-function makeLayout(scopeId: string, overrides: Partial<ScopeProjectionLayout> = {}): ScopeProjectionLayout {
+function makeLayout(
+  scopeId: string,
+  renderer = "floe-app",
+  overrides: Partial<ScopeProjectionLayout> = {}
+): ScopeProjectionLayout {
   return {
-    schema: "floe.scope-projection.layout.floe-app.v1",
+    schema: scopeProjectionLayoutSchemaId(renderer),
     scope_id: scopeId,
     viewport: { x: 0, y: 0, zoom: 1 },
     items: {
@@ -46,6 +51,31 @@ describe("scope-projection-layout-store", () => {
     expect(existsSync(join(workspace, ".floe", "scope-projection-layouts", "scope%2Fwith%20space.layout.floe-app.yaml"))).toBe(true);
     expect(existsSync(join(workspace, ".floe", "fields", "scope/with space.yaml"))).toBe(false);
     expect(existsSync(join(workspace, ".floe", "blocks"))).toBe(false);
+  });
+
+  it("lets a client that is not floe-app own its own projection layout", () => {
+    const layout = makeLayout("research", "react-flow");
+
+    const written = upsertScopeProjectionLayout(workspace, "research", "react-flow", layout);
+    const loaded = loadScopeProjectionLayout(workspace, "research", "react-flow");
+
+    expect(written.schema).toBe("floe.scope-projection.layout.react-flow.v1");
+    expect(loaded).toEqual(layout);
+    expect(existsSync(join(workspace, ".floe", "scope-projection-layouts", "research.layout.react-flow.yaml"))).toBe(true);
+  });
+
+  it("still loads a pre-existing floe-app layout written with the legacy schema name", () => {
+    const dir = join(workspace, ".floe", "scope-projection-layouts");
+    mkdirSync(dir, { recursive: true });
+    const legacy = {
+      schema: "floe.scope-projection.layout.floe-app.v1",
+      scope_id: "legacy",
+      viewport: { x: 5, y: 6, zoom: 2 },
+      items: { "context:ctx_old": { x: 1, y: 2 } }
+    };
+    writeFileSync(join(dir, "legacy.layout.floe-app.yaml"), JSON.stringify(legacy), "utf8");
+
+    expect(loadScopeProjectionLayout(workspace, "legacy", "floe-app")).toEqual(legacy);
   });
 
   it("returns null when a Scope Projection layout sidecar is missing", () => {

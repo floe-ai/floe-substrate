@@ -10,26 +10,52 @@ const ScopeProjectionLayoutIdSchema = z
   .min(1)
   .max(200);
 
-export const ScopeProjectionLayoutSchema = z.object({
-  schema: z.literal("floe.scope-projection.layout.floe-app.v1"),
-  scope_id: ScopeProjectionLayoutIdSchema,
-  viewport: z.object({
-    x: z.number(),
-    y: z.number(),
-    zoom: z.number()
-  }),
-  items: z.record(
-    z.object({
-      x: z.number(),
-      y: z.number(),
-      width: z.number().optional(),
-      height: z.number().optional(),
-      collapsed: z.boolean().optional()
-    })
-  )
+/**
+ * The layout schema identity carries the client-supplied renderer, so any
+ * client owns its own projection layout. The original single client wrote
+ * `floe.scope-projection.layout.floe-app.v1`; the `floe-app` renderer still
+ * derives exactly that string, so pre-existing floe-app layouts keep loading.
+ */
+export function scopeProjectionLayoutSchemaId(renderer: string): string {
+  return `floe.scope-projection.layout.${renderer}.v1`;
+}
+
+/** A renderer identity a client may own its layout under. */
+export function isValidRenderer(renderer: string): boolean {
+  return RENDERER_PATTERN.test(renderer);
+}
+
+const ScopeProjectionLayoutViewportSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  zoom: z.number()
 });
 
-export type ScopeProjectionLayout = z.infer<typeof ScopeProjectionLayoutSchema>;
+const ScopeProjectionLayoutItemsSchema = z.record(
+  z.object({
+    x: z.number(),
+    y: z.number(),
+    width: z.number().optional(),
+    height: z.number().optional(),
+    collapsed: z.boolean().optional()
+  })
+);
+
+function scopeProjectionLayoutSchema(renderer: string) {
+  return z.object({
+    schema: z.literal(scopeProjectionLayoutSchemaId(renderer)),
+    scope_id: ScopeProjectionLayoutIdSchema,
+    viewport: ScopeProjectionLayoutViewportSchema,
+    items: ScopeProjectionLayoutItemsSchema
+  });
+}
+
+export type ScopeProjectionLayout = {
+  schema: string;
+  scope_id: string;
+  viewport: z.infer<typeof ScopeProjectionLayoutViewportSchema>;
+  items: z.infer<typeof ScopeProjectionLayoutItemsSchema>;
+};
 
 export class ScopeProjectionLayoutValidationError extends Error {
   constructor(message: string, readonly issues?: z.ZodIssue[]) {
@@ -86,7 +112,7 @@ function validateScopeId(scopeId: string): void {
 }
 
 function validateRenderer(renderer: string): void {
-  if (!RENDERER_PATTERN.test(renderer)) {
+  if (!isValidRenderer(renderer)) {
     throw new ScopeProjectionLayoutRendererInvalidError(
       `invalid renderer name '${renderer}': must match ^[a-z][a-z0-9_-]*$`
     );
@@ -102,7 +128,7 @@ export function upsertScopeProjectionLayout(
   validateScopeId(scopeId);
   validateRenderer(renderer);
 
-  const result = ScopeProjectionLayoutSchema.safeParse(body);
+  const result = scopeProjectionLayoutSchema(renderer).safeParse(body);
   if (!result.success) {
     throw new ScopeProjectionLayoutValidationError(
       `invalid layout body for scope '${scopeId}' renderer '${renderer}': ${result.error.issues.map((issue) => issue.message).join("; ")}`,
@@ -135,7 +161,7 @@ export function loadScopeProjectionLayout(
   if (!existsSync(path)) return null;
 
   const parsed = parseYamlFile<unknown>(path);
-  const result = ScopeProjectionLayoutSchema.safeParse(parsed);
+  const result = scopeProjectionLayoutSchema(renderer).safeParse(parsed);
   if (!result.success) {
     throw new ScopeProjectionLayoutValidationError(
       `invalid layout file '${path}': ${result.error.issues.map((issue) => issue.message).join("; ")}`,
