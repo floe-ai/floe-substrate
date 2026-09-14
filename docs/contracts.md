@@ -35,9 +35,14 @@ Runtime adapters translate between the Floe-native event/endpoint model and
 engine-specific assumptions. Pi's user/assistant/message model is contained
 inside `PiRuntimeAdapter`.
 
-Local development and CI use `FakeRuntimeAdapter` to exercise the real
-bus/bridge/runtime boundary without consuming premium requests. It is
-development-only and must not define product semantics.
+The vertical slice suite runs the same substrate lifecycle on two runtime-adapter
+tiers. Tier one uses `FakeRuntimeAdapter` to exercise the real
+bus/bridge/runtime boundary without consuming premium requests — fast, no
+network, always runs. Tier two drives the real `FloeRuntimeAdapter` against a
+live `copilot --acp` session with the cheapest advertised model; it runs by
+default and fails loudly (never silently skips) when the vendor CLI is not
+reachable, unless deliberately disabled with `FLOE_LIVE_RUNTIME_TIER=off`. The
+fake adapter is development-only and must not define product semantics.
 
 ## Scope and Context Semantics
 
@@ -127,4 +132,6 @@ Local and CI validation use:
 - Unit tests for IDs, config, queue eligibility, and `.floe/` template logic.
 - Contract tests against real daemon processes using temp `FLOE_HOME`.
 - Browser/UI tests against the fake adapter.
-- Live runtime smoke tests only when `FLOE_LIVE_COPILOT=1`.
+- The vertical slice's live `FloeRuntimeAdapter` tier runs by default against a
+  real `copilot --acp` session; disable it deliberately with
+  `FLOE_LIVE_RUNTIME_TIER=off` (a visible, announced opt-out, not a silent skip).
