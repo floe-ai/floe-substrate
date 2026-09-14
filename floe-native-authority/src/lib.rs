@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    io::Write,
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::Arc,
@@ -27,7 +26,6 @@ const BUS_HTTP_BASE: &str = "http://127.0.0.1:5377";
 const VAULT_SERVICE: &str = "com.floe.console";
 const VAULT_ACCOUNT: &str = "local-bus-host-control";
 const WORKSPACE_SESSION_SECONDS: u64 = 15 * 60;
-const ACCOUNT_CONNECTION_PURPOSE: &str = "account-connection";
 const MAX_CONTEXT_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 
 #[derive(Clone)]
@@ -113,28 +111,6 @@ pub struct ConfirmHostOperationRequest {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct ProviderAccountProjection {
-    pub provider_id: String,
-    pub secret_ref_id: String,
-    pub connected: bool,
-    pub generation: u64,
-}
-
-/// Trusted one-shot ingress bootstrap. Callers may pass it only to the fixed
-/// provider-auth helper over an anonymous stdin pipe; never serialize it to a
-/// UI, CLI response, file, log, Event, Context, Artefact, or operation receipt.
-pub struct ProviderCredentialIngress {
-    pub provider_id: String,
-    pub secret_ref_id: String,
-    pub expected_resource_revision: String,
-    pub ingress_session_id: String,
-    pub audience: String,
-    pub purpose: String,
-    pub bearer_token: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct ContextAttachmentIngress {
     pub ingress_session_id: String,
     pub workspace_id: String,
@@ -175,12 +151,6 @@ struct PendingContextAttachmentIngress {
 #[derive(Debug, Deserialize)]
 struct UploadedContextAttachmentIngress {
     session: PendingContextAttachmentIngress,
-}
-
-impl Drop for ProviderCredentialIngress {
-    fn drop(&mut self) {
-        self.bearer_token.zeroize();
-    }
 }
 
 #[derive(Debug)]
@@ -362,52 +332,6 @@ impl NativeAuthorityBroker {
         .await
     }
 
-    pub async fn list_provider_accounts(&self) -> Result<Vec<ProviderAccountProjection>, String> {
-        let response = self
-            .invoke_host_semantic("credential.account.list", None, None, json!({}))
-            .await?;
-        let result = completed_operation_result(&response)?;
-        let accounts = result
-            .get("accounts")
-            .and_then(Value::as_array)
-            .ok_or_else(|| "Floe returned an invalid provider account list.".to_string())?;
-        let mut projected = Vec::with_capacity(accounts.len());
-        for account in accounts {
-            let provider_id = account
-                .pointer("/resource/id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "Floe returned an invalid provider account list.".to_string())?;
-            let secret_ref_id = account
-                .get("secret_ref_id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "Floe returned an invalid provider account list.".to_string())?;
-            let generation = account
-                .get("generation")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| "Floe returned an invalid provider account list.".to_string())?;
-            // Connected means the same thing here as it does for the browser client
-            // (browser-provider-routes.ts): the secret ref has a broker binding
-            // (`resolution === "resolved"`). Do not also require live credential
-            // material health here - a client that additionally required health
-            // would disagree with the browser about whether an account is
-            // connected, and would block reconnecting a stale-but-resolved
-            // account (`credential.account.prepare` refuses to touch an already
-            // "resolved" ref), with no working reconnect or disconnect path.
-            let resolution = account
-                .get("resolution")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "Floe returned an invalid provider account list.".to_string())?;
-            let connected = resolution == "resolved";
-            projected.push(ProviderAccountProjection {
-                provider_id: provider_id.into(),
-                secret_ref_id: secret_ref_id.into(),
-                connected,
-                generation,
-            });
-        }
-        Ok(projected)
-    }
-
     /// Transfer one operator-selected file through a one-use, Context-bound
     /// bearer. The returned value contains no reusable authority or host path.
     pub async fn upload_context_attachment(
@@ -537,176 +461,9 @@ impl NativeAuthorityBroker {
         Ok(())
     }
 
-    pub async fn begin_provider_account_connection(
-        &self,
-        provider_id: &str,
-        label: &str,
-    ) -> Result<ProviderCredentialIngress, String> {
-        validate_identifier("provider", provider_id)?;
-        validate_identifier("provider label", label)?;
-        let prepared = self
-            .invoke_host_semantic(
-                "credential.account.prepare",
-                None,
-                None,
-                json!({ "provider_id": provider_id, "label": label }),
-            )
-            .await?;
-        let credential = completed_operation_result(&prepared)?
-            .get("credential")
-            .cloned()
-            .ok_or_else(|| "Floe returned an invalid provider account reference.".to_string())?;
-        let secret_ref_id = credential
-            .get("secret_ref_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Floe returned an invalid provider account reference.".to_string())?;
-        let generation = credential
-            .get("generation")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| "Floe returned an invalid provider account reference.".to_string())?;
-        let resolution = credential
-            .get("resolution")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Floe returned an invalid provider account reference.".to_string())?;
-        if resolution == "resolved" {
-            return Err("This provider account is already connected.".into());
-        }
-        if resolution != "unresolved" {
-            return Err("Floe returned an invalid provider account reference.".into());
-        }
-        let issued = self
-            .host_json(
-                Method::POST,
-                "/v1/local/credential-ingress-sessions",
-                Some(json!({
-                    "secret_ref_id": secret_ref_id,
-                    "purpose": ACCOUNT_CONNECTION_PURPOSE,
-                    "expires_in_seconds": 600,
-                })),
-            )
-            .await?;
-        let session = issued
-            .get("session")
-            .ok_or_else(|| "Floe returned an invalid provider sign-in session.".to_string())?;
-        let ingress_session_id = session
-            .get("ingress_session_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Floe returned an invalid provider sign-in session.".to_string())?;
-        let audience = session
-            .get("audience")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Floe returned an invalid provider sign-in session.".to_string())?;
-        let purpose = session
-            .get("purpose")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Floe returned an invalid provider sign-in session.".to_string())?;
-        let bearer_token = issued
-            .get("bearer_token")
-            .and_then(Value::as_str)
-            .filter(|value| value.len() >= 32)
-            .ok_or_else(|| "Floe returned an invalid provider sign-in session.".to_string())?;
-        if session.get("secret_ref_id").and_then(Value::as_str) != Some(secret_ref_id)
-            || session.get("provider_id").and_then(Value::as_str) != Some(provider_id)
-            || audience != format!("provider-auth:{provider_id}")
-            || purpose != ACCOUNT_CONNECTION_PURPOSE
-        {
-            return Err("Floe returned an invalid provider sign-in session.".into());
-        }
-        Ok(ProviderCredentialIngress {
-            provider_id: provider_id.into(),
-            secret_ref_id: secret_ref_id.into(),
-            expected_resource_revision: format!("generation:{generation}:unresolved"),
-            ingress_session_id: ingress_session_id.into(),
-            audience: audience.into(),
-            purpose: purpose.into(),
-            bearer_token: bearer_token.into(),
-        })
-    }
-
-    pub async fn finish_provider_account_connection(
-        &self,
-        ingress: &ProviderCredentialIngress,
-    ) -> Result<ProviderAccountProjection, String> {
-        let response = self
-            .invoke_host_semantic(
-                "credential.bind",
-                Some(OperationTarget {
-                    kind: "secret_ref".into(),
-                    id: ingress.secret_ref_id.clone(),
-                }),
-                Some(ingress.expected_resource_revision.clone()),
-                json!({
-                    "source": {
-                        "kind": "credential_ingress",
-                        "ingress_session_id": ingress.ingress_session_id,
-                    }
-                }),
-            )
-            .await?;
-        let credential = completed_operation_result(&response)?
-            .get("credential")
-            .cloned()
-            .ok_or_else(|| "Floe returned an invalid provider account status.".to_string())?;
-        let generation = credential
-            .get("generation")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| "Floe returned an invalid provider account status.".to_string())?;
-        if credential.get("secret_ref_id").and_then(Value::as_str) != Some(&ingress.secret_ref_id)
-            || credential.get("resolution").and_then(Value::as_str) != Some("resolved")
-        {
-            return Err("Floe did not confirm the provider account connection.".into());
-        }
-        Ok(ProviderAccountProjection {
-            provider_id: ingress.provider_id.clone(),
-            secret_ref_id: ingress.secret_ref_id.clone(),
-            connected: true,
-            generation,
-        })
-    }
-
-    pub async fn cancel_provider_account_connection(
-        &self,
-        ingress: &ProviderCredentialIngress,
-    ) -> Result<(), String> {
-        let response = self
-            .host_json(
-                Method::POST,
-                &format!(
-                    "/v1/local/credential-ingress-sessions/{}/revoke",
-                    urlencoding::encode(&ingress.ingress_session_id),
-                ),
-                Some(json!({})),
-            )
-            .await?;
-        if response.get("revoked").and_then(Value::as_bool) != Some(true) {
-            return Err("Floe could not cancel the provider sign-in session.".into());
-        }
-        Ok(())
-    }
-
     /// One-shot CLI/headless provider connection using only the fixed packaged
     /// Floe auth helper. Neither the reusable host credential nor the ingress
     /// bearer is returned to the caller.
-    pub async fn connect_provider_account(
-        &self,
-        provider_id: &str,
-    ) -> Result<ProviderAccountProjection, String> {
-        let ingress = self
-            .begin_provider_account_connection(provider_id, provider_id)
-            .await?;
-        if let Err(error) = run_packaged_provider_auth(&ingress) {
-            let _ = self.cancel_provider_account_connection(&ingress).await;
-            return Err(error);
-        }
-        match self.finish_provider_account_connection(&ingress).await {
-            Ok(account) => Ok(account),
-            Err(error) => {
-                let _ = self.cancel_provider_account_connection(&ingress).await;
-                Err(error)
-            }
-        }
-    }
-
     /// Start the fixed packaged Bus/Bridge host while keeping its reusable
     /// host-control credential inside this authority boundary.
     pub fn launch_packaged_substrate(&self) -> Result<Child, String> {
@@ -847,29 +604,6 @@ impl NativeAuthorityBroker {
         response_to_json(self.host_response(method, path, body).await?).await
     }
 
-    async fn invoke_host_semantic(
-        &self,
-        operation_id: &str,
-        target: Option<OperationTarget>,
-        expected_resource_revision: Option<String>,
-        input: Value,
-    ) -> Result<Value, String> {
-        validate_identifier("semantic operation", operation_id)?;
-        self.invoke_operation(InvokeOperationRequest {
-            boundary: AuthorityBoundary::Host,
-            invocation: json!({
-                "operation_id": operation_id,
-                "operation_version": "1",
-                "input_schema_version": "1",
-                "target": target,
-                "expected_resource_revision": expected_resource_revision,
-                "idempotency_key": format!("native_{}", random_secret(18)),
-                "input": input,
-            }),
-        })
-        .await
-    }
-
     async fn workspace_json(
         &self,
         method: Method,
@@ -958,62 +692,6 @@ fn random_secret(bytes: usize) -> String {
     let mut buffer = vec![0_u8; bytes];
     OsRng.fill_bytes(&mut buffer);
     URL_SAFE_NO_PAD.encode(buffer)
-}
-
-fn run_packaged_provider_auth(ingress: &ProviderCredentialIngress) -> Result<(), String> {
-    let executable_directory = packaged_executable_directory()
-        .map_err(|_| "Floe could not locate its packaged provider sign-in helper.".to_string())?;
-    let node_name = if cfg!(windows) {
-        "floe-node.exe"
-    } else {
-        "floe-node"
-    };
-    let node = executable_directory.join(node_name);
-    let resources = executable_directory.join("resources");
-    let script = resources.join("floe-desktop.js");
-    if !node.is_file() || !script.is_file() {
-        return Err("Floe could not locate its packaged provider sign-in helper.".into());
-    }
-    let mut command = Command::new(node);
-    command
-        .current_dir(resources)
-        .args([
-            "floe-desktop.js",
-            "auth",
-            "login",
-            &ingress.provider_id,
-            &ingress.ingress_session_id,
-            &ingress.audience,
-            &ingress.purpose,
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    hide_windows_process(&mut command);
-    let mut child = command
-        .spawn()
-        .map_err(|_| "Floe could not start its packaged provider sign-in helper.".to_string())?;
-    let write_result = child
-        .stdin
-        .take()
-        .ok_or_else(|| "Floe could not initialise provider sign-in.".to_string())
-        .and_then(|mut stdin| {
-            stdin
-                .write_all(ingress.bearer_token.as_bytes())
-                .and_then(|_| stdin.write_all(b"\n"))
-                .map_err(|_| "Floe could not initialise provider sign-in.".to_string())
-        });
-    if let Err(error) = write_result {
-        let _ = child.kill();
-        return Err(error);
-    }
-    let status = child
-        .wait()
-        .map_err(|_| "Provider sign-in stopped unexpectedly.".to_string())?;
-    if !status.success() {
-        return Err("Provider sign-in did not complete.".into());
-    }
-    Ok(())
 }
 
 fn packaged_executable_directory() -> Result<PathBuf, String> {
@@ -1236,24 +914,6 @@ async fn response_to_json(response: reqwest::Response) -> Result<Value, String> 
         .json::<Value>()
         .await
         .map_err(|_| "Floe returned an invalid semantic operation response.".into())
-}
-
-fn completed_operation_result(value: &Value) -> Result<&Value, String> {
-    let receipt = value
-        .get("receipt")
-        .ok_or_else(|| "Floe returned an invalid semantic operation receipt.".to_string())?;
-    if value.get("kind").and_then(Value::as_str) != Some("receipt")
-        || receipt.get("state").and_then(Value::as_str) != Some("completed")
-    {
-        let message = receipt
-            .pointer("/refusal/message")
-            .and_then(Value::as_str)
-            .unwrap_or("Floe refused the semantic operation.");
-        return Err(message.to_string());
-    }
-    receipt
-        .get("result")
-        .ok_or_else(|| "Floe returned an invalid semantic operation receipt.".to_string())
 }
 
 async fn response_to_http(response: reqwest::Response) -> Result<AuthorityHttpResponse, String> {

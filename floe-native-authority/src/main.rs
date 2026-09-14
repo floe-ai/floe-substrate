@@ -19,10 +19,8 @@ const MAX_COMMAND_BYTES: u64 = 1024 * 1024;
 #[serde(deny_unknown_fields)]
 enum AuthorityCommand {
     ListLocalWorkspaces,
-    ListProviderAccounts,
     ProvideHostControlToken,
     RegisterWorkspace(RegisterWorkspaceRequest),
-    ConnectProviderAccount { provider_id: String },
     DiscoverOperations(DiscoverOperationsRequest),
     InvokeOperation(InvokeOperationRequest),
     ConfirmAndInvokeHostOperation(ConfirmHostOperationRequest),
@@ -64,19 +62,6 @@ async fn run() -> Result<Value, String> {
             .host_control_token_for_local_boot()
             .map(|token| json!({ "token": token })),
         AuthorityCommand::RegisterWorkspace(input) => broker.register_workspace(input).await,
-        AuthorityCommand::ListProviderAccounts => {
-            broker.list_provider_accounts().await.and_then(|accounts| {
-                serde_json::to_value(accounts)
-                    .map_err(|_| "Floe could not encode the provider account list.".to_string())
-            })
-        }
-        AuthorityCommand::ConnectProviderAccount { provider_id } => broker
-            .connect_provider_account(&provider_id)
-            .await
-            .and_then(|account| {
-                serde_json::to_value(account)
-                    .map_err(|_| "Floe could not encode the provider account status.".to_string())
-            }),
         AuthorityCommand::DiscoverOperations(input) => broker.discover_operations(input).await,
         AuthorityCommand::InvokeOperation(input) => broker.invoke_operation(input).await,
         AuthorityCommand::ConfirmAndInvokeHostOperation(input) => {
@@ -101,10 +86,8 @@ fn parse_command(bytes: &[u8]) -> Result<AuthorityCommand, String> {
         .ok_or_else(|| "The native authority request is invalid.".to_string())?;
     let allowed: &[&str] = match command {
         "list_local_workspaces" => &["command"],
-        "list_provider_accounts" => &["command"],
         "provide_host_control_token" => &["command"],
         "register_workspace" => &["command", "locator", "init_authorized"],
-        "connect_provider_account" => &["command", "provider_id"],
         "discover_operations" => &["command", "boundary", "query", "category", "target"],
         "invoke_operation" => &["command", "boundary", "invocation"],
         "confirm_and_invoke_host_operation" => &["command", "interaction_session_id", "invocation"],
@@ -130,7 +113,6 @@ mod tests {
     #[test]
     fn accepts_only_typed_commands_and_refuses_raw_transport_or_credentials() {
         assert!(parse_command(br#"{"command":"list_local_workspaces"}"#).is_ok());
-        assert!(parse_command(br#"{"command":"list_provider_accounts"}"#).is_ok());
         assert!(parse_command(br#"{"command":"provide_host_control_token"}"#).is_ok());
         assert!(parse_command(
             br#"{"command":"register_workspace","locator":"C:/work/demo","init_authorized":true}"#
@@ -140,11 +122,6 @@ mod tests {
             br#"{"command":"provide_host_control_token","bearer_token":"x"}"#
         )
         .is_err());
-        assert!(parse_command(
-            br#"{"command":"connect_provider_account","provider_id":"openai-codex"}"#
-        )
-        .is_ok());
-        assert!(parse_command(br#"{"command":"connect_provider_account","provider_id":"openai-codex","url":"http://example.invalid"}"#).is_err());
         assert!(parse_command(
             br#"{"command":"discover_operations","boundary":{"kind":"host"},"query":"credential"}"#
         )
