@@ -8,18 +8,6 @@ import { ensureConfig, resolveLocalPath, saveConfig, type LocalConfig } from "./
 import { buildResetPlan, executeReset } from "./reset.js";
 import { seedDefaultActor } from "./actor-seed.js";
 import {
-  createAuthRuntime,
-  findProfile,
-  getAuthStatusLabel,
-  listProviderOptions,
-  removeProfile,
-  saveProfiles,
-  suggestProfileId,
-  type ProfilesDocument,
-  upsertProfile,
-  validateProfileId
-} from "./auth.js";
-import {
   clearRecords,
   isPidRunning,
   readRecords,
@@ -29,10 +17,7 @@ import {
   type ServiceName
 } from "./process-manager.js";
 import { registerOperationsCommand } from "./operations-command.js";
-import { confirmInTerminal } from "./operations-command.js";
-import { NativeCliOperationAuthorityBroker } from "./operation-client.js";
 import { fetchHostControlToken, registerLocalWorkspaceViaBroker } from "./operation-client.js";
-import { disconnectProviderAccount } from "./provider-account-command.js";
 
 const program = new Command();
 
@@ -102,66 +87,6 @@ program
       console.log(existsSync(path) ? tail(readFileSync(path, "utf8"), 200) : "(no log file)");
     }
   });
-
-program
-  .command("login")
-  .description("Connect a provider account through Floe's protected local broker")
-  .requiredOption("--provider <provider>", "subscription provider id")
-  .action(async (options) => {
-    const { configPath, config } = ensureConfig(program.opts().config);
-    const providerId = String(options.provider ?? "").trim();
-    if (!providerId) throw new Error("Provider id is required.");
-    const account = await new NativeCliOperationAuthorityBroker().connectProviderAccount(providerId);
-    if (!account.connected) throw new Error("Floe did not confirm the provider account connection.");
-    if (config.bridge.runtime_adapter !== "pi-agent-core") {
-      config.bridge.runtime_adapter = "pi-agent-core";
-      saveConfig(configPath, config);
-      console.log("Runtime adapter: pi-agent-core");
-    }
-    console.log(`Connected provider '${account.provider_id}' using protected Windows credential storage.`);
-  });
-
-const authCommand = program.command("auth").description("Inspect Floe provider accounts");
-authCommand.command("list").description("List connected Floe provider accounts").action(async () => {
-  const accounts = await new NativeCliOperationAuthorityBroker().listProviderAccounts();
-  if (accounts.length === 0) {
-    console.log("No Floe provider accounts are configured.");
-    return;
-  }
-  for (const account of accounts) {
-    console.log(`${account.provider_id} | ${account.connected ? "connected" : "missing"}`);
-  }
-});
-
-authCommand.command("doctor").description("Validate Floe auth/profile setup").action(async () => {
-  const accounts = await new NativeCliOperationAuthorityBroker().listProviderAccounts();
-  const missing = accounts.filter((account) => !account.connected);
-  if (accounts.length > 0 && missing.length === 0) {
-    console.log("Provider account health: OK");
-    return;
-  }
-  if (accounts.length === 0) console.log("Provider account health: no accounts configured");
-  for (const account of missing) console.log(`Provider '${account.provider_id}' is not connected.`);
-  process.exitCode = 1;
-});
-
-program
-  .command("logout")
-  .argument("<provider>", "provider id")
-  .description("Disconnect a Floe provider account")
-  .action(async (provider: string) => {
-    const result = await disconnectProviderAccount(provider, { confirm: confirmInTerminal });
-    if (result.kind === "cancelled") {
-      console.log("Provider account left connected.");
-      return;
-    }
-    if (result.kind === "already_disconnected") {
-      console.log(`Provider '${result.account.provider_id}' is already disconnected.`);
-      return;
-    }
-    console.log(`Disconnected provider '${result.account.provider_id}'.`);
-  });
-
 program.command("doctor").description("Diagnose local Floe setup").action(async () => {
   const { configPath, config } = ensureConfig(program.opts().config);
   await printStatus(configPath, config);
@@ -268,100 +193,6 @@ program.action(async () => {
 
 await program.parseAsync(normalizeLegacyCommandArgs(process.argv));
 
-async function resolveProviderOption(
-  options: Array<{ id: string; name: string; auth_type: "oauth" | "api_key" }>,
-  providerFlag?: string
-): Promise<{ id: string; name: string; auth_type: "oauth" | "api_key" }> {
-  if (providerFlag) {
-    const explicit = options.find((option) => option.id === providerFlag);
-    if (!explicit) {
-      throw new Error(`Unknown provider '${providerFlag}'. Run 'floe auth list' and 'floe auth doctor' for details.`);
-    }
-    return explicit;
-  }
-
-  const rl = createInterface({ input, output });
-  try {
-    console.log("Select provider:");
-    for (const [index, option] of options.entries()) {
-      console.log(`  ${index + 1}. ${option.name} (${option.id}, ${option.auth_type})`);
-    }
-    const answer = (await rl.question(`Enter number (1-${options.length}): `)).trim();
-    const parsed = Number(answer);
-    if (!Number.isInteger(parsed) || parsed < 1 || parsed > options.length) {
-      throw new Error("Invalid provider selection.");
-    }
-    return options[parsed - 1];
-  } finally {
-    rl.close();
-  }
-}
-
-async function resolveProfileId(profiles: ProfilesDocument, provider: string, profileFlag?: string): Promise<string> {
-  if (profileFlag) return validateProfileId(profileFlag);
-  const suggested = suggestProfileId(profiles, provider);
-  const rl = createInterface({ input, output });
-  try {
-    const answer = (await rl.question(`Profile id [${suggested}]: `)).trim();
-    return validateProfileId(answer || suggested);
-  } finally {
-    rl.close();
-  }
-}
-
-async function loginWithOAuth(runtime: ReturnType<typeof createAuthRuntime>, providerId: string, providerName: string): Promise<void> {
-  const rl = createInterface({ input, output });
-  try {
-    await runtime.authStorage.login(providerId, {
-      notify: (event) => {
-        if (event.type === "auth_url") {
-          console.log(`Open this URL to authenticate ${providerName}:`);
-          console.log(event.url);
-          if (event.instructions) console.log(event.instructions);
-          openUrl(event.url);
-        } else if (event.type === "device_code") {
-          console.log(`Device code: ${event.userCode}`);
-          console.log(`Verify at: ${event.verificationUri}`);
-          openUrl(event.verificationUri);
-        } else if (event.type === "progress" || event.type === "info") {
-          console.log(event.message);
-        }
-      },
-      prompt: async (prompt) => {
-        if (prompt.type === "select") {
-          console.log(prompt.message);
-          prompt.options.forEach((option, index) => console.log(`  ${index + 1}. ${option.label}`));
-          const answer = (await rl.question("Select option number: ")).trim();
-          const selected = prompt.options[parseInt(answer, 10) - 1];
-          if (!selected) throw new Error("Invalid selection");
-          return selected.id;
-        }
-        const hint = prompt.placeholder ? ` (${prompt.placeholder})` : "";
-        return rl.question(`${prompt.message}${hint}: `);
-      },
-    });
-  } finally {
-    rl.close();
-  }
-}
-
-async function resolveApiKey(apiKeyEnv?: string): Promise<string> {
-  if (apiKeyEnv) {
-    const value = process.env[apiKeyEnv];
-    if (!value) throw new Error(`Environment variable '${apiKeyEnv}' is not set.`);
-    if (!value.trim()) throw new Error(`Environment variable '${apiKeyEnv}' is empty.`);
-    return value.trim();
-  }
-  const rl = createInterface({ input, output });
-  try {
-    const entered = (await rl.question("API key: ")).trim();
-    if (!entered) throw new Error("API key cannot be empty.");
-    return entered;
-  } finally {
-    rl.close();
-  }
-}
-
 async function applyAutostartChoice(configPath: string, config: LocalConfig, options: any): Promise<void> {
   let enable = options.autostart !== false;
   if (!options.yes && options.autostart !== false) {
@@ -418,13 +249,6 @@ async function printStatus(configPath: string, config: LocalConfig): Promise<voi
     console.log(`${service}: ${running ? "running" : "not running"}${record ? ` pid=${record.pid}` : ""}`);
   }
   console.log(`bus: ${config.bus.http_base_url} ${await isHealthy(config.bus.http_base_url) ? "healthy" : "unreachable"}`);
-}
-
-function openUrl(url: string): void {
-  const command = process.platform === "win32" ? "cmd" : process.platform === "darwin" ? "open" : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true });
-  child.unref();
 }
 
 async function registerCurrentWorkspace(config: LocalConfig, locator: string, initAuthorized: boolean): Promise<void> {

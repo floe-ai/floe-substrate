@@ -49,13 +49,6 @@ export type LocalWorkspaceProjection = Readonly<{
   }> | null;
 }>;
 
-export type CliProviderAccount = Readonly<{
-  provider_id: string;
-  secret_ref_id: string;
-  connected: boolean;
-  generation: number;
-}>;
-
 export type DiscoverOperationsInput = Readonly<{
   boundary: CliOperationBoundary;
   query?: string;
@@ -146,20 +139,6 @@ export class NativeCliOperationAuthorityBroker implements CliOperationAuthorityB
 
   listLocalWorkspaces(): Promise<unknown> {
     return this.run({ command: "list_local_workspaces" });
-  }
-
-  async listProviderAccounts(): Promise<CliProviderAccount[]> {
-    const result = await this.run({ command: "list_provider_accounts" });
-    if (!Array.isArray(result)) throw new Error("Floe returned an invalid provider account list.");
-    return result.map(parseProviderAccount);
-  }
-
-  async connectProviderAccount(providerId: string): Promise<CliProviderAccount> {
-    const result = await this.run({
-      command: "connect_provider_account",
-      provider_id: requireText(providerId, "provider id"),
-    });
-    return parseProviderAccount(result);
   }
 
   discoverOperations(input: DiscoverOperationsInput): Promise<unknown> {
@@ -435,25 +414,6 @@ function parseLocalWorkspace(value: unknown): LocalWorkspaceProjection {
     throw new Error("Floe returned a locator without a current local Workspace binding.");
   }
   return { workspace_id: value.workspace_id, name: value.name, binding };
-}
-
-function parseProviderAccount(value: unknown): CliProviderAccount {
-  if (
-    !isRecord(value)
-    || typeof value.provider_id !== "string"
-    || typeof value.secret_ref_id !== "string"
-    || typeof value.connected !== "boolean"
-    || typeof value.generation !== "number"
-    || !Number.isInteger(value.generation)
-  ) {
-    throw new Error("Floe returned an invalid provider account status.");
-  }
-  return {
-    provider_id: value.provider_id,
-    secret_ref_id: value.secret_ref_id,
-    connected: value.connected,
-    generation: value.generation,
-  };
 }
 
 function parseOperationDescriptor(value: unknown): CliOperationDescriptor {
