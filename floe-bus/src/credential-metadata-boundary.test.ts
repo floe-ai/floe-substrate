@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { listAuthModels } from "./auth.js";
 import { defaultConfig } from "./config.js";
@@ -13,7 +13,7 @@ describe("credential metadata boundary", () => {
     directories.splice(0).forEach((directory) => rmSync(directory, { recursive: true, force: true }));
   });
 
-  it("lists model metadata without opening, refreshing, or probing legacy credentials", async () => {
+  it("lists declared model metadata without opening or migrating stored credentials", async () => {
     const directory = mkdtempSync(join(tmpdir(), "floe-model-metadata-"));
     directories.push(directory);
     const config = defaultConfig(directory);
@@ -25,14 +25,15 @@ describe("credential metadata boundary", () => {
       openai: { type: "api_key", key: "must-remain-migration-only" },
     });
     writeFileSync(authPath, legacy, "utf8");
-    const fetch = vi.fn(async () => {
-      throw new Error("model listing must not make a credentialled provider request");
-    });
+    writeFileSync(join(authDirectory, "models.json"), JSON.stringify({
+      providers: { openai: { models: [{ id: "gpt-x", name: "GPT X", reasoning: false }] } },
+    }), "utf8");
 
-    const models = await listAuthModels(configPath, config, "openai", fetch);
+    const models = await listAuthModels(configPath, config, "openai");
 
-    expect(models.length).toBeGreaterThan(0);
-    expect(fetch).not.toHaveBeenCalled();
+    expect(models).toEqual([
+      expect.objectContaining({ id: "gpt-x", provider: "openai" }),
+    ]);
     expect(readFileSync(authPath, "utf8")).toBe(legacy);
     expect(JSON.stringify(models)).not.toContain("must-remain-migration-only");
   });

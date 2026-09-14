@@ -1,12 +1,13 @@
 /**
  * @invariant This module is the bus-local read model for Floe auth metadata.
- * It must merge pi-ai built-ins with local model/profile metadata without
- * opening credentials. Credential use and refresh belong exclusively to an
- * exact brokered operation or isolated runtime Delivery.
+ * Floe does NOT broker model credentials and holds no built-in provider
+ * catalogue: model authentication belongs to the vendor CLI driven by
+ * floe-runtime. The only models this module reports are those a workspace has
+ * explicitly declared in its local models.json. Profiles are read from
+ * profiles.yaml. This module opens no credentials and imports no provider SDK.
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getModels, getProviders, type Model } from "@earendil-works/pi-ai/compat";
 import YAML from "yaml";
 import { z } from "zod";
 import type { LocalConfig } from "./config.js";
@@ -89,16 +90,20 @@ export function listAuthProfiles(configPath: string, config: LocalConfig): AuthP
   }
 }
 
+/**
+ * List the models Floe knows about for a provider. Floe reports only the models
+ * a workspace has explicitly declared in models.json; there is no built-in
+ * catalogue. If a client needs the live list a vendor CLI supports, it asks the
+ * vendor CLI through floe-runtime, not Floe.
+ */
 export async function listAuthModels(
   configPath: string,
   config: LocalConfig,
   provider?: string,
-  _legacyFetchFn?: unknown,
 ): Promise<AuthModelRecord[]> {
   const paths = getFloeAuthPaths(configPath, config);
   ensureAuthFiles(paths);
-  const registry = new BusModelRegistry(paths.modelsJsonPath);
-  return registry.list(provider);
+  return readDeclaredModels(paths.modelsJsonPath, provider);
 }
 
 function getFloeAuthPaths(configPath: string, config: LocalConfig): FloeAuthPaths {
@@ -127,59 +132,30 @@ function ensureAuthFiles(paths: FloeAuthPaths): void {
   chmodSafe(paths.profilesYamlPath, 0o600);
 }
 
-class BusModelRegistry {
-  private readonly models: Model<any>[] = [];
-
-  constructor(private readonly modelsPath: string) {
-    const builtIns = getProviders().flatMap((provider) => getModels(provider as any)) as Model<any>[];
-    this.models.push(...builtIns);
-    this.applyOverlays();
+function readDeclaredModels(modelsPath: string, provider: string | undefined): AuthModelRecord[] {
+  let parsed: z.infer<typeof ModelsConfigSchema>;
+  try {
+    parsed = ModelsConfigSchema.parse(JSON.parse(readFileSync(modelsPath, "utf8")));
+  } catch {
+    return [];
   }
-
-  async list(provider: string | undefined): Promise<AuthModelRecord[]> {
-    return this.models
-      .filter((model) => !provider || model.provider === provider)
-      .map((model) => ({
-        id: model.id,
-        name: model.name,
-        provider: model.provider,
-        api: model.api,
-        reasoning: !!model.reasoning,
-        contextWindow: model.contextWindow,
-        maxTokens: model.maxTokens,
-        input: model.input
-      }));
-  }
-
-  private applyOverlays(): void {
-    try {
-      const parsed = ModelsConfigSchema.parse(JSON.parse(readFileSync(this.modelsPath, "utf8")));
-      for (const [provider, config] of Object.entries(parsed.providers)) {
-        for (const modelDef of config.models ?? []) {
-          const fallback = this.models.find((model) => model.provider === provider);
-          const custom: Model<any> = {
-            id: modelDef.id,
-            name: modelDef.name ?? modelDef.id,
-            api: (modelDef.api ?? fallback?.api ?? "openai-responses") as any,
-            provider,
-            baseUrl: modelDef.baseUrl ?? fallback?.baseUrl ?? "",
-            reasoning: modelDef.reasoning ?? false,
-            input: modelDef.input ?? ["text"],
-            cost: modelDef.cost ?? fallback?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow: modelDef.contextWindow ?? fallback?.contextWindow ?? 128000,
-            maxTokens: modelDef.maxTokens ?? fallback?.maxTokens ?? 16384,
-            headers: fallback?.headers,
-            compat: fallback?.compat
-          };
-          const existingIndex = this.models.findIndex((model) => model.provider === provider && model.id === modelDef.id);
-          if (existingIndex >= 0) this.models[existingIndex] = custom;
-          else this.models.push(custom);
-        }
-      }
-    } catch {
-      // Keep built-ins only when models.json is unreadable or invalid.
+  const records: AuthModelRecord[] = [];
+  for (const [providerId, providerConfig] of Object.entries(parsed.providers)) {
+    if (provider && providerId !== provider) continue;
+    for (const modelDef of providerConfig.models ?? []) {
+      records.push({
+        id: modelDef.id,
+        name: modelDef.name ?? modelDef.id,
+        provider: providerId,
+        api: modelDef.api ?? "openai-responses",
+        reasoning: modelDef.reasoning ?? false,
+        contextWindow: modelDef.contextWindow,
+        maxTokens: modelDef.maxTokens,
+        input: modelDef.input
+      });
     }
   }
+  return records;
 }
 
 function chmodSafe(path: string, mode: number): void {
