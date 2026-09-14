@@ -35,11 +35,26 @@ export function isLoopbackAddress(address: string | undefined): boolean {
   return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
 }
 
-/** Only the frontend listener chosen by the local application host. */
-export function localBrowserOrigins(listen: string): ReadonlySet<string> {
-  const url = new URL(`http://${listen}`);
-  if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) return new Set();
-  return new Set(["127.0.0.1", "localhost", "[::1]"].map(host => `http://${host}${url.port ? `:${url.port}` : ""}`));
+const LOOPBACK_BROWSER_HOSTNAMES = ["127.0.0.1", "localhost", "[::1]"];
+
+/**
+ * The loopback subset of the trusted browser origins. A local browser client is
+ * a lens over the substrate that configures its own origin (via the trusted
+ * origin set); the substrate does not know that any particular app exists, only
+ * that these loopback origins are trusted to open a session without pairing.
+ */
+export function loopbackBrowserOrigins(origins: Iterable<string>): ReadonlySet<string> {
+  const result = new Set<string>();
+  for (const origin of origins) {
+    let hostname: string;
+    try {
+      hostname = new URL(origin).hostname;
+    } catch {
+      continue;
+    }
+    if (LOOPBACK_BROWSER_HOSTNAMES.includes(hostname)) result.add(origin);
+  }
+  return result;
 }
 const PENDING_COOKIE = "floe_browser_pending";
 const SESSION_COOKIE = "floe_browser_session";

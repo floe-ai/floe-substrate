@@ -10,8 +10,7 @@ const LocalConfigSchema = z.object({
   home: z.string(),
   services: z.object({
     autostart: z.boolean(),
-    manager: z.string(),
-    start_app: z.boolean().optional()
+    manager: z.string()
   }),
   bus: z.object({
     listen: z.string(),
@@ -29,16 +28,6 @@ const LocalConfigSchema = z.object({
       local_paths: z.boolean()
     })
   }),
-  // floe-app is no longer part of the substrate; the bridge does not read
-  // config.app, so accept but ignore an app block if one is present and do
-  // not require it in the CLI-written no-app config (full removal is P5).
-  app: z.object({
-    listen: z.string(),
-    bus_http_url: z.string(),
-    bus_ws_url: z.string(),
-    data_dir: z.string(),
-    log_dir: z.string()
-  }).optional(),
   library: z.object({
     configs_dir: z.string(),
     skills_dir: z.string(),
@@ -58,7 +47,7 @@ export function defaultConfig(home = join(homedir(), ".floe")): LocalConfig {
     schema: "floe.local.v1",
     version: 1,
     home,
-    services: { autostart: true, manager: "auto", start_app: true },
+    services: { autostart: true, manager: "auto" },
     bus: {
       listen: "127.0.0.1:5377",
       http_base_url: "http://127.0.0.1:5377",
@@ -71,13 +60,6 @@ export function defaultConfig(home = join(homedir(), ".floe")): LocalConfig {
       log_dir: "./logs/bridge",
       bus_url: "ws://127.0.0.1:5377",
       workspace_access: { local_paths: true }
-    },
-    app: {
-      listen: "127.0.0.1:5379",
-      bus_http_url: "http://127.0.0.1:5377",
-      bus_ws_url: "ws://127.0.0.1:5377",
-      data_dir: "./app",
-      log_dir: "./logs/app"
     },
     library: {
       configs_dir: "./configs",

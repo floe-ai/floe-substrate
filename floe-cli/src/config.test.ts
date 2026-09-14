@@ -45,6 +45,43 @@ const OLD_CONFIG_WEB = {
   }
 };
 
+// An old config carrying the retired `app` / `start_app` keys. floe-app left the
+// repo; the substrate no longer knows an app exists, so a lingering app block is
+// rejected fast with the same actionable reset instruction as any other retired key.
+const OLD_CONFIG_APP = {
+  schema: "floe.local.v1",
+  version: 1,
+  home: "/tmp/floe",
+  services: { autostart: true, manager: "auto", start_app: true },
+  bus: {
+    listen: "127.0.0.1:5377",
+    http_base_url: "http://127.0.0.1:5377",
+    ws_base_url: "ws://127.0.0.1:5377",
+    data_dir: "./bus",
+    log_dir: "./logs/bus"
+  },
+  bridge: {
+    data_dir: "./bridge",
+    log_dir: "./logs/bridge",
+    bus_url: "ws://127.0.0.1:5377",
+    workspace_access: { local_paths: true }
+  },
+  app: {
+    listen: "127.0.0.1:5379",
+    bus_http_url: "http://127.0.0.1:5377",
+    bus_ws_url: "ws://127.0.0.1:5377",
+    data_dir: "./app",
+    log_dir: "./logs/app"
+  },
+  library: {
+    configs_dir: "./configs",
+    skills_dir: "./skills",
+    extensions_dir: "./extensions",
+    mcp_dir: "./mcp",
+    templates_dir: "./templates"
+  }
+};
+
 describe("incompatible config rejection (no migration)", () => {
   it("fails fast with an actionable reset instruction for an old web-keyed config", () => {
     const tmp = makeTmp();
@@ -80,6 +117,29 @@ describe("incompatible config rejection (no migration)", () => {
       expect(() => ensureConfig(cfgPath)).toThrow();
 
       expect(readFileSync(cfgPath, "utf8")).toBe(original);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("fails fast for an old app-keyed config now that floe-app has left the repo", () => {
+    const tmp = makeTmp();
+    try {
+      const cfgPath = join(tmp, "config.yaml");
+      writeFileSync(cfgPath, YAML.stringify(OLD_CONFIG_APP), "utf8");
+
+      let thrown: Error | undefined;
+      try {
+        ensureConfig(cfgPath);
+      } catch (error) {
+        thrown = error as Error;
+      }
+
+      expect(thrown, "expected ensureConfig to reject an app-keyed config").toBeDefined();
+      const message = thrown!.message;
+      expect(message).toContain("incompatible with this version of Floe");
+      expect(message).toContain("floe setup");
+      expect(message).toContain(cfgPath);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

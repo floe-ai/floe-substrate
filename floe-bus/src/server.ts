@@ -43,7 +43,7 @@ import { listAgentFiles } from "./fs/agentFiles.js";
 import { PathEscapesRootError, resolveWithinRoot, RootNotFoundError } from "./fs/resolveWithinRoot.js";
 import { registerContextDiagnosticRoutes } from "./context-diagnostics.js";
 import { createCorsOriginPolicy, trustedBrowserOrigins } from "./cors-policy.js";
-import { BrowserConnections, BrowserConnectionError, localBrowserOrigins } from "./browser-connections.js";
+import { BrowserConnections, BrowserConnectionError, loopbackBrowserOrigins } from "./browser-connections.js";
 import {
   ArtefactContentMismatchError,
   ArtefactContentNotFoundError,
@@ -287,8 +287,8 @@ export async function createBusServer(
     expires_at: options.host_control_expires_at ?? oneYearFromNow(),
   });
   const transportAuthenticator = new BusTransportAuthenticator(store);
-  const localOrigins = options.local_browser_access ? localBrowserOrigins(config.app.listen) : new Set<string>();
-  const browserOrigins = new Set([...trustedBrowserOrigins(), ...localOrigins]);
+  const browserOrigins = trustedBrowserOrigins();
+  const localOrigins = options.local_browser_access ? loopbackBrowserOrigins(browserOrigins) : new Set<string>();
   const browserConnections = new BrowserConnections(browserOrigins, id => {
     store.operationAuthoritySessions.revokeSession(id);
   }, Date.now, options.local_browser_access ? {
@@ -818,7 +818,6 @@ export async function createBusServer(
     config_path: configPath,
     home: config.home,
     bus: config.bus,
-    app: config.app,
     bridge: config.bridge
     };
   });

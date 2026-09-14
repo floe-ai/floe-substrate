@@ -11,7 +11,6 @@
  * Wiped (all configured data directories):
  *   - bus data + log dirs          (floe-bus.sqlite — workspaces, contexts, scopes, agents)
  *   - bridge data + log dirs       (bridge runtime state)
- *   - app data + log dirs          (app state)
  *   - library dirs                 (configs, skills, extensions, mcp, templates)
  *   - services.json                (stale PID/process-manager records)
  */
