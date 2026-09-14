@@ -5,7 +5,7 @@ import YAML from "yaml";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { defaultConfig, type LocalConfig } from "./config.js";
 import { BridgeDaemon, chooseAdapter } from "./daemon.js";
-import { TurnFailedError } from "./adapters/pi-agent-core-adapter.js";
+import { TurnFailedError } from "./adapters/turn-failed-error.js";
 import { HookRegistry, type HookPayload } from "./hooks.js";
 
 const envStack: Array<string | undefined> = [];
@@ -32,12 +32,6 @@ function makeConfig(runtimeAdapter?: string): { configPath: string; config: Loca
     config,
     cleanup: () => rmSync(home, { recursive: true, force: true })
   };
-}
-
-function writeProfiles(home: string, profiles: Array<{ id: string; provider: string; model?: string }>): void {
-  const authDir = join(home, "auth");
-  mkdirSync(authDir, { recursive: true });
-  writeFileSync(join(authDir, "profiles.yaml"), YAML.stringify({ version: 1, profiles }), "utf8");
 }
 
 function withoutAdapterEnv(): void {
@@ -78,32 +72,31 @@ describe("chooseAdapter", () => {
       expect((daemon as any).pendingDeliveries.size).toBe(0);
     } finally { made.cleanup(); }
   });
-  it("uses Pi as the live runtime on a clean start", () => {
+  it("uses floe-runtime as the live runtime on a clean start", () => {
     withoutAdapterEnv();
     const made = makeConfig();
     try {
-      expect(chooseAdapter(made.configPath, made.config).name).toBe("pi-agent-core");
+      expect(chooseAdapter(made.configPath, made.config).name).toBe("floe-runtime");
     } finally {
       made.cleanup();
     }
   });
 
-  it("keeps explicit live configuration on Pi", () => {
+  it("selects floe-runtime when explicitly configured", () => {
+    withoutAdapterEnv();
+    const made = makeConfig("floe-runtime");
+    try {
+      expect(chooseAdapter(made.configPath, made.config).name).toBe("floe-runtime");
+    } finally {
+      made.cleanup();
+    }
+  });
+
+  it("rejects the removed pi-agent-core adapter name", () => {
     withoutAdapterEnv();
     const made = makeConfig("pi-agent-core");
     try {
-      expect(chooseAdapter(made.configPath, made.config).name).toBe("pi-agent-core");
-    } finally {
-      made.cleanup();
-    }
-  });
-
-  it("uses Pi for a subscription-backed provider profile", () => {
-    withoutAdapterEnv();
-    const made = makeConfig();
-    try {
-      writeProfiles(made.config.home, [{ id: "copilot-atvi", provider: "github-copilot", model: "gpt-4.1" }]);
-      expect(chooseAdapter(made.configPath, made.config).name).toBe("pi-agent-core");
+      expect(() => chooseAdapter(made.configPath, made.config)).toThrow(/Unsupported FLOE runtime adapter "pi-agent-core"/);
     } finally {
       made.cleanup();
     }

@@ -68,7 +68,6 @@ type FloeSession = {
 export class FloeRuntimeAdapter implements RuntimeAdapter {
   readonly name = "floe-runtime";
   // floe-runtime holds no credentials; the vendor CLI authenticates itself.
-  readonly credentialRequirement = "none" as const;
   private readonly sessions = new Map<string, FloeSession>();
   private readonly runtimeFactory: () => CopilotRuntime;
   /** null when substrate write-back tools are disabled (e.g. in unit tests). */

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderHookInjections } from "./adapters/pi-agent-core-adapter.js";
+import { renderHookInjections } from "./runtime-core/index.js";
 
 describe("renderHookInjections", () => {
   it("returns empty string when no results have inject", () => {

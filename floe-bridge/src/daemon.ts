@@ -6,8 +6,7 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { AgentRuntimeConfig } from "./auth.js";
-import { BrokeredDeliveryCredentialStore, RuntimeAuthError } from "./auth.js";
-import { createBridgeAuthRuntime } from "./auth.js";
+import { RuntimeAuthError } from "./auth.js";
 import type { LocalConfig } from "./config.js";
 import { bridgeHttpBase, bridgeWsBase } from "./config.js";
 import {
@@ -28,12 +27,11 @@ import {
 } from "./project.js";
 import type { RuntimeAdapter } from "./adapters/runtime-adapter.js";
 import { FakeRuntimeAdapter } from "./adapters/fake-runtime-adapter.js";
-import { PiAgentCoreAdapter } from "./adapters/pi-agent-core-adapter.js";
 import { FloeRuntimeAdapter } from "./adapters/floe-runtime-adapter.js";
 import { TurnFailedError } from "./adapters/turn-failed-error.js";
 import { HookRegistry } from "./hooks.js";
 import { watchFolder } from "./folder-watcher.js";
-import { selectPinnedRuntime, type PinnedRuntimeSelection } from "./runtime-processing-contract.js";
+import { selectPinnedRuntime } from "./runtime-processing-contract.js";
 import {
   buildWorkspaceConfigurationInventory,
   type WorkspaceConfigurationInventory,
@@ -862,7 +860,6 @@ export class BridgeDaemon {
       const instructions = endpointEntry?.instructions;
       let preparedAttemptId: string | null = null;
       let operationAuthoritySession: Awaited<ReturnType<BusClient["prepareRuntimeDelivery"]>>["operation_authority_session"] | undefined;
-      let pinnedRuntime: PinnedRuntimeSelection | undefined;
       let effectiveRuntime: AgentRuntimeConfig;
       const hasCanonicalRuntimePins = Boolean(
         delivery.processing_contract
@@ -887,7 +884,6 @@ export class BridgeDaemon {
           );
         }
         const pinned = selectPinnedRuntime(contract);
-        pinnedRuntime = pinned;
         if (!runtimeAdapterMatches(pinned.adapter_id, this.adapter.name)) {
           throw new RuntimeAuthError(
             "runtime_profile_provider_mismatch",
@@ -934,20 +930,6 @@ export class BridgeDaemon {
         auth_profile_source: effectiveRuntime.auth_profile_source ?? "(none)",
         instructions_bytes: instructions?.length ?? 0
       });
-      const credentialPin = pinnedRuntime && this.adapter.credentialRequirement !== "none"
-        ? {
-            provider: pinnedRuntime.config.provider?.trim() ?? "",
-            secret_ref_id: pinnedRuntime.secret_ref_ids.length === 1
-              ? pinnedRuntime.secret_ref_ids[0]
-              : "",
-          }
-        : undefined;
-      if (credentialPin && (!credentialPin.provider || !credentialPin.secret_ref_id)) {
-        throw new RuntimeAuthError(
-          "runtime_credential_unresolved",
-          "The pinned Runtime Profile does not have one unambiguous provider credential.",
-        );
-      }
       const injected = await this.bus.reportDeliveryStatus(delivery.delivery_id, "injected_to_runtime");
       // Older Bus versions and test doubles acknowledge the transition without
       // returning the canonical attempt handle. Keep that compatibility at the
@@ -960,16 +942,6 @@ export class BridgeDaemon {
       }
       console.log("[bridge] delivery injected to runtime", { delivery_id: delivery.delivery_id, adapter: this.adapter.name });
 
-      let credentialStore: BrokeredDeliveryCredentialStore | undefined;
-      if (credentialPin) {
-        credentialStore = new BrokeredDeliveryCredentialStore(
-          this.bus,
-          delivery.delivery_id,
-          credentialPin.secret_ref_id,
-          credentialPin.provider,
-        );
-      }
-
       const hookRegistry = this.workspaceHooks.get(delivery.workspace_id);
 
       await this.adapter.handleBundle({
@@ -979,7 +951,6 @@ export class BridgeDaemon {
         agent_id: endpointEntry?.agent_id,
         hooks: hookRegistry,
         operation_authority_session: operationAuthoritySession,
-        credential_store: credentialStore,
       }, delivery, effectiveRuntime);
       if (this.cancelledDeliveries.delete(delivery.delivery_id)) {
         await this.reportTurnEndSafely(delivery.endpoint_id);
@@ -1190,16 +1161,13 @@ export class BridgeDaemon {
   }
 }
 
-export function chooseAdapter(configPath: string, config: LocalConfig): RuntimeAdapter {
+export function chooseAdapter(_configPath: string, config: LocalConfig): RuntimeAdapter {
   const configured = process.env.FLOE_RUNTIME_ADAPTER ?? config.bridge.runtime_adapter;
-  const live = () => new PiAgentCoreAdapter(createBridgeAuthRuntime(configPath, config));
-  if (!configured) return live();
+  if (!configured) return new FloeRuntimeAdapter();
   const selected = configured.trim().toLowerCase();
   if (selected === "fake") return new FakeRuntimeAdapter();
   if (selected === "floe-runtime") return new FloeRuntimeAdapter();
-  // pi remains selectable so there is a working checkpoint to fall back to.
-  if (["pi", "pi-agent-core"].includes(selected)) return live();
-  throw new Error(`Unsupported FLOE runtime adapter "${selected}". Use "fake", "floe-runtime", or "pi-agent-core".`);
+  throw new Error(`Unsupported FLOE runtime adapter "${selected}". Use "fake" or "floe-runtime".`);
 }
 
 function runtimeAdapterMatches(requiredAdapterId: string, activeAdapterName: string): boolean {
