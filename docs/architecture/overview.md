@@ -208,7 +208,7 @@ graph TD
         BD["BridgeDaemon\n(daemon.ts)"]
         CA["chooseAdapter()\n(daemon.ts:728)"]
         FA["FakeRuntimeAdapter\n(fake-runtime-adapter.ts)"]
-        PA["PiAgentCoreAdapter\n(pi-agent-core-adapter.ts)"]
+        PA["FloeRuntimeAdapter\n(floe-runtime-adapter.ts)"]
         HR["HookRegistry\n(hooks.ts)"]
         TURN["handleBundle()"]
     end
@@ -229,7 +229,7 @@ graph TD
 
 **Adapter selection logic** (`daemon.ts:chooseAdapter`):
 - `FLOE_RUNTIME_ADAPTER` env var overrides config.
-- If no override: presence of a non-fake auth profile → `PiAgentCoreAdapter`; otherwise `FakeRuntimeAdapter`.
+- If no override: `bridge.runtime_adapter` selects `FloeRuntimeAdapter` (spawns the vendor CLI); otherwise `FakeRuntimeAdapter`.
 
 **RuntimeAdapter interface** (`floe-bridge/src/adapters/runtime-adapter.ts`):
 

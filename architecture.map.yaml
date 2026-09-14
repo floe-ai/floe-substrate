@@ -105,7 +105,7 @@ system:
                 - floe-bridge/src/*test*
         - id: runtime-adapters
           name: Runtime Adapters
-          intent: "Owns the external integration with LLM providers and pi-agent-core"
+          intent: "Owns the runtime boundary that spawns vendor CLIs (e.g. copilot --acp); the vendor CLI owns model authentication"
           paths:
             - floe-bridge/src/adapters/**
           writeAuthority:

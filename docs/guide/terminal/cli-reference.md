@@ -1,6 +1,6 @@
 # CLI reference
 
-**The `floe` binary covers setup, service management and auth only — nothing about scopes, contexts, nodes or extensions.**
+**The `floe` binary covers setup and service management only — nothing about scopes, contexts, nodes or extensions.**
 
 | Command | What it does | Key flags |
 |---|---|---|
@@ -12,10 +12,6 @@
 | `floe stop` | Stop local services | — |
 | `floe restart` | Restart local services | — |
 | `floe logs [service]` | Print service logs (`bus`, `bridge`, or `app`; all three if omitted) | — |
-| `floe login` | Connect a provider account through the protected native broker | `--provider` |
-| `floe auth list` | List provider-account status without exposing credentials | — |
-| `floe auth doctor` | Validate provider-account health | — |
-| `floe logout <provider>` | Disconnect a provider after the Bus-authored confirmation | — |
 | `floe doctor` | Diagnose local setup | — |
 | `floe config path` | Print active config path | — |
 | `floe config edit` | Open config in `$EDITOR`, or print the path | — |
@@ -65,24 +61,6 @@ floe desktop
 ```bash
 floe logs           # bus, bridge, app
 floe logs bridge     # bridge only
-```
-
-## `floe login`
-
-Connects a provider subscription through its supported authentication flow.
-The native authority broker keeps host and provider credentials out of the CLI.
-
-```bash
-floe login --provider anthropic
-floe login --provider openai-codex
-```
-
-## `floe auth list` / `floe auth doctor` / `floe logout`
-
-```bash
-floe auth list
-floe auth doctor
-floe logout openai-codex
 ```
 
 ## `floe config path` / `floe config edit`

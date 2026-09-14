@@ -11,7 +11,9 @@ Floe is a local daemon-driven substrate with three independent services:
 The local development and CI runtime adapter is deterministic fake runtime, so
 the core substrate can be tested without spending Copilot premium requests. It
 is development-only; real profile-backed execution runs through the
-`pi-agent-core` bridge adapter.
+`floe-runtime` bridge adapter, which spawns the official vendor CLI (for
+example `copilot --acp`). Floe never sees the model credential — the vendor CLI
+owns model authentication.
 
 ## Local Start
 
@@ -74,14 +76,15 @@ waiting fake agent with a later message. It also verifies bus-owned
 
 ## Runtime Adapter
 
-The fake adapter is the no-login fallback for local development and CI. Once a
-real auth profile is configured, Floe selects the Pi lower-layer adapter
-automatically. You can also force it explicitly:
+The fake adapter is the no-login fallback for local development and CI. Real
+execution runs through the `floe-runtime` adapter, which spawns the official
+vendor CLI (for example `copilot --acp`); the vendor CLI owns model
+authentication, so Floe brokers no model credentials. Select it explicitly:
 
 ```bash
-FLOE_RUNTIME_ADAPTER=pi-agent-core
+FLOE_RUNTIME_ADAPTER=floe-runtime
 ```
 
-Or set `bridge.runtime_adapter: pi-agent-core` in `~/.floe/config.yaml` and
+Or set `bridge.runtime_adapter: floe-runtime` in `~/.floe/config.yaml` and
 restart Floe. Unsupported adapter names fail fast rather than silently falling
 back to fake.
