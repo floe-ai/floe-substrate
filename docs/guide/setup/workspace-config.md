@@ -42,8 +42,6 @@ An agent definition: YAML frontmatter plus a body of free-text instructions.
 schema: floe.agent.v1
 agent_id: floe
 label: Floe
-runtime:
-  engine: pi
 extensions: []
 skills:
   - ../skills/substrate-build

@@ -100,8 +100,6 @@ export function ensureProjectTemplate(workspacePath: string, workspaceName: stri
 schema: floe.agent.v1
 agent_id: floe
 label: Floe
-runtime:
-  engine: pi
 applied_from:
   config_id: cfg_composition_floe_default
   version: 1
@@ -254,9 +252,6 @@ export function materializeSavedConfig(workspacePath: string, config: SavedProje
       schema: "floe.agent.v1",
       agent_id: agentId,
       name,
-      runtime: {
-        engine: "pi"
-      },
       skills
     };
     writeFileSync(join(floeDir, file), `---\n${YAML.stringify(frontmatter).trim()}\n---\n# ${name}\n\n${body.trim()}\n`, "utf8");

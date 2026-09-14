@@ -83,7 +83,7 @@ describe("ensureProjectTemplate – default agent file (Issue 1)", () => {
     const fm = readAgentFrontmatter(workspace);
     const runtime = (fm.runtime ?? {}) as Record<string, unknown>;
 
-    expect(runtime.engine).toBe("pi");
+    expect(runtime).not.toHaveProperty("engine");
     expect(runtime).not.toHaveProperty("provider");
     expect(runtime).not.toHaveProperty("model");
   });
@@ -206,7 +206,7 @@ describe("materializeSavedConfig – agent runtime block (Issue 1)", () => {
     const fm = readAgentFrontmatter(workspace, "reviewer.md");
     const runtime = (fm.runtime ?? {}) as Record<string, unknown>;
 
-    expect(runtime.engine).toBe("pi");
+    expect(runtime).not.toHaveProperty("engine");
     expect(runtime).not.toHaveProperty("provider");
     expect(runtime).not.toHaveProperty("model");
   });

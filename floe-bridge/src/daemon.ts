@@ -469,10 +469,12 @@ export class BridgeDaemon {
       const endpointId = actorEndpointId(workspaceId, agent.agent_id);
       const runtimeConfig = extractRuntimeConfig(agent.frontmatter);
       const resolvedAuth = await this.resolveAuthProfile(workspaceId, endpointId, runtimeConfig);
-      // floe-runtime drives the official vendor CLI, which authenticates itself:
-      // Floe brokers no model credential for it. It still needs a model choice.
-      // Only the fake adapter needs neither credential nor model.
-      const credentialFree = this.adapter.name === "fake" || this.adapter.name === "floe-runtime";
+      // floe-runtime drives the official vendor CLI, which authenticates itself
+      // and resolves its own default model: Floe brokers no credential and pins
+      // no model for it. An operator may still declare runtime.model to override
+      // the vendor default, and it is forwarded when present, but no model is
+      // required for the actor to run. The fake adapter likewise needs neither.
+      const runtimeResolvesItsOwnConfig = this.adapter.name === "fake" || this.adapter.name === "floe-runtime";
       const observation: WorkspaceRuntimeObservation = {
         agent_id: agent.agent_id,
         adapter_id: this.adapter.name,
@@ -480,8 +482,8 @@ export class BridgeDaemon {
         provider: resolvedAuth.provider ?? runtimeConfig.provider ?? null,
         model: resolvedAuth.model ?? runtimeConfig.model ?? null,
         thinking_level: resolvedAuth.thinking_level ?? runtimeConfig.thinking_level ?? null,
-        credential_requirement: credentialFree ? "none" : "required",
-        required_configuration_keys: this.adapter.name === "fake" ? [] : ["model"],
+        credential_requirement: runtimeResolvesItsOwnConfig ? "none" : "required",
+        required_configuration_keys: runtimeResolvesItsOwnConfig ? [] : ["model"],
         required_capability_ids: [],
         checkpoint_policy: { mode: "none", schema_ref: null },
         resource_policy: {},

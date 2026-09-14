@@ -2,8 +2,6 @@
 schema: floe.agent.v1
 agent_id: floe
 label: Floe
-runtime:
-  engine: pi
 applied_from:
   config_id: cfg_composition_floe_default
   version: 1

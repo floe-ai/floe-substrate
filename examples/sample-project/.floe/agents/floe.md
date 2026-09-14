@@ -3,7 +3,6 @@ schema: floe.agent.v1
 agent_id: floe
 label: Floe
 runtime:
-  engine: pi
   provider: github-copilot
   auth_profile: copilot-atvi
   options: {}

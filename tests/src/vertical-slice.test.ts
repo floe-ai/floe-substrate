@@ -411,8 +411,6 @@ export default function(ctx) {
 schema: floe.agent.v1
 agent_id: floe
 label: Floe
-runtime:
-  engine: pi
 extensions:
   - todo
 ---
