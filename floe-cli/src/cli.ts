@@ -12,12 +12,12 @@ import {
   isPidRunning,
   readRecords,
   serviceLogPath,
-  startService,
   stopService,
   type ServiceName
 } from "./process-manager.js";
 import { registerOperationsCommand } from "./operations-command.js";
-import { fetchHostControlToken, fetchBridgeServiceToken, registerLocalWorkspaceViaBroker } from "./operation-client.js";
+import { registerLocalWorkspaceViaBroker, fetchHostControlToken } from "./operation-client.js";
+import { startAll, waitForHealth, isHealthy } from "./startup.js";
 
 const program = new Command();
 
@@ -207,43 +207,8 @@ async function applyAutostartChoice(configPath: string, config: LocalConfig, opt
   else uninstallAutostart();
 }
 
-async function startAll(configPath: string, config: LocalConfig): Promise<void> {
-  if (!(await isHealthy(config.bus.http_base_url))) {
-    // The Bus refuses to start without the host-control credential owned by the
-    // native broker. Obtain it and hand it to the Bus via its environment only;
-    // it is never logged or written to disk.
-    const hostControlToken = await fetchHostControlToken();
-    await startService(configPath, config, "bus", { FLOE_HOST_CONTROL_TOKEN: hostControlToken });
-  }
-  await waitForHealth(config.bus.http_base_url, "floe-bus");
-  // The Bridge authenticates to the Bus as a transport peer. Its ephemeral
-  // service credential is minted by the Bus and obtained through the native
-  // broker on the same trust path as the host-control token, then handed to the
-  // Bridge process environment only — never set by the operator, never on disk.
-  const bridgeServiceToken = await fetchBridgeServiceToken();
-  await startService(configPath, config, "bridge", { FLOE_BRIDGE_SERVICE_TOKEN: bridgeServiceToken });
-}
-
 async function verifyHealth(config: LocalConfig): Promise<void> {
   await waitForHealth(config.bus.http_base_url, "floe-bus");
-}
-
-async function waitForHealth(baseUrl: string, label: string): Promise<void> {
-  const started = Date.now();
-  while (Date.now() - started < 30_000) {
-    if (await isHealthy(baseUrl)) return;
-    await sleep(500);
-  }
-  throw new Error(`${label} did not become healthy at ${baseUrl}`);
-}
-
-async function isHealthy(baseUrl: string): Promise<boolean> {
-  try {
-    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/health`);
-    return response.ok;
-  } catch {
-    return false;
-  }
 }
 
 async function printStatus(configPath: string, config: LocalConfig): Promise<void> {
@@ -261,9 +226,12 @@ async function registerCurrentWorkspace(config: LocalConfig, locator: string, in
   // owns the host-control credential, so the CLI registers through it rather
   // than an unauthenticated HTTP call.
   const { workspace_id: workspaceId } = await registerLocalWorkspaceViaBroker(locator, initAuthorized);
-  // Seed a default human operator actor if none exists yet.
-  // Stored bus-DB-only (no workspace file written) so git status stays clean.
-  const seedResult = await seedDefaultActor(config.bus.http_base_url, workspaceId);
+  // Seed a default human operator actor if none exists yet. Seeding a
+  // self-owned actor is a native-host-owner capability, so authorize it with
+  // the broker-owned host-control credential — the same trust path registration
+  // uses. Stored bus-DB-only (no workspace file written) so git status stays clean.
+  const hostControlToken = await fetchHostControlToken();
+  const seedResult = await seedDefaultActor(config.bus.http_base_url, workspaceId, hostControlToken);
   if (seedResult.seeded) {
     console.log(`Seeded default actor: ${seedResult.endpoint_id}`);
   }
@@ -300,10 +268,6 @@ function uninstallAutostart(): void {
 function tail(text: string, lines: number): string {
   const parts = text.split(/\r?\n/);
   return parts.slice(Math.max(0, parts.length - lines)).join("\n");
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeLegacyCommandArgs(argv: string[]): string[] {

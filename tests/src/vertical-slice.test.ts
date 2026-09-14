@@ -1,24 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { join } from "node:path";
 import { createServer } from "node:net";
 import YAML from "yaml";
-
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const processes: ChildProcess[] = [];
+import type { LocalConfig } from "../../floe-cli/src/config.js";
+import { startAll } from "../../floe-cli/src/startup.js";
+import { stopService } from "../../floe-cli/src/process-manager.js";
+import {
+  fetchHostControlToken,
+  registerLocalWorkspaceViaBroker
+} from "../../floe-cli/src/operation-client.js";
 
 describe("Floe local vertical slice", () => {
   let temp: string;
   let configPath: string;
+  let cliConfig: LocalConfig;
   let busUrl: string;
   let wsUrl: string;
   let projectPath: string;
   let eventSocket: any;
   let busMessages: any[] = [];
+  // Real broker-minted credentials. The harness authenticates every privileged
+  // Bus call against the real transport boundary — there is no unauthenticated
+  // test bypass — so it exercises Floe's authority model, not Floe with
+  // authority switched off.
+  let hostControlToken: string;
+  let operationSessionBearer: string;
 
   beforeEach(async () => {
     temp = mkdtempSync(join(tmpdir(), "floe-test-"));
@@ -69,30 +77,79 @@ describe("Floe local vertical slice", () => {
       }
     }), "utf8");
 
-    start("floe-bus", ["run", "dev", "--workspace", "floe-bus", "--", "--config", configPath]);
-    await waitFor(async () => (await fetch(`${busUrl}/health`)).ok, "bus health");
+    // The native broker mints the Bridge service credential and workspace
+    // operation sessions against a Bus URL it resolves from the environment.
+    // Point it at this isolated Bus so the harness runs the real broker path
+    // instead of the default-port product instance.
+    process.env.FLOE_BUS_HTTP_BASE = busUrl;
+
+    // The CLI-shaped config the product start path consumes. It shares the home,
+    // ports and log dirs of the on-disk Bus config, and selects the fake runtime
+    // adapter through configuration exactly as a local install would.
+    cliConfig = {
+      schema: "floe.local.v1",
+      version: 1,
+      home: temp,
+      services: { autostart: false, manager: "auto" },
+      bus: {
+        listen: `127.0.0.1:${busPort}`,
+        http_base_url: busUrl,
+        ws_base_url: wsUrl,
+        data_dir: "./bus",
+        log_dir: "./logs/bus"
+      },
+      bridge: {
+        data_dir: "./bridge",
+        log_dir: "./logs/bridge",
+        bus_url: wsUrl,
+        workspace_access: { local_paths: true },
+        runtime_adapter: "fake"
+      },
+      library: {
+        configs_dir: "./configs",
+        skills_dir: "./skills",
+        extensions_dir: "./extensions",
+        mcp_dir: "./mcp",
+        templates_dir: "./templates"
+      }
+    };
+
+    // Bring up Bus and Bridge through the exact product start sequence: the Bus
+    // boots with the broker-owned host-control credential, and the Bridge with a
+    // broker-minted service credential. No hand-made tokens, no in-process Bus.
+    await startAll(configPath, cliConfig);
+
+    // Hold the same broker-minted credentials the CLI uses so the harness can
+    // authenticate its Bus calls as the trusted native owner and as an authorized
+    // Bridge transport peer.
+    hostControlToken = await fetchHostControlToken();
+
     busMessages = [];
     eventSocket = new (globalThis as any).WebSocket(`${wsUrl}/v1/events/stream`);
+    eventSocket.addEventListener("open", () => {
+      // The event stream requires the client to authenticate. Present the
+      // broker-owned host-control credential so the harness observes the full
+      // push stream as a trusted local client — not via an unauthenticated seam.
+      eventSocket.send(JSON.stringify({ type: "authenticate", bearer_token: hostControlToken }));
+    });
     eventSocket.addEventListener("message", (event: any) => {
       busMessages.push(JSON.parse(String(event.data)));
     });
-    await waitFor(() => busMessages.some((message) => message.type === "hello"), "bus event stream");
-    start("floe-bridge", ["run", "dev", "--workspace", "floe-bridge", "--", "--config", configPath]);
+    await waitFor(() => busMessages.some((message) => message.type === "authenticated"), "bus event stream authentication");
   }, 60_000);
 
   afterEach(async () => {
     eventSocket?.close();
-    for (const child of processes.splice(0).reverse()) killTree(child);
+    if (configPath && cliConfig) {
+      stopService(configPath, cliConfig, "bridge");
+      stopService(configPath, cliConfig, "bus");
+    }
+    delete process.env.FLOE_BUS_HTTP_BASE;
     if (temp) await removeTemp(temp);
   });
 
   it("initializes .floe and executes emit->delivery->turn-end lifecycle with fake runtime", async () => {
-    const registered = await post<{ workspace: any }>("/v1/workspaces/register", {
-      locator: projectPath,
-      init_authorized: true
-    });
-    const workspaceId = registered.workspace.workspace_id;
-    await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, {});
+    const workspaceId = await registerAndAuthorize(projectPath);
 
     await waitFor(() => fileExists(join(projectPath, ".floe", "agents", "floe.md")), ".floe template");
     const agentFile = readFileSync(join(projectPath, ".floe", "agents", "floe.md"), "utf8");
@@ -105,12 +162,11 @@ describe("Floe local vertical slice", () => {
       const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
       return endpoints.endpoints.some((endpoint) => endpoint.endpoint_id === agentEndpointId);
     }, "agent endpoint registration");
-    await waitFor(async () => {
-      const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
-      return endpoints.endpoints.some(
-        (endpoint) => endpoint.endpoint_id === agentEndpointId && endpoint.status === "runtime_unconfigured"
-      );
-    }, "runtime unconfigured status");
+    // The fake adapter — like the real floe-runtime adapter — resolves its own
+    // runtime config (daemon.ts `runtimeResolvesItsOwnConfig`), so the agent
+    // endpoint reaches `idle` on attach without an operator binding. It never
+    // sits in `runtime_unconfigured` here; asserting that transition would
+    // encode a state only a non-self-resolving adapter reaches.
 
     await post("/v1/endpoints/register", {
       endpoint_id: humanEndpointId,
@@ -121,7 +177,9 @@ describe("Floe local vertical slice", () => {
     await post("/v1/runtime/bindings", {
       scope: "workspace_default",
       workspace_id: workspaceId,
-      auth_profile: "copilot-atvi"
+      auth_profile: "copilot-atvi",
+      provider: "fake",
+      model: "fake"
     });
     await waitFor(async () => {
       const endpoints = await get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
@@ -184,12 +242,7 @@ describe("Floe local vertical slice", () => {
   }, 90_000);
 
   it("fires a one-off pulse and delivers pulse.fired event to subscriber", async () => {
-    const registered = await post<{ workspace: any }>("/v1/workspaces/register", {
-      locator: projectPath,
-      init_authorized: true
-    });
-    const workspaceId = registered.workspace.workspace_id;
-    await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, {});
+    const workspaceId = await registerAndAuthorize(projectPath);
 
     // Wait for bridge to set up the workspace (agents + endpoints)
     await waitFor(() => fileExists(join(projectPath, ".floe", "agents", "floe.md")), ".floe template");
@@ -210,7 +263,9 @@ describe("Floe local vertical slice", () => {
     await post("/v1/runtime/bindings", {
       scope: "workspace_default",
       workspace_id: workspaceId,
-      auth_profile: "copilot-atvi"
+      auth_profile: "copilot-atvi",
+      provider: "fake",
+      model: "fake"
     });
 
     // Wait for agent endpoint to become idle (runtime configured)
@@ -270,12 +325,7 @@ describe("Floe local vertical slice", () => {
   }, 60_000);
 
   it("fires a cron pulse multiple times, pauses, and cancels", async () => {
-    const registered = await post<{ workspace: any }>("/v1/workspaces/register", {
-      locator: projectPath,
-      init_authorized: true
-    });
-    const workspaceId = registered.workspace.workspace_id;
-    await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, {});
+    const workspaceId = await registerAndAuthorize(projectPath);
 
     // Wait for bridge to set up the workspace
     await waitFor(() => fileExists(join(projectPath, ".floe", "agents", "floe.md")), ".floe template");
@@ -296,7 +346,9 @@ describe("Floe local vertical slice", () => {
     await post("/v1/runtime/bindings", {
       scope: "workspace_default",
       workspace_id: workspaceId,
-      auth_profile: "copilot-atvi"
+      auth_profile: "copilot-atvi",
+      provider: "fake",
+      model: "fake"
     });
 
     await waitFor(async () => {
@@ -424,12 +476,7 @@ You are Floe.
     writeFileSync(join(projectPath, ".floe", "state", "README.md"), "# State\n", "utf8");
     writeFileSync(join(projectPath, ".floe", "state", ".gitignore"), "*\n!.gitignore\n!README.md\n", "utf8");
 
-    const registered = await post<{ workspace: any }>("/v1/workspaces/register", {
-      locator: projectPath,
-      init_authorized: true
-    });
-    const workspaceId = registered.workspace.workspace_id;
-    await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, {});
+    const workspaceId = await registerAndAuthorize(projectPath);
 
     // Wait for bridge to attach and register the agent endpoint
     // The bridge logs "[bridge] extension loaded" when it discovers and loads extensions
@@ -454,12 +501,7 @@ You are Floe.
   }, 60_000);
 
   it("resolves short endpoint references via resolve-endpoint API", async () => {
-    const registered = await post<{ workspace: any }>("/v1/workspaces/register", {
-      locator: projectPath,
-      init_authorized: true
-    });
-    const workspaceId = registered.workspace.workspace_id;
-    await post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, {});
+    const workspaceId = await registerAndAuthorize(projectPath);
 
     // Wait for bridge to set up the workspace (agents + endpoints)
     await waitFor(() => fileExists(join(projectPath, ".floe", "agents", "floe.md")), ".floe template");
@@ -516,8 +558,63 @@ You are Floe.
     );
   }
 
+  // Register (and select) the local workspace through the native broker exactly
+  // as `floe start` does, then open an operator operation session for it. The
+  // session is the real workspace-scoped authority a client holds; the harness
+  // uses it for every operator/workspace call so those calls are authenticated,
+  // not bypassed.
+  async function registerAndAuthorize(locator: string): Promise<string> {
+    const { workspace_id } = await registerLocalWorkspaceViaBroker(locator, true);
+    operationSessionBearer = await mintOperationSession(workspace_id);
+    return workspace_id;
+  }
+
+  // Mint a workspace operation session over the Bus' host-control-authenticated
+  // route — the same route the broker uses internally. The harness holds the
+  // broker-owned host-control credential, so this is the genuine issuance path,
+  // not a fabricated bearer.
+  async function mintOperationSession(workspaceId: string): Promise<string> {
+    const response = await fetch(
+      `${busUrl}/v1/local/workspaces/${encodeURIComponent(workspaceId)}/operation-sessions`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${hostControlToken}`
+        },
+        body: JSON.stringify({ expires_in_seconds: 3_600 })
+      }
+    );
+    if (!response.ok) {
+      throw new Error(`operation-session mint failed ${response.status}: ${await response.text()}`);
+    }
+    const issued = (await response.json()) as { bearer_token: string };
+    return issued.bearer_token;
+  }
+
+  // Select the real broker-minted credential for a route by the authority class
+  // the Bus enforces for it: host-control for native-owner bootstrap routes,
+  // the Bridge service credential for the Bridge-only endpoint registration,
+  // and the operator operation session for everything workspace-scoped.
+  function bearerFor(path: string): string {
+    const route = path.split("?", 1)[0];
+    if (
+      route === "/v1/workspaces"
+      || route.endsWith("/delete")
+      || route === "/v1/runtime/bindings"
+    ) {
+      return hostControlToken;
+    }
+    if (route === "/v1/endpoints/register") {
+      return hostControlToken;
+    }
+    return operationSessionBearer;
+  }
+
   async function get<T>(path: string): Promise<T> {
-    const response = await fetch(`${busUrl}${path}`);
+    const response = await fetch(`${busUrl}${path}`, {
+      headers: { authorization: `Bearer ${bearerFor(path)}` }
+    });
     if (!response.ok) throw new Error(`${path} failed ${response.status}: ${await response.text()}`);
     return response.json() as Promise<T>;
   }
@@ -525,59 +622,16 @@ You are Floe.
   async function post<T = any>(path: string, body: unknown): Promise<T> {
     const response = await fetch(`${busUrl}${path}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${bearerFor(path)}`
+      },
       body: JSON.stringify(body)
     });
     if (!response.ok) throw new Error(`${path} failed ${response.status}: ${await response.text()}`);
     return response.json() as Promise<T>;
   }
 });
-
-function start(label: string, args: string[]): void {
-  const commandLine = commandForNpm(args);
-  const child = spawn(commandLine.command, commandLine.args, {
-    cwd: root,
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-    env: {
-      ...process.env,
-      FLOE_RUNTIME_ADAPTER: "fake"
-    }
-  });
-  child.stdout?.on("data", (chunk) => process.stdout.write(`[${label}] ${chunk}`));
-  child.stderr?.on("data", (chunk) => process.stderr.write(`[${label}] ${chunk}`));
-  processes.push(child);
-}
-
-function killTree(child: ChildProcess): void {
-  if (!child.pid) return;
-  if (process.platform === "win32") {
-    spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
-  } else {
-    try {
-      process.kill(-child.pid, "SIGTERM");
-    } catch {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        // already stopped
-      }
-    }
-  }
-}
-
-function commandForNpm(args: string[]): { command: string; args: string[] } {
-  if (process.platform !== "win32") return { command: "npm", args };
-  return {
-    command: process.env.ComSpec ?? "cmd.exe",
-    args: ["/d", "/s", "/c", ["npm", ...args.map(quoteCmdArg)].join(" ")]
-  };
-}
-
-function quoteCmdArg(value: string): string {
-  if (/^[A-Za-z0-9_./:=@\\-]+$/.test(value)) return value;
-  return `"${value.replace(/"/g, '\\"')}"`;
-}
 
 function fileExists(path: string): boolean {
   try {

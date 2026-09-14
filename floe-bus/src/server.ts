@@ -2900,8 +2900,6 @@ export async function createBusServer(
   });
 
   app.post("/v1/endpoints/register", async (request, reply) => {
-    const bridgeAuthority = requireBridgeService(request, reply);
-    if (!bridgeAuthority) return reply;
     const body = z.object({
       endpoint_id: z.string().min(1),
       workspace_id: z.string().min(1),
@@ -2911,6 +2909,20 @@ export async function createBusServer(
       status: z.string().optional(),
       metadata: z.record(z.unknown()).optional(),
     }).parse(request.body);
+    const authority = requestAuthorities.get(request);
+    // The native host owner seeds actors that belong to the substrate itself,
+    // not to any Bridge. This is the authenticated path `floe register` uses to
+    // create the default operator actor. A host-owned registration may only
+    // create a bridgeless endpoint; anything Bridge-owned must be registered by
+    // the Bridge that owns it.
+    if (authority?.audience === "host_control") {
+      if (body.bridge_id) return sendTransportForbidden(reply);
+      return reply.code(201).send({
+        endpoint: store.registerEndpoint({ ...body, bridge_id: null }, broadcast),
+      });
+    }
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
     if (body.bridge_id && body.bridge_id !== bridgeAuthority.bridge_id) {
       return sendTransportForbidden(reply);
     }
@@ -3973,6 +3985,16 @@ function resolveTransportRequirement(request: any, store: BusStore): TransportRe
     return { kind: "workspace_conflict", workspace_ids: workspace.workspace_ids };
   }
 
+  // Endpoint registration has two legitimate registrants under distinct
+  // authorities: a Bridge registering an agent endpoint it owns, or the native
+  // host owner (broker/CLI) seeding a self-owned actor that belongs to no
+  // Bridge — the substrate seeding itself with the default operator actor. The
+  // handler enforces which endpoints each authority may create; a host-owned
+  // registration may only create a bridgeless actor.
+  if (route === "/v1/endpoints/register" && method === "POST") {
+    return { kind: "bridge_or_host" };
+  }
+
   if (
     route.startsWith("/v1/bridge/")
     || route === "/v1/bridges/register"
@@ -3984,7 +4006,6 @@ function resolveTransportRequirement(request: any, store: BusStore): TransportRe
     || route === "/v1/delivery/:delivery_id/runtime-credentials/:secret_ref_id"
     || (route === "/v1/runtime/telemetry" && method === "POST")
     || route === "/v1/runtime/turn-result"
-    || (route === "/v1/endpoints/register" && method === "POST")
     || (route === "/v1/endpoints/:endpoint_id/status" && method === "POST")
     || route === "/v1/endpoints/:endpoint_id/turn-end"
     || route === "/v1/workspaces/:workspace_id/attachment-result"
