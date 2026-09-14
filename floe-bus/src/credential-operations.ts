@@ -36,8 +36,6 @@ export const ROTATE_CREDENTIAL_OPERATION_ID = "credential.rotate";
 export const REVOKE_CREDENTIAL_OPERATION_ID = "credential.revoke";
 export const USE_CREDENTIAL_OPERATION_ID = "credential.use";
 export const REFRESH_CREDENTIAL_OPERATION_ID = "credential.refresh";
-export const PREPARE_PROVIDER_ACCOUNT_OPERATION_ID = "credential.account.prepare";
-export const LIST_PROVIDER_ACCOUNTS_OPERATION_ID = "credential.account.list";
 export const RUNTIME_CREDENTIAL_PURPOSE = "runtime-provider-authentication";
 export const ACCOUNT_CONNECTION_PURPOSE = "account-connection";
 export const CREDENTIAL_MAINTENANCE_PURPOSE = "credential-maintenance";
@@ -74,15 +72,6 @@ const credentialSourceInput: JsonSchema = {
   additionalProperties: false,
   required: ["source"],
   properties: { source: { oneOf: [legacySourceSchema, ingressSourceSchema] } },
-};
-const prepareProviderAccountInput: JsonSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["provider_id"],
-  properties: {
-    provider_id: text,
-    label: text,
-  },
 };
 const publicStatusSchema: JsonSchema = {
   type: "object",
@@ -127,8 +116,6 @@ type CredentialSourceInput = Readonly<{
     | Readonly<{ kind: "legacy_auth_profile"; profile_id: string; source_fingerprint: string }>
     | Readonly<{ kind: "credential_ingress"; ingress_session_id: string }>;
 }>;
-
-type PrepareProviderAccountInput = Readonly<{ provider_id: string; label?: string }>;
 
 export type CredentialOperationDependencies = Readonly<{
   secret_refs: SqliteSecretRefStore;
@@ -327,92 +314,6 @@ async function handle<Result>(work: () => Promise<OperationHandlerOutcome<Result
   }
 }
 
-function prepareProviderAccountOperation(
-  dependencies: CredentialOperationDependencies,
-): SemanticOperationDefinition<PrepareProviderAccountInput, { credential: ReturnType<typeof publicStatus> }> {
-  return {
-    operation_id: PREPARE_PROVIDER_ACCOUNT_OPERATION_ID,
-    operation_version: "1",
-    authority_boundary_kinds: ["host"],
-    category: "credentials",
-    title: "Prepare Provider Account",
-    description: "Create or find one host-owned provider account reference without storing credential material.",
-    effects: { mode: "write", reversibility: "reversible", external: false, secret_access: "none" },
-    required_grants: [PREPARE_PROVIDER_ACCOUNT_OPERATION_ID],
-    interaction_constraints: { allowed_modes: ["interactive"] },
-    target: { resource_kinds: [], expected_revision: "not_applicable" },
-    input: { version: "1", schema: prepareProviderAccountInput },
-    result: { version: "1", schema: { type: "object", additionalProperties: false, required: ["credential"], properties: { credential: publicStatusSchema } } },
-    handler: (context, input) => handle(async () => {
-      if (context.authority.boundary.kind !== "host") {
-        throw new SecretAccessDeniedError("grant_boundary_mismatch");
-      }
-      const providerId = input.provider_id.trim();
-      const secretRefId = providerAccountSecretRefId(context.authority.boundary.host_id, providerId);
-      const existing = dependencies.secret_refs.getSecretRef(secretRefId);
-      if (existing) {
-        const exact = existing.owner.kind === "host"
-          && existing.owner.host_id === context.authority.boundary.host_id
-          && existing.resource.kind === "provider_account"
-          && existing.resource.id === providerId;
-        if (!exact) throw new SecretBindingConflictError(secretRefId);
-        return { state: "completed", result: { credential: publicStatus(existing) }, audit_ref: auditRef(context) };
-      }
-      const created = dependencies.secret_refs.createSecretRef({
-        secret_ref_id: secretRefId,
-        owner: context.authority.boundary,
-        resource: { kind: "provider_account", id: providerId },
-        secret_kind: "runtime_authentication",
-        label: input.label?.trim() || providerId,
-      });
-      return {
-        state: "completed",
-        result: { credential: publicStatus(created) },
-        changed_refs: [refChanged(created)],
-        audit_ref: auditRef(context),
-      };
-    }),
-  };
-}
-
-function listProviderAccountsOperation(
-  dependencies: CredentialOperationDependencies,
-): SemanticOperationDefinition<Record<string, never>, { accounts: ReturnType<typeof publicStatus>[] }> {
-  return {
-    operation_id: LIST_PROVIDER_ACCOUNTS_OPERATION_ID,
-    operation_version: "1",
-    authority_boundary_kinds: ["host"],
-    category: "credentials",
-    title: "List Provider Accounts",
-    description: "List provider account references owned by this host without reading credential material.",
-    effects: { mode: "read", reversibility: "none", external: false, secret_access: "none" },
-    required_grants: [LIST_PROVIDER_ACCOUNTS_OPERATION_ID],
-    interaction_constraints: { allowed_modes: ["interactive"] },
-    target: { resource_kinds: [], expected_revision: "not_applicable" },
-    input: { version: "1", schema: emptyInput },
-    result: {
-      version: "1",
-      schema: {
-        type: "object",
-        additionalProperties: false,
-        required: ["accounts"],
-        properties: { accounts: { type: "array", items: publicStatusSchema } },
-      },
-    },
-    handler: (context) => handle(async () => {
-      if (context.authority.boundary.kind !== "host") {
-        throw new SecretAccessDeniedError("grant_boundary_mismatch");
-      }
-      const accounts = dependencies.secret_refs
-        .listSecretRefs(context.authority.boundary)
-        .filter((ref) => ref.resource.kind === "provider_account")
-        .sort((left, right) => left.resource.id.localeCompare(right.resource.id))
-        .map(publicStatus);
-      return { state: "completed", result: { accounts }, audit_ref: auditRef(context) };
-    }),
-  };
-}
-
 export function providerAccountSecretRefId(hostId: string, providerId: string): string {
   const digest = createHash("sha256")
     .update(`${hostId.trim()}\0${providerId.trim()}`, "utf8")
@@ -598,8 +499,6 @@ export function credentialOperationDefinitions(
   dependencies: CredentialOperationDependencies,
 ) {
   return [
-    listProviderAccountsOperation(dependencies),
-    prepareProviderAccountOperation(dependencies),
     bindOperation(dependencies),
     healthOperation(dependencies),
     rotateOperation(dependencies),
@@ -613,8 +512,6 @@ export function registerCredentialOperations<T extends SemanticOperationRegistry
   registry: T,
   dependencies: CredentialOperationDependencies,
 ): T {
-  registry.register(listProviderAccountsOperation(dependencies));
-  registry.register(prepareProviderAccountOperation(dependencies));
   registry.register(bindOperation(dependencies));
   registry.register(healthOperation(dependencies));
   registry.register(rotateOperation(dependencies));

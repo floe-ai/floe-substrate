@@ -102,7 +102,7 @@ describe("authenticated canonical Workspace configuration import", () => {
         runtime: {
           label: "Floe runtime",
           backing_kind: "model",
-          adapter_id: "pi-agent-core",
+          adapter_id: "fake",
           configuration: { model: "test-model" },
           required_capability_ids: [],
           checkpoint_policy: { mode: "none", schema_ref: null },
@@ -231,11 +231,12 @@ describe("authenticated canonical Workspace configuration import", () => {
       writeFileSync(join(workspace.binding!.locator, ".floe", "floe.yaml"), "[invalid YAML", "utf8");
     }
     const config = bridgeConfig(workspace.binding!.locator);
+    config.bridge.runtime_adapter = "fake";
     const daemon = new BridgeDaemon(join(config.home, "test-config.yaml"), config, {
       bridge_id: "bridge:workspace-import", transport_authority: { audience: "bridge_service", bearer_token: bridge_headers.authorization.slice(7) },
     });
     (daemon as any).bus = new BusClient(address, { audience: "bridge_service", bearer_token: bridge_headers.authorization.slice(7) });
-    await daemon.bus.registerBridge({ runtime_adapters: ["pi-agent-core"] });
+    await daemon.bus.registerBridge({ runtime_adapters: ["fake"] });
     await (daemon as any).attachWorkspace(workspace);
     expect((daemon as any).endpointRuntime.get(imported.actor_id)).toMatchObject({ config: {}, instructions: "" });
     expect(handle.store.getWorkspace(workspaceId)?.status).toBe("attached");
@@ -282,7 +283,7 @@ describe("authenticated canonical Workspace configuration import", () => {
     config.bus.http_base_url = address;
     config.bus.ws_base_url = address.replace("http:", "ws:");
     config.bridge.bus_url = config.bus.ws_base_url;
-    config.bridge.runtime_adapter = "pi-agent-core";
+    config.bridge.runtime_adapter = "fake";
     const daemon = new BridgeDaemon(join(config.home, "test-config.yaml"), config, {
       bridge_id: "bridge:workspace-import",
       transport_authority: { audience: "bridge_service", bearer_token: bridge_headers.authorization.slice(7) },

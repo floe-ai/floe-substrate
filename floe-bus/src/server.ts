@@ -98,8 +98,6 @@ import {
   BIND_CREDENTIAL_OPERATION_ID,
   CREDENTIAL_MAINTENANCE_PURPOSE,
   HEALTH_CREDENTIAL_OPERATION_ID,
-  LIST_PROVIDER_ACCOUNTS_OPERATION_ID,
-  PREPARE_PROVIDER_ACCOUNT_OPERATION_ID,
   REVOKE_CREDENTIAL_OPERATION_ID,
   ROTATE_CREDENTIAL_OPERATION_ID,
 } from "./credential-operations.js";
@@ -125,7 +123,6 @@ const OPERATOR_CREDENTIAL_OPERATION_IDS = Object.freeze([
   REVOKE_CREDENTIAL_OPERATION_ID,
 ]);
 const HOST_CREDENTIAL_OPERATION_IDS = new Set([
-  PREPARE_PROVIDER_ACCOUNT_OPERATION_ID,
   "credential.runtime-access.grant",
   "credential.runtime-access.revoke",
   ...OPERATOR_CREDENTIAL_OPERATION_IDS,
@@ -401,9 +398,7 @@ export async function createBusServer(
     interaction_mode: "interactive",
     boundary_kind: "host",
   }).filter((operationId) =>
-    HOST_LOCAL_WORKSPACE_OPERATION_IDS.has(operationId)
-    || operationId === PREPARE_PROVIDER_ACCOUNT_OPERATION_ID
-    || operationId === LIST_PROVIDER_ACCOUNTS_OPERATION_ID);
+    HOST_LOCAL_WORKSPACE_OPERATION_IDS.has(operationId));
   const hostPolicyRevision = createHash("sha256").update(JSON.stringify({
     host_id: store.localHostId,
     principal_id: hostPrincipalId,
