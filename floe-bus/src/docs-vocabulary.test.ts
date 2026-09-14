@@ -83,9 +83,7 @@ const RULES: VocabularyRule[] = [
     pattern: /is_default/,
     roots: ["floe-bus/src"],
     extensions: [".ts", ".tsx"],
-    allowed: {
-      "floe-bus/src/pi-provider-login.ts": "provider model preference in the shared account adapter, unrelated to Scope identity"
-    }
+    allowed: {}
   },
   {
     name: 'chat-shaped "read receipt" framing (use Endpoint Watermark / Event Cursor)',

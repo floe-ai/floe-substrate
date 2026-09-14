@@ -43,8 +43,6 @@ import { PathEscapesRootError, resolveWithinRoot, RootNotFoundError } from "./fs
 import { registerContextDiagnosticRoutes } from "./context-diagnostics.js";
 import { createCorsOriginPolicy, trustedBrowserOrigins } from "./cors-policy.js";
 import { BrowserConnections, BrowserConnectionError, localBrowserOrigins } from "./browser-connections.js";
-import { registerBrowserProviderRoutes } from "./browser-provider-routes.js";
-import { PiProviderLogin, type ProviderLoginAdapter } from "./pi-provider-login.js";
 import {
   ArtefactContentMismatchError,
   ArtefactContentNotFoundError,
@@ -224,7 +222,6 @@ export type BusServerOptions = Readonly<{
   host_control_expires_at?: string;
   /** Local product policy: the configured loopback frontend opens without pairing. */
   local_browser_access?: boolean;
-  provider_login_adapter?: ProviderLoginAdapter;
   /** Existing tests may omit credentials; production runtime never enables this. */
   allow_unauthenticated_test_requests?: boolean;
 }>;
@@ -825,58 +822,6 @@ export async function createBusServer(
       reply.header("cache-control", "no-store").header("set-cookie", browserConnections.connectLocal(request));
       return { connected: true, mode: "local" };
     } catch (error) { return browserFailure(error, reply); }
-  });
-  async function invokeProviderOperation(operationId: string, input: unknown, target: OperationResourceIdentity | null = null, expectedRevision?: string) {
-    const host = transportAuthenticator.authenticateHostControl(localControlToken);
-    if (!host.verified || host.authority.audience !== "host_control") throw new BrowserConnectionError(401, "Restart the local Floe app to restore provider access.");
-    const verified = hostOperationAuthority(host.authority, target, `browser-provider:${randomUUID()}`);
-    const resource = target ? store.resolveOperationResource(target, verified.authority.boundary) : null;
-    const descriptor = (await store.operationRegistry.project({ authority: verified.authority, target: resource, query: operationId }))
-      .find(item => item.operation_id === operationId);
-    if (!descriptor) throw new BrowserConnectionError(403, "Provider account access is unavailable.");
-    if (!descriptor.availability.available) throw new BrowserConnectionError(403, descriptor.availability.refusal.message);
-    const response = await store.operationRegistry.invoke({
-      ...verified, resolve_resource: ref => store.resolveOperationResource(ref, verified.authority.boundary),
-    }, {
-      operation_id: descriptor.operation_id, operation_version: descriptor.operation_version,
-      input_schema_version: descriptor.input.version, input, target,
-      expected_resource_revision: expectedRevision ?? null, idempotency_key: `browser-provider:${randomUUID()}`,
-    });
-    if (response.kind === "rejected" || response.kind === "conflict") throw new BrowserConnectionError(409, response.refusal.message);
-    if (response.receipt.state !== "completed") throw new BrowserConnectionError(409, response.receipt.refusal?.message ?? "The provider operation has not completed.");
-    return response.receipt.result as any;
-  }
-  registerBrowserProviderRoutes(app, browserConnections, options.provider_login_adapter ?? new PiProviderLogin(), {
-    list: async () => (await invokeProviderOperation(LIST_PROVIDER_ACCOUNTS_OPERATION_ID, {})).accounts,
-    grant: async (providerId, input) => {
-      const accounts = (await invokeProviderOperation(LIST_PROVIDER_ACCOUNTS_OPERATION_ID, {})).accounts as Array<{ resource: { id: string }; secret_ref_id: string; generation: number; resolution: string }>;
-      const account = accounts.find(item => item.resource.id === providerId);
-      if (!account) throw new BrowserConnectionError(404, "Connect this provider account first.");
-      return invokeProviderOperation("credential.runtime-access.grant", input, { kind: "secret_ref", id: account.secret_ref_id }, `generation:${account.generation}:${account.resolution}`);
-    },
-    connect: async (providerId, login) => {
-      const prepared = await invokeProviderOperation(PREPARE_PROVIDER_ACCOUNT_OPERATION_ID, { provider_id: providerId });
-      const ref = prepared.credential;
-      if (ref.resolution !== "unresolved") throw new BrowserConnectionError(409, "This provider account is already connected.");
-      const ingress = store.credentialIngressStore.issue({
-        secret_ref_id: ref.secret_ref_id, authority_boundary: hostBoundary, principal_id: hostPrincipalId,
-        provider_id: providerId, audience: `provider-auth:${providerId}`, purpose: ACCOUNT_CONNECTION_PURPOSE, ttl_ms: 600_000,
-      });
-      let account: any;
-      try {
-        await login(async material => {
-          store.credentialIngressStore.upload({
-            ingress_session_id: ingress.session.ingress_session_id, bearer_token: ingress.bearer_token,
-            audience: ingress.session.audience, purpose: ACCOUNT_CONNECTION_PURPOSE, material,
-          });
-          account = (await invokeProviderOperation("credential.bind", {
-            source: { kind: "credential_ingress", ingress_session_id: ingress.session.ingress_session_id },
-          }, { kind: "secret_ref", id: ref.secret_ref_id }, `generation:${ref.generation}:unresolved`)).credential;
-        });
-        if (!account || account.resolution !== "resolved") throw new Error("Provider connection did not complete");
-        return account;
-      } finally { store.credentialIngressStore.revoke(ingress.session.ingress_session_id); }
-    },
   });
   app.post("/v1/browser/connections", async (request, reply) => {
     try {
