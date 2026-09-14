@@ -16,6 +16,17 @@ export type {
 export { requireOperationAuthority } from "./substrate-authority.js";
 export type { OperationAuthorityTurn } from "./substrate-authority.js";
 export { executeDiscoverCapabilities, executeUseCapability } from "./substrate-capability-tools.js";
+export type { SubstrateToolResult as SubstrateCapabilityToolResult } from "./substrate-capability-tools.js";
+export {
+  executeCreatePulse,
+  executeListPulses,
+  executePausePulse,
+  executeResumePulse,
+  executeCancelPulse,
+} from "./substrate-pulse-tools.js";
+export type { PulseTurn } from "./substrate-pulse-tools.js";
+export { executeReadArtefact } from "./substrate-artefact-tools.js";
+export type { ArtefactTurn, ArtefactContentBlock, ArtefactToolResult } from "./substrate-artefact-tools.js";
 export { appendWorkLog } from "./worklog.js";
 export type { WorkLogEntry, WorkLogEvent, WorkLogToolEntry, WorkLogEmitEntry } from "./worklog.js";
 export type {

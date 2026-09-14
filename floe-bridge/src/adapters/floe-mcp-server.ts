@@ -32,6 +32,12 @@ import {
   executeRequest,
   executeDiscoverCapabilities,
   executeUseCapability,
+  executeCreatePulse,
+  executeListPulses,
+  executePausePulse,
+  executeResumePulse,
+  executeCancelPulse,
+  executeReadArtefact,
   type EmittedEventSummary,
   type SubstrateTurnAnchor,
   type OperationAuthorityTurn,
@@ -144,6 +150,69 @@ const DISCOVER_CAPABILITIES_DESCRIPTION =
 
 const USE_CAPABILITY_DESCRIPTION =
   "Invoke one Bus semantic operation using the exact operation and input-schema versions returned by discover_capabilities. Authority and causal provenance come from the active Delivery, not from this input.";
+
+const PULSE_SUBSCRIBER_SCHEMA = z.union([
+  z.object({
+    kind: z.literal("context"),
+    context_id: z.string().min(1).describe("Context that should render the pulse.fired event without waking an actor."),
+  }),
+  z.object({
+    kind: z.literal("endpoint").optional(),
+    endpoint_ref: z.string().min(1).describe("Neutral actor ref that should receive the pulse delivery as work."),
+    context_id: z.string().min(1).optional().describe("Context associated with this endpoint delivery for reply/continuation."),
+  }),
+]);
+
+const PULSE_CONTENT_SCHEMA = z.object({
+  text: z.string().optional().describe("Text to render for context subscribers."),
+  instructions: z.string().optional().describe("Instructions for endpoint subscribers to process when delivered."),
+});
+
+const CREATE_PULSE_INPUT_SCHEMA = {
+  pulse_id: z.string().min(1).describe("Unique pulse identifier within the workspace."),
+  trigger: z.object({
+    type: z.enum(["once", "cron"]).describe("'once' for a one-off scheduled pulse, 'cron' for a recurring one."),
+    at: z.string().optional().describe("ISO 8601 timestamp for one-off pulses, or relative text like '30 seconds from now'."),
+    after_seconds: z.number().optional().describe("Relative one-off delay in seconds. Use 30 for '30 seconds from now'."),
+    schedule: z.string().optional().describe("Cron expression for recurring pulses."),
+    timezone: z.string().optional().describe("IANA timezone (default: UTC)."),
+  }).describe("When the pulse fires."),
+  event: z.object({
+    type: z.literal("pulse.fired"),
+    content: PULSE_CONTENT_SCHEMA.optional(),
+  }).optional().describe("The pulse.fired event content delivered to subscribers."),
+  content: PULSE_CONTENT_SCHEMA.optional().describe("Alias for event.content; prefer event.content."),
+  subscribers: z.array(PULSE_SUBSCRIBER_SCHEMA).describe("Who receives the pulse: context subscribers render it, endpoint subscribers act on it."),
+  persistence: z.enum(["workspace", "local"]).optional().describe("'workspace' persists into committed floe.yaml; 'local' is runtime-backed (default)."),
+  scope_id: z.string().optional().describe("Optional organising Scope id. Omit unless a Scope must own the pulse."),
+} as const;
+
+const LIST_PULSES_INPUT_SCHEMA = {
+  status: z.string().optional().describe("Filter by status: active, paused, cancelled, or fired."),
+} as const;
+
+const PULSE_ID_INPUT_SCHEMA = {
+  pulse_id: z.string().min(1).describe("The exact pulse identifier."),
+} as const;
+
+const READ_ARTEFACT_INPUT_SCHEMA = {
+  artefact_version_id: z.string().min(1).describe("Exact immutable ArtefactVersion identity to read."),
+  offset: z.number().int().min(0).optional().describe("Text offset (UTF-16 units), starting at 0. Use the previous page's next_offset to continue."),
+  limit: z.number().int().min(1).max(16_000).optional().describe("Maximum text units to return (default 16,000). Smaller for a focused inspection."),
+} as const;
+
+const CREATE_PULSE_DESCRIPTION =
+  "Create a scheduled pulse that fires canonical pulse.fired events to its subscribers. Use trigger.type 'once' with trigger.at (or trigger.after_seconds) for a one-off, or 'cron' with trigger.schedule for recurring. Use a context subscriber to render a reminder in a conversation; use an endpoint subscriber to wake an actor. Use persistence 'workspace' to persist into committed floe.yaml, or 'local' (default) for a runtime-backed pulse.";
+
+const LIST_PULSES_DESCRIPTION =
+  "List pulses registered for this workspace. Optionally filter by status (active, paused, cancelled, fired).";
+
+const PAUSE_PULSE_DESCRIPTION = "Pause an active pulse. It stops firing until resumed.";
+const RESUME_PULSE_DESCRIPTION = "Resume a paused pulse. Cron pulses recompute their next fire from now.";
+const CANCEL_PULSE_DESCRIPTION = "Permanently cancel a pulse. This cannot be undone.";
+
+const READ_ARTEFACT_DESCRIPTION =
+  "Read one exact ArtefactVersion shared into your work. Images enter your model context for visual inspection. Text returns a bounded page; use next_offset to read the remainder without rereading a mutable workspace file. Uses your active Delivery authority and verifies the saved content, up to 20MB.";
 
 function errorResult(text: string) {
   return { content: [{ type: "text" as const, text }], isError: true };
@@ -269,6 +338,93 @@ export class SubstrateToolBridge {
           return { content: result.content };
         } catch (error) {
           return errorResult(`use_capability: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      },
+    );
+
+    server.registerTool(
+      "create_pulse",
+      { title: "Create Pulse", description: CREATE_PULSE_DESCRIPTION, inputSchema: CREATE_PULSE_INPUT_SCHEMA },
+      async (params: Record<string, unknown>) => {
+        const turn = handle.getActiveTurn();
+        if (!turn) return errorResult("create_pulse: no active Floe turn is running for this session.");
+        try {
+          const result = await executeCreatePulse(handle.getBus(), turn, params);
+          return { content: result.content };
+        } catch (error) {
+          return errorResult(`create_pulse: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      },
+    );
+
+    server.registerTool(
+      "list_pulses",
+      { title: "List Pulses", description: LIST_PULSES_DESCRIPTION, inputSchema: LIST_PULSES_INPUT_SCHEMA },
+      async (params: Record<string, unknown>) => {
+        const turn = handle.getActiveTurn();
+        if (!turn) return errorResult("list_pulses: no active Floe turn is running for this session.");
+        try {
+          const result = await executeListPulses(handle.getBus(), turn, params);
+          return { content: result.content };
+        } catch (error) {
+          return errorResult(`list_pulses: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      },
+    );
+
+    server.registerTool(
+      "pause_pulse",
+      { title: "Pause Pulse", description: PAUSE_PULSE_DESCRIPTION, inputSchema: PULSE_ID_INPUT_SCHEMA },
+      async (params: Record<string, unknown>) => {
+        if (!handle.getActiveTurn()) return errorResult("pause_pulse: no active Floe turn is running for this session.");
+        try {
+          const result = await executePausePulse(handle.getBus(), params);
+          return { content: result.content };
+        } catch (error) {
+          return errorResult(`pause_pulse: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      },
+    );
+
+    server.registerTool(
+      "resume_pulse",
+      { title: "Resume Pulse", description: RESUME_PULSE_DESCRIPTION, inputSchema: PULSE_ID_INPUT_SCHEMA },
+      async (params: Record<string, unknown>) => {
+        if (!handle.getActiveTurn()) return errorResult("resume_pulse: no active Floe turn is running for this session.");
+        try {
+          const result = await executeResumePulse(handle.getBus(), params);
+          return { content: result.content };
+        } catch (error) {
+          return errorResult(`resume_pulse: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      },
+    );
+
+    server.registerTool(
+      "cancel_pulse",
+      { title: "Cancel Pulse", description: CANCEL_PULSE_DESCRIPTION, inputSchema: PULSE_ID_INPUT_SCHEMA },
+      async (params: Record<string, unknown>) => {
+        if (!handle.getActiveTurn()) return errorResult("cancel_pulse: no active Floe turn is running for this session.");
+        try {
+          const result = await executeCancelPulse(handle.getBus(), params);
+          return { content: result.content };
+        } catch (error) {
+          return errorResult(`cancel_pulse: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      },
+    );
+
+    server.registerTool(
+      "read_artefact",
+      { title: "Read Shared Content", description: READ_ARTEFACT_DESCRIPTION, inputSchema: READ_ARTEFACT_INPUT_SCHEMA },
+      async (params: Record<string, unknown>) => {
+        const turn = handle.getActiveTurn();
+        if (!turn) return errorResult("read_artefact: no active Floe turn is running for this session.");
+        try {
+          const result = await executeReadArtefact(handle.getBus(), turn, params);
+          return { content: result.content };
+        } catch (error) {
+          return errorResult(`read_artefact: ${error instanceof Error ? error.message : String(error)}`);
         }
       },
     );

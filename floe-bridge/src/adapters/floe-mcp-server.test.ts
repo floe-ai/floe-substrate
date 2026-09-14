@@ -73,7 +73,10 @@ describe("SubstrateToolBridge (MCP over HTTP)", () => {
     const client = await connect(bridge, "tok-list");
     const tools = await client.listTools();
     const names = tools.tools.map((t) => t.name).sort();
-    expect(names).toEqual(["discover_capabilities", "emit", "request", "use_capability"]);
+    expect(names).toEqual([
+      "cancel_pulse", "create_pulse", "discover_capabilities", "emit",
+      "list_pulses", "pause_pulse", "read_artefact", "request", "resume_pulse", "use_capability",
+    ]);
     await client.close();
   });
 
@@ -186,6 +189,87 @@ describe("SubstrateToolBridge (MCP over HTTP)", () => {
     expect(invoked[0].ws).toBe("workspace:test");
     expect(invoked[0].request.operation_id).toBe("note.create");
     expect(result.content[0].text).toContain("completed");
+    await client.close();
+  });
+
+  it("forwards create_pulse to the bus anchored to the active turn", async () => {
+    bridge = new SubstrateToolBridge();
+    await bridge.ensureStarted();
+    const created: any[] = [];
+    const bus = {
+      async createPulse(input: any) {
+        created.push(input);
+        return { pulse: { pulse_id: input.pulse_id, status: "active", scope_id: input.scope_id ?? null } };
+      },
+    } as any;
+    bridge.register("tok-pulse", {
+      getBus: () => bus,
+      getAnchor: () => anchor,
+      getActiveTurn: () => makeActiveTurn(),
+      isDependencyRequested: () => false,
+      markDependencyRequested: () => {},
+      recordEmitted: () => {},
+    });
+    const client = await connect(bridge, "tok-pulse");
+    const result: any = await client.callTool({
+      name: "create_pulse",
+      arguments: {
+        pulse_id: "reminder-1",
+        trigger: { type: "once", after_seconds: 30 },
+        event: { type: "pulse.fired", content: { text: "Check the build" } },
+        subscribers: [{ kind: "context", context_id: "ctx-1" }],
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(created).toHaveLength(1);
+    expect(created[0].pulse_id).toBe("reminder-1");
+    expect(created[0].workspace_id).toBe("workspace:test");
+    expect(created[0].trigger.type).toBe("once");
+    expect(typeof created[0].trigger.at).toBe("string");
+    expect(created[0].current_context_id).toBe("ctx-1");
+    expect(result.content[0].text).toContain("created");
+    await client.close();
+  });
+
+  it("forwards read_artefact and pages saved text under active-Delivery authority", async () => {
+    bridge = new SubstrateToolBridge();
+    await bridge.ensureStarted();
+    const reads: any[] = [];
+    const bus = {
+      async prepareRuntimeDelivery(_id: string) {
+        return {
+          delivery: { state: "prepared" },
+          processing_contract: { processing_contract_id: "pc-1" },
+          operation_authority_session: {
+            authority_session_id: "auth-1",
+            bearer_token: "bearer-art",
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          },
+        };
+      },
+      async readArtefactVersionContent(ws: string, versionId: string, bearer: string) {
+        reads.push({ ws, versionId, bearer });
+        return { bytes: Buffer.from("hello saved text", "utf8"), media_type: "text/plain" };
+      },
+    } as any;
+    bridge.register("tok-art", {
+      getBus: () => bus,
+      getAnchor: () => anchor,
+      getActiveTurn: () => makeActiveTurn(),
+      isDependencyRequested: () => false,
+      markDependencyRequested: () => {},
+      recordEmitted: () => {},
+    });
+    const client = await connect(bridge, "tok-art");
+    const result: any = await client.callTool({
+      name: "read_artefact",
+      arguments: { artefact_version_id: "av-1" },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(reads).toHaveLength(1);
+    expect(reads[0].bearer).toBe("bearer-art");
+    expect(reads[0].versionId).toBe("av-1");
+    expect(result.content[1].text).toBe("hello saved text");
     await client.close();
   });
 });
