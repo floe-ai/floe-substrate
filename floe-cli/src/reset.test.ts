@@ -32,8 +32,6 @@ function scaffoldDirs(configPath: string, config: LocalConfig, home: string): vo
     config.bus.log_dir,
     config.bridge.data_dir,
     config.bridge.log_dir,
-    config.app.data_dir,
-    config.app.log_dir,
     config.library.configs_dir,
     config.library.skills_dir,
     config.library.extensions_dir,
@@ -73,8 +71,6 @@ describe("buildResetPlan", () => {
     expect(wipePaths).toContain(join(home, "logs", "bus"));
     expect(wipePaths).toContain(join(home, "bridge"));
     expect(wipePaths).toContain(join(home, "logs", "bridge"));
-    expect(wipePaths).toContain(join(home, "app"));
-    expect(wipePaths).toContain(join(home, "logs", "app"));
     expect(wipePaths).toContain(join(home, "configs"));
     expect(wipePaths).toContain(join(home, "skills"));
     expect(wipePaths).toContain(join(home, "extensions"));
@@ -153,14 +149,12 @@ describe("executeReset", () => {
     // Place sentinel files inside each data dir to confirm they are removed
     writeFileSync(join(home, "bus", "floe-bus.sqlite"), "fake-db", "utf8");
     writeFileSync(join(home, "bridge", "state.json"), "{}", "utf8");
-    writeFileSync(join(home, "app", "cache.json"), "{}", "utf8");
 
     executeReset(configPath, config);
 
     // sentinel files must be gone
     expect(existsSync(join(home, "bus", "floe-bus.sqlite"))).toBe(false);
     expect(existsSync(join(home, "bridge", "state.json"))).toBe(false);
-    expect(existsSync(join(home, "app", "cache.json"))).toBe(false);
   });
 
   it("deletes library directories", () => {
@@ -208,10 +202,8 @@ describe("executeReset", () => {
     // Dirs must exist again (empty) so the next floe boot does not fail
     expect(existsSync(join(home, "bus"))).toBe(true);
     expect(existsSync(join(home, "bridge"))).toBe(true);
-    expect(existsSync(join(home, "app"))).toBe(true);
     expect(existsSync(join(home, "logs", "bus"))).toBe(true);
     expect(existsSync(join(home, "logs", "bridge"))).toBe(true);
-    expect(existsSync(join(home, "logs", "app"))).toBe(true);
   });
 
   it("is idempotent — running reset twice does not error", () => {

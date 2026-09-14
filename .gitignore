@@ -20,16 +20,5 @@ test-results/
 .floe/portable-content/
 *.tsbuildinfo
 
-# Platform-specific packaged desktop companion (rebuilt for each Tauri target)
-floe-app/src-tauri/binaries/floe-desktop-*
-floe-app/src-tauri/binaries/floe-node-*
-floe-app/src-tauri/binaries/floe-auth-*
-floe-app/src-tauri/binaries/floe-authority-broker-*
-floe-app/src-tauri/binaries/floe-substrate-*
-floe-app/src-tauri/resources/floe-desktop.js
-floe-app/src-tauri/resources/isolated-command-host-process.js
-floe-app/src-tauri/resources/isolated-extension-host-process.js
-floe-app/src-tauri/resources/prompts/
-
 # Cargo build output for the native authority crate (matches src-tauri/.gitignore)
 floe-native-authority/target/

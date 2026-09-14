@@ -6,7 +6,6 @@
     "floe-bus",
     "floe-bridge",
     "floe-cli",
-    "floe-app",
     "tests"
   ],
   "scripts": {
@@ -14,8 +13,7 @@
     "test": "npm run test --workspaces --if-present",
     "dev:bus": "npm run dev --workspace floe-bus",
     "dev:bridge": "npm run dev --workspace floe-bridge",
-    "floe": "tsx floe-cli/src/index.ts",
-    "dev:app": "npm run dev --workspace floe-app"
+    "floe": "tsx floe-cli/src/index.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

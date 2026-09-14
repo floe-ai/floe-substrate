@@ -5,7 +5,7 @@ import { spawn, spawnSync } from "node:child_process";
 import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
 
-export type ServiceName = "bus" | "bridge" | "app";
+export type ServiceName = "bus" | "bridge";
 
 type ServiceRecord = {
   pid: number;
@@ -40,9 +40,7 @@ export function writeRecords(configPath: string, config: LocalConfig, records: S
 export function serviceLogPath(configPath: string, config: LocalConfig, service: ServiceName): string {
   const dir = service === "bus"
     ? config.bus.log_dir
-    : service === "bridge"
-      ? config.bridge.log_dir
-      : config.app.log_dir;
+    : config.bridge.log_dir;
   return join(resolveLocalPath(configPath, config.home, dir), `${service}.log`);
 }
 
@@ -78,11 +76,8 @@ export async function startService(configPath: string, config: LocalConfig, serv
   if (existing && isPidRunning(existing.pid)) return existing;
 
   const root = repoRoot();
-  const workspace = service === "bus" ? "floe-bus" : service === "bridge" ? "floe-bridge" : "floe-app";
-  const appListen = parseListen(config.app.listen);
-  const args = service === "app"
-    ? ["run", "dev", "--workspace", workspace, "--", "--host", appListen.host, "--port", String(appListen.port)]
-    : ["run", "dev", "--workspace", workspace, "--", "--config", configPath];
+  const workspace = service === "bus" ? "floe-bus" : "floe-bridge";
+  const args = ["run", "dev", "--workspace", workspace, "--", "--config", configPath];
   const commandLine = commandForNpm(args);
   const defaultLogFile = serviceLogPath(configPath, config, service);
   mkdirSync(dirname(defaultLogFile), { recursive: true });
@@ -130,15 +125,6 @@ function openServiceLog(defaultLogFile: string, service: ServiceName): { logFile
     writeSync(fd, marker);
     return { logFile: fallback, logFd: fd };
   }
-}
-
-function parseListen(value: string): { host: string; port: number } {
-  const index = value.lastIndexOf(":");
-  if (index < 0) return { host: "127.0.0.1", port: Number(value) };
-  return {
-    host: value.slice(0, index),
-    port: Number(value.slice(index + 1))
-  };
 }
 
 export function stopService(configPath: string, config: LocalConfig, service: ServiceName): boolean {

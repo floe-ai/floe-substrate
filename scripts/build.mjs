@@ -6,7 +6,7 @@
  * Usage:
  *   npm run build                   # interactive multi-select (TTY)
  *   npm run build -- --all          # build all targets
- *   npm run build -- bus app        # build named targets
+ *   npm run build -- bus bridge     # build named targets
  *   npm run build -- --help         # show usage
  *
  * Non-TTY (agent / CI) with no args → builds all (never hangs).
@@ -22,7 +22,6 @@ const TARGETS = [
   { id: 'bus',    workspace: 'floe-bus',    label: 'bus    (floe-bus    — tsc)' },
   { id: 'bridge', workspace: 'floe-bridge', label: 'bridge (floe-bridge — tsc)' },
   { id: 'cli',    workspace: 'floe-cli',    label: 'cli    (floe-cli    — tsc)' },
-  { id: 'app',    workspace: 'floe-app',    label: 'app    (floe-app    — tsc -b + vite build)' },
 ];
 
 const TARGET_IDS = TARGETS.map(t => t.id);
@@ -37,7 +36,7 @@ Floe selectable build (dev tool)
 
   npm run build                   interactive multi-select (requires TTY)
   npm run build -- --all          build all targets
-  npm run build -- bus app        build named targets
+  npm run build -- bus bridge     build named targets
   npm run build -- --help         show this help
 
 Targets: ${TARGET_IDS.join(', ')}

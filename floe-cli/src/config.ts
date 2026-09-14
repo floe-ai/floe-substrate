@@ -10,8 +10,7 @@ const LocalConfigSchema = z.object({
   home: z.string(),
   services: z.object({
     autostart: z.boolean(),
-    manager: z.string(),
-    start_app: z.boolean()
+    manager: z.string()
   }),
   bus: z.object({
     listen: z.string(),
@@ -27,13 +26,6 @@ const LocalConfigSchema = z.object({
     workspace_access: z.object({ local_paths: z.boolean() }),
     runtime_adapter: z.string().optional()
   }),
-  app: z.object({
-    listen: z.string(),
-    bus_http_url: z.string(),
-    bus_ws_url: z.string(),
-    data_dir: z.string(),
-    log_dir: z.string()
-  }),
   library: z.object({
     configs_dir: z.string(),
     skills_dir: z.string(),
@@ -44,7 +36,7 @@ const LocalConfigSchema = z.object({
   runtime: z.object({
     default_auth_profile: z.string().optional()
   }).optional()
-});
+}).strict();
 
 export type LocalConfig = z.infer<typeof LocalConfigSchema>;
 
@@ -53,7 +45,7 @@ export function defaultConfig(home = join(homedir(), ".floe")): LocalConfig {
     schema: "floe.local.v1",
     version: 1,
     home,
-    services: { autostart: true, manager: "auto", start_app: true },
+    services: { autostart: true, manager: "auto" },
     bus: {
       listen: "127.0.0.1:5377",
       http_base_url: "http://127.0.0.1:5377",
@@ -66,13 +58,6 @@ export function defaultConfig(home = join(homedir(), ".floe")): LocalConfig {
       log_dir: "./logs/bridge",
       bus_url: "ws://127.0.0.1:5377",
       workspace_access: { local_paths: true }
-    },
-    app: {
-      listen: "127.0.0.1:5379",
-      bus_http_url: "http://127.0.0.1:5377",
-      bus_ws_url: "ws://127.0.0.1:5377",
-      data_dir: "./app",
-      log_dir: "./logs/app"
     },
     library: {
       configs_dir: "./configs",
@@ -142,8 +127,6 @@ export function ensureLocalDirs(configPath: string, config: LocalConfig): void {
     config.bus.log_dir,
     config.bridge.data_dir,
     config.bridge.log_dir,
-    config.app.data_dir,
-    config.app.log_dir,
     config.library.configs_dir,
     config.library.skills_dir,
     config.library.extensions_dir,

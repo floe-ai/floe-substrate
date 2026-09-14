@@ -44,8 +44,6 @@ export function buildResetPlan(configPath: string, config: LocalConfig): ResetPl
     { path: r(config.bus.log_dir), label: "bus logs" },
     { path: r(config.bridge.data_dir), label: "bridge data" },
     { path: r(config.bridge.log_dir), label: "bridge logs" },
-    { path: r(config.app.data_dir), label: "app data" },
-    { path: r(config.app.log_dir), label: "app logs" },
     { path: r(config.library.configs_dir), label: "library: configs" },
     { path: r(config.library.skills_dir), label: "library: skills" },
     { path: r(config.library.extensions_dir), label: "library: extensions" },

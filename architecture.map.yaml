@@ -4,42 +4,6 @@ system:
   name: floe-substrate
   intent: "Core event-driven architecture for autonomous workspaces"
   clusters:
-    - id: floe-app
-      name: Floe App
-      intent: "Single UI surface served to plain browsers and wrapped by the Tauri desktop shell; one-server architecture (bus 5377, frontend 5379)"
-      cells:
-        - id: tauri-shell
-          name: Tauri Shell
-          intent: "Owns the desktop boundary, local file commands, and rust interop; wraps the shared 5379 frontend without managing its own vite server"
-          paths:
-            - floe-app/src-tauri/**
-          writeAuthority:
-            allowedModules: []
-          modules:
-            - id: main
-              name: Main
-              intent: "Primary tauri implementation"
-              paths:
-                - floe-app/src-tauri/**
-        - id: app-ui
-          name: App UI
-          intent: "Owns the React state for the desktop operator interface"
-          paths:
-            - floe-app/src/**
-            - floe-app/index.html
-            - floe-app/vite.config.ts
-            - floe-app/vitest.config.ts
-          writeAuthority:
-            allowedModules: []
-          modules:
-            - id: main
-              name: Main
-              intent: "Primary app UI implementation"
-              paths:
-                - floe-app/src/**
-                - floe-app/index.html
-                - floe-app/vite.config.ts
-                - floe-app/vitest.config.ts
     - id: floe-bus
       name: Floe Bus
       intent: "Fastify substrate daemon and canonical event store"
