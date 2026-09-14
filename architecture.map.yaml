@@ -41,7 +41,6 @@ system:
             - floe-bus/src/index.ts
             - floe-bus/src/auth.ts
             - floe-bus/src/config.ts
-            - floe-bus/src/live-model-probe.ts
             - floe-bus/vitest.config.ts
           writeAuthority:
             allowedModules: []
@@ -54,7 +53,6 @@ system:
                 - floe-bus/src/index.ts
                 - floe-bus/src/auth.ts
                 - floe-bus/src/config.ts
-                - floe-bus/src/live-model-probe.ts
                 - floe-bus/vitest.config.ts
         - id: fs-api
           name: Workspace FS API
