@@ -6,12 +6,18 @@ import { fileURLToPath } from "node:url";
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SELF = "floe-bus/src/extension-boundary.test.ts";
 const BANNED_EXTENSION_NAMES = ["snowball"];
-const SOURCE_ROOTS = ["floe-bus/src", "floe-bridge/src", "floe-app/src"];
+const SOURCE_ROOTS = ["floe-bus/src", "floe-bridge/src"];
 const SKIPPED_DIR_NAMES = new Set(["node_modules", "dist", "build", ".git"]);
 
 function collectSourceFiles(root: string): string[] {
   const absolute = join(REPO_ROOT, root);
-  if (!existsSync(absolute)) return [];
+  if (!existsSync(absolute)) {
+    throw new Error(
+      `Declared source root "${root}" does not exist at ${absolute}. ` +
+        "A boundary check that silently tolerates a missing root asserts nothing. " +
+        "Remove the root from SOURCE_ROOTS deliberately, or restore the directory."
+    );
+  }
   const files: string[] = [];
   for (const entry of readdirSync(absolute, { withFileTypes: true })) {
     if (SKIPPED_DIR_NAMES.has(entry.name)) continue;
