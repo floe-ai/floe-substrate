@@ -342,6 +342,47 @@ async function runNativeAuthorityCommand(command: Readonly<Record<string, unknow
   });
 }
 
+/**
+ * Obtain the Bus host-control credential from the native broker so the CLI can
+ * boot the Bus as the trusted native owner the Bus requires at startup.
+ *
+ * The broker is the sole owner of this credential in the OS keyring. The
+ * returned value must be injected into the Bus process environment only and
+ * must never be logged, echoed into an error, or written to disk.
+ */
+export async function fetchHostControlToken(): Promise<string> {
+  const result = await runNativeAuthorityCommand({ command: "provide_host_control_token" });
+  if (!isRecord(result) || typeof result.token !== "string" || !result.token) {
+    throw new Error("Floe's native authority broker did not provide a host-control credential.");
+  }
+  return result.token;
+}
+
+/**
+ * Register the current directory as a local Workspace and select it, through
+ * the native broker. Registration is a host-control bootstrap route, so the CLI
+ * authenticates through the broker rather than an unauthenticated HTTP call.
+ */
+export async function registerLocalWorkspaceViaBroker(
+  locator: string,
+  initAuthorized: boolean,
+): Promise<{ workspace_id: string; name: string }> {
+  const result = await runNativeAuthorityCommand({
+    command: "register_workspace",
+    locator,
+    init_authorized: initAuthorized,
+  });
+  if (
+    !isRecord(result)
+    || !isRecord(result.workspace)
+    || typeof result.workspace.workspace_id !== "string"
+    || typeof result.workspace.name !== "string"
+  ) {
+    throw new Error("Floe returned an invalid Workspace registration.");
+  }
+  return { workspace_id: result.workspace.workspace_id, name: result.workspace.name };
+}
+
 function resolveNativeAuthorityBrokerPath(): string | null {
   const executable = process.platform === "win32" ? "floe-authority-broker.exe" : "floe-authority-broker";
   const configured = process.env.FLOE_AUTHORITY_BROKER_PATH?.trim();

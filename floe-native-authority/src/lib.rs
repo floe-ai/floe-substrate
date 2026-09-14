@@ -2,8 +2,11 @@
 //!
 //! This module is the only application-side adapter that opens the host-control
 //! credential from the operating-system vault. Desktop, CLI, and a future
-//! headless host use typed semantic methods; none receives reusable bearer
-//! material or chooses an arbitrary Bus URL.
+//! headless host use typed semantic methods and do not receive reusable bearer
+//! material, with one deliberate exception: the local owner that boots the Bus
+//! may obtain the host-control credential (see `host_control_token_for_local_boot`)
+//! solely to inject it into the Bus process environment. No client chooses an
+//! arbitrary Bus URL.
 
 use rand::{rngs::OsRng, RngCore};
 use reqwest::{Method, StatusCode};
@@ -83,6 +86,14 @@ pub struct DiscoverOperationsRequest {
 pub struct InvokeOperationRequest {
     pub boundary: AuthorityBoundary,
     pub invocation: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegisterWorkspaceRequest {
+    pub locator: String,
+    #[serde(default)]
+    pub init_authorized: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -203,6 +214,51 @@ impl NativeAuthorityBroker {
     pub async fn list_local_workspaces(&self) -> Result<Value, String> {
         self.host_json(Method::GET, "/v1/local/workspaces", None)
             .await
+    }
+
+    /// Register (or return the existing) local Workspace binding for a locator
+    /// and select it, using the host-control credential. These are fixed
+    /// host-control bootstrap routes, not discoverable operations, so a
+    /// non-desktop client reaches them through the broker instead of an
+    /// unauthenticated call. The route literals are fixed here, not
+    /// caller-supplied, so no host-path allowlist entry is required.
+    pub async fn register_workspace(
+        &self,
+        request: RegisterWorkspaceRequest,
+    ) -> Result<Value, String> {
+        let token = self.host_control_token()?;
+        let registered = self
+            .inner
+            .client
+            .post(format!("{BUS_HTTP_BASE}/v1/workspaces/register"))
+            .bearer_auth(&token)
+            .json(&json!({
+                "locator": request.locator,
+                "init_authorized": request.init_authorized,
+            }))
+            .send()
+            .await
+            .map_err(|_| unavailable_message())?;
+        let registered = response_to_json(registered).await?;
+        let workspace_id = registered
+            .pointer("/workspace/workspace_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Floe returned an invalid Workspace registration.".to_string())?;
+        let select = self
+            .inner
+            .client
+            .post(format!(
+                "{BUS_HTTP_BASE}/v1/workspaces/{}/select",
+                urlencoding::encode(workspace_id)
+            ))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .map_err(|_| unavailable_message())?;
+        if !select.status().is_success() {
+            return Err(operator_http_error(select.status()));
+        }
+        Ok(registered)
     }
 
     /// Read the fixed installation health projection. This does not admit
@@ -859,6 +915,19 @@ impl NativeAuthorityBroker {
             HostCredential::Available(token) => Ok(token.clone()),
             HostCredential::Unavailable(detail) => Err(detail.clone()),
         }
+    }
+
+    /// Hand the host-control credential to the trusted local owner so it can
+    /// boot the Bus as the "trusted native owner" the Bus requires at startup.
+    ///
+    /// This is the single, deliberate exception to "clients never receive
+    /// reusable bearer material": with the desktop app gone, the CLI is the
+    /// only process that starts the local Bus, and the Bus refuses to run
+    /// without this credential. The broker remains the sole keyring owner; the
+    /// CLI must inject the returned value into the Bus process environment only
+    /// and must never log, echo, or persist it.
+    pub fn host_control_token_for_local_boot(&self) -> Result<String, String> {
+        self.host_control_token()
     }
 }
 

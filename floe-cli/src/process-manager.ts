@@ -70,7 +70,7 @@ function quoteCmdArg(value: string): string {
   return `"${value.replace(/"/g, '\\"')}"`;
 }
 
-export async function startService(configPath: string, config: LocalConfig, service: ServiceName): Promise<ServiceRecord> {
+export async function startService(configPath: string, config: LocalConfig, service: ServiceName, extraEnv: Readonly<Record<string, string>> = {}): Promise<ServiceRecord> {
   const records = readRecords(configPath, config);
   const existing = records[service];
   if (existing && isPidRunning(existing.pid)) return existing;
@@ -94,7 +94,8 @@ export async function startService(configPath: string, config: LocalConfig, serv
       FLOE_BUS_WS_URL: config.bus.ws_base_url,
       ...(service === "bridge" && config.bridge.runtime_adapter
         ? { FLOE_RUNTIME_ADAPTER: config.bridge.runtime_adapter }
-        : {})
+        : {}),
+      ...extraEnv
     }
   });
   closeSync(logFd);

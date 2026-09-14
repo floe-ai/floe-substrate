@@ -31,6 +31,7 @@ import {
 import { registerOperationsCommand } from "./operations-command.js";
 import { confirmInTerminal } from "./operations-command.js";
 import { NativeCliOperationAuthorityBroker } from "./operation-client.js";
+import { fetchHostControlToken, registerLocalWorkspaceViaBroker } from "./operation-client.js";
 import { disconnectProviderAccount } from "./provider-account-command.js";
 
 const program = new Command();
@@ -376,7 +377,13 @@ async function applyAutostartChoice(configPath: string, config: LocalConfig, opt
 }
 
 async function startAll(configPath: string, config: LocalConfig): Promise<void> {
-  if (!(await isHealthy(config.bus.http_base_url))) await startService(configPath, config, "bus");
+  if (!(await isHealthy(config.bus.http_base_url))) {
+    // The Bus refuses to start without the host-control credential owned by the
+    // native broker. Obtain it and hand it to the Bus via its environment only;
+    // it is never logged or written to disk.
+    const hostControlToken = await fetchHostControlToken();
+    await startService(configPath, config, "bus", { FLOE_HOST_CONTROL_TOKEN: hostControlToken });
+  }
   await waitForHealth(config.bus.http_base_url, "floe-bus");
   await startService(configPath, config, "bridge");
 }
@@ -421,20 +428,10 @@ function openUrl(url: string): void {
 }
 
 async function registerCurrentWorkspace(config: LocalConfig, locator: string, initAuthorized: boolean): Promise<void> {
-  const response = await fetch(`${config.bus.http_base_url}/v1/workspaces/register`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      locator,
-      init_authorized: initAuthorized
-    })
-  });
-  if (!response.ok) throw new Error(`Workspace registration failed: ${response.status} ${await response.text()}`);
-  const result = await response.json() as any;
-  const workspaceId: string = result.workspace.workspace_id;
-  await fetch(`${config.bus.http_base_url}/v1/workspaces/${encodeURIComponent(workspaceId)}/select`, {
-    method: "POST"
-  });
+  // Registration and selection are host-control bootstrap routes. The broker
+  // owns the host-control credential, so the CLI registers through it rather
+  // than an unauthenticated HTTP call.
+  const { workspace_id: workspaceId } = await registerLocalWorkspaceViaBroker(locator, initAuthorized);
   // Seed a default human operator actor if none exists yet.
   // Stored bus-DB-only (no workspace file written) so git status stays clean.
   const seedResult = await seedDefaultActor(config.bus.http_base_url, workspaceId);

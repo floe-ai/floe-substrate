@@ -11,7 +11,7 @@ const LocalConfigSchema = z.object({
   services: z.object({
     autostart: z.boolean(),
     manager: z.string(),
-    start_app: z.boolean()
+    start_app: z.boolean().optional()
   }),
   bus: z.object({
     listen: z.string(),
@@ -28,12 +28,22 @@ const LocalConfigSchema = z.object({
       local_paths: z.boolean()
     })
   }),
+  // floe-app is no longer part of the substrate. The bus still reads config.app
+  // for the loopback browser-origin set and the local-config status projection
+  // (removal is P5), so keep it optional with a default rather than requiring
+  // it in the shared config the CLI now writes without an app block.
   app: z.object({
     listen: z.string(),
     bus_http_url: z.string(),
     bus_ws_url: z.string(),
     data_dir: z.string(),
     log_dir: z.string()
+  }).default({
+    listen: "127.0.0.1:5379",
+    bus_http_url: "http://127.0.0.1:5377",
+    bus_ws_url: "ws://127.0.0.1:5377",
+    data_dir: "./app",
+    log_dir: "./logs/app"
   }),
   library: z.object({
     configs_dir: z.string(),

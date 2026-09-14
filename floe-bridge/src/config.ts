@@ -11,7 +11,7 @@ const LocalConfigSchema = z.object({
   services: z.object({
     autostart: z.boolean(),
     manager: z.string(),
-    start_app: z.boolean()
+    start_app: z.boolean().optional()
   }),
   bus: z.object({
     listen: z.string(),
@@ -29,13 +29,16 @@ const LocalConfigSchema = z.object({
       local_paths: z.boolean()
     })
   }),
+  // floe-app is no longer part of the substrate; the bridge does not read
+  // config.app, so accept but ignore an app block if one is present and do
+  // not require it in the CLI-written no-app config (full removal is P5).
   app: z.object({
     listen: z.string(),
     bus_http_url: z.string(),
     bus_ws_url: z.string(),
     data_dir: z.string(),
     log_dir: z.string()
-  }),
+  }).optional(),
   library: z.object({
     configs_dir: z.string(),
     skills_dir: z.string(),
