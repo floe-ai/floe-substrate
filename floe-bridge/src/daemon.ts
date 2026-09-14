@@ -29,6 +29,7 @@ import {
 import type { RuntimeAdapter } from "./adapters/runtime-adapter.js";
 import { FakeRuntimeAdapter } from "./adapters/fake-runtime-adapter.js";
 import { PiAgentCoreAdapter } from "./adapters/pi-agent-core-adapter.js";
+import { FloeRuntimeAdapter } from "./adapters/floe-runtime-adapter.js";
 import { TurnFailedError } from "./adapters/turn-failed-error.js";
 import { HookRegistry } from "./hooks.js";
 import { watchFolder } from "./folder-watcher.js";
@@ -470,6 +471,10 @@ export class BridgeDaemon {
       const endpointId = actorEndpointId(workspaceId, agent.agent_id);
       const runtimeConfig = extractRuntimeConfig(agent.frontmatter);
       const resolvedAuth = await this.resolveAuthProfile(workspaceId, endpointId, runtimeConfig);
+      // floe-runtime drives the official vendor CLI, which authenticates itself:
+      // Floe brokers no model credential for it. It still needs a model choice.
+      // Only the fake adapter needs neither credential nor model.
+      const credentialFree = this.adapter.name === "fake" || this.adapter.name === "floe-runtime";
       const observation: WorkspaceRuntimeObservation = {
         agent_id: agent.agent_id,
         adapter_id: this.adapter.name,
@@ -477,7 +482,7 @@ export class BridgeDaemon {
         provider: resolvedAuth.provider ?? runtimeConfig.provider ?? null,
         model: resolvedAuth.model ?? runtimeConfig.model ?? null,
         thinking_level: resolvedAuth.thinking_level ?? runtimeConfig.thinking_level ?? null,
-        credential_requirement: this.adapter.name === "fake" ? "none" : "required",
+        credential_requirement: credentialFree ? "none" : "required",
         required_configuration_keys: this.adapter.name === "fake" ? [] : ["model"],
         required_capability_ids: [],
         checkpoint_policy: { mode: "none", schema_ref: null },
@@ -929,7 +934,7 @@ export class BridgeDaemon {
         auth_profile_source: effectiveRuntime.auth_profile_source ?? "(none)",
         instructions_bytes: instructions?.length ?? 0
       });
-      const credentialPin = pinnedRuntime
+      const credentialPin = pinnedRuntime && this.adapter.credentialRequirement !== "none"
         ? {
             provider: pinnedRuntime.config.provider?.trim() ?? "",
             secret_ref_id: pinnedRuntime.secret_ref_ids.length === 1
@@ -1191,8 +1196,10 @@ export function chooseAdapter(configPath: string, config: LocalConfig): RuntimeA
   if (!configured) return live();
   const selected = configured.trim().toLowerCase();
   if (selected === "fake") return new FakeRuntimeAdapter();
+  if (selected === "floe-runtime") return new FloeRuntimeAdapter();
+  // pi remains selectable so there is a working checkpoint to fall back to.
   if (["pi", "pi-agent-core"].includes(selected)) return live();
-  throw new Error(`Unsupported FLOE runtime adapter "${selected}". Use "fake" or "pi-agent-core".`);
+  throw new Error(`Unsupported FLOE runtime adapter "${selected}". Use "fake", "floe-runtime", or "pi-agent-core".`);
 }
 
 function runtimeAdapterMatches(requiredAdapterId: string, activeAdapterName: string): boolean {

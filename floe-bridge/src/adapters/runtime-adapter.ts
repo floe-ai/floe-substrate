@@ -20,6 +20,14 @@ export type RuntimeContext = {
 
 export interface RuntimeAdapter {
   readonly name: string;
+  /**
+   * Whether this adapter needs a brokered provider credential to run a turn.
+   * Defaults to "required" when omitted (pi's historical behaviour). An adapter
+   * that declares "none" authenticates outside Floe (e.g. floe-runtime, whose
+   * vendor CLI authenticates itself), so the Bridge must not force provider
+   * credential resolution or build a credential store for it.
+   */
+  readonly credentialRequirement?: "required" | "none";
   handleBundle(context: RuntimeContext, bundle: DeliveryBundle, runtimeConfig?: AgentRuntimeConfig): Promise<void>;
   /** Interrupt one active delivery when the Bus has durably cancelled it. */
   cancelDelivery?(deliveryId: string): Promise<boolean> | boolean;

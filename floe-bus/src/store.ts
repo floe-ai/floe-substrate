@@ -668,6 +668,17 @@ function now(): string {
   return new Date().toISOString();
 }
 
+/**
+ * Inverse of workspaceConfigurationActorId: recover the source actor id (the
+ * agent_id) from a canonical actor/endpoint id of the form
+ * `actor:<workspace_id>:<agent_id>`. Falls back to the full id if the prefix is
+ * absent so non-canonical ids degrade safely rather than throwing.
+ */
+function sourceActorIdFromActorId(actorId: string, workspaceId: string): string {
+  const prefix = `actor:${workspaceId}:`;
+  return actorId.startsWith(prefix) ? actorId.slice(prefix.length) : actorId;
+}
+
 function json(value: unknown): string {
   return JSON.stringify(value ?? {});
 }
@@ -4943,7 +4954,14 @@ export class BusStore {
         endpoint_id: binding.endpoint_id,
         actor_id: actor.actor_id,
         name: definition.content.label,
-        agent_id: endpoint?.agent_id ?? null,
+        // The agent_id is the source actor id, i.e. the segment after the
+        // `actor:<workspace_id>:` prefix that actorId/endpointId are built from
+        // (workspaceConfigurationActorId). The endpoint record's own agent_id
+        // is null until a Bridge first registers it, and the Bridge sources that
+        // value from this very projection — so fall back to the canonical
+        // identity here to break that chicken-and-egg and keep work-log paths
+        // populated for every runtime adapter.
+        agent_id: endpoint?.agent_id ?? sourceActorIdFromActorId(actor.actor_id, workspaceId),
         adapter_id: profile.content.adapter_id,
         actor_definition_revision_id: definition.actor_definition_revision_id,
         runtime_profile_revision_id: profile.runtime_profile_revision_id,

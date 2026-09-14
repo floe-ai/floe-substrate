@@ -16,6 +16,7 @@
     "@earendil-works/pi-agent-core": "^0.84.2",
     "@earendil-works/pi-ai": "^0.84.2",
     "diff": "^9.0.0",
+    "floe-runtime": "github:floe-ai/floe-runtime#4ed5029985052556a2e8e0da1d8054c8222a2473",
     "sharp": "0.35.4",
     "vite": "8.0.10",
     "yaml": "^2.6.0",
