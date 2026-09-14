@@ -22,3 +22,6 @@ test-results/
 
 # Cargo build output for the native authority crate (matches src-tauri/.gitignore)
 floe-native-authority/target/
+
+# Native authority broker installed by floe-cli's build (compiled artifact)
+floe-cli/native/

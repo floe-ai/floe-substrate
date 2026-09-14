@@ -303,7 +303,7 @@ describe("CLI semantic operation client", () => {
     const client = new CliOperationClient(new UnavailableCliOperationAuthorityBroker());
     await expect(client.listLocalWorkspaces()).rejects.toBeInstanceOf(CliAuthorityBrokerUnavailableError);
     await expect(client.discover({ boundary: { kind: "host" } }))
-      .rejects.toThrow("shared native CLI broker is unavailable");
+      .rejects.toThrow("native authority broker binary was not found");
   });
 
   it("reads the installed broker's flat local Workspace records and preserves an unbound Workspace", async () => {

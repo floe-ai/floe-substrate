@@ -109,8 +109,11 @@ export interface CliOperationAuthorityBroker {
 export class CliAuthorityBrokerUnavailableError extends Error {
   constructor() {
     super(
-      "Floe CLI cannot open a trusted local operation session yet. "
-      + "Start Floe and use the desktop app while the shared native CLI broker is unavailable.",
+      "Floe CLI cannot open a trusted local operation session: the native "
+      + "authority broker binary was not found. Build it with "
+      + "`npm run build --workspace floe-cli` (requires Rust/cargo), which "
+      + "compiles floe-native-authority and installs the broker into "
+      + "floe-cli/native/.",
     );
     this.name = "CliAuthorityBrokerUnavailableError";
   }
