@@ -45,7 +45,8 @@ const FREE_FORM_DOC_DIRS = new Set([
   "qa",
   "reference", // non-markdown reference assets
   "architecture", // living architecture graph (operator-approved, standing — docs/architecture/overview.md)
-  "guide" // user documentation (operator-approved, standing — docs/guide/README.md)
+  "guide", // user documentation (operator-approved, standing — docs/guide/README.md)
+  "design" // free-form design input for a future interface (operator-approved, deliberately unstructured)
 ]);
 
 const ADR_NAME = /^\d{4}-[a-z0-9-]+\.md$/;
