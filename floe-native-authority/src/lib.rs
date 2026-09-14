@@ -22,7 +22,19 @@ use std::{
 use tokio::sync::Mutex as AsyncMutex;
 use zeroize::Zeroize;
 
-const BUS_HTTP_BASE: &str = "http://127.0.0.1:5377";
+const DEFAULT_BUS_HTTP_BASE: &str = "http://127.0.0.1:5377";
+
+/// The Bus base URL this broker operates against. Defaults to the local product
+/// port. An isolated harness or a non-default local install overrides it via
+/// FLOE_BUS_HTTP_BASE so the broker talks to the same Bus the CLI actually
+/// started rather than a hardcoded one; without this the product start path is
+/// only reusable at the single default port.
+fn bus_http_base() -> String {
+    std::env::var("FLOE_BUS_HTTP_BASE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_BUS_HTTP_BASE.to_string())
+}
 const VAULT_SERVICE: &str = "com.floe.console";
 const VAULT_ACCOUNT: &str = "local-bus-host-control";
 const WORKSPACE_SESSION_SECONDS: u64 = 15 * 60;
@@ -211,7 +223,7 @@ impl NativeAuthorityBroker {
         let registered = self
             .inner
             .client
-            .post(format!("{BUS_HTTP_BASE}/v1/workspaces/register"))
+            .post(format!("{}/v1/workspaces/register", bus_http_base()))
             .bearer_auth(&token)
             .json(&json!({
                 "locator": request.locator,
@@ -229,7 +241,8 @@ impl NativeAuthorityBroker {
             .inner
             .client
             .post(format!(
-                "{BUS_HTTP_BASE}/v1/workspaces/{}/select",
+                "{}/v1/workspaces/{}/select",
+                bus_http_base(),
                 urlencoding::encode(workspace_id)
             ))
             .bearer_auth(&token)
@@ -256,7 +269,7 @@ impl NativeAuthorityBroker {
         let response = self
             .inner
             .client
-            .post(format!("{BUS_HTTP_BASE}/v1/bridges/service-credential"))
+            .post(format!("{}/v1/bridges/service-credential", bus_http_base()))
             .bearer_auth(self.host_control_token()?)
             .json(&json!({ "bridge_id": request.bridge_id }))
             .send()
@@ -274,7 +287,7 @@ impl NativeAuthorityBroker {
     /// arbitrary host routes through Workspace or semantic-operation requests.
     pub async fn local_runtime_status(&self) -> Result<AuthorityHttpResponse, String> {
         let response = self.inner.client
-            .get(format!("{BUS_HTTP_BASE}/v1/runtime/status"))
+            .get(format!("{}/v1/runtime/status", bus_http_base()))
             .bearer_auth(self.host_control_token()?)
             .send().await.map_err(|_| unavailable_message())?;
         response_to_http(response).await
@@ -425,7 +438,8 @@ impl NativeAuthorityBroker {
             .inner
             .client
             .put(format!(
-                "{BUS_HTTP_BASE}/v1/attachment-ingress-sessions/{}/content",
+                "{}/v1/attachment-ingress-sessions/{}/content",
+                bus_http_base(),
                 urlencoding::encode(&ingress_session_id),
             ))
             .bearer_auth(&bearer_token)
@@ -541,7 +555,7 @@ impl NativeAuthorityBroker {
         let response = self
             .inner
             .client
-            .get(format!("{BUS_HTTP_BASE}/health"))
+            .get(format!("{}/health", bus_http_base()))
             .send()
             .await
             .map_err(|_| unavailable_message())?;
@@ -570,7 +584,7 @@ impl NativeAuthorityBroker {
         let mut builder = self
             .inner
             .client
-            .request(method, format!("{BUS_HTTP_BASE}{path}"))
+            .request(method, format!("{}{path}", bus_http_base()))
             .bearer_auth(bearer);
         if let Some(body) = body {
             builder = builder.json(&body);
@@ -592,7 +606,8 @@ impl NativeAuthorityBroker {
             .inner
             .client
             .post(format!(
-                "{BUS_HTTP_BASE}/v1/local/workspaces/{}/operation-sessions",
+                "{}/v1/local/workspaces/{}/operation-sessions",
+                bus_http_base(),
                 urlencoding::encode(workspace_id),
             ))
             .bearer_auth(host_token)
@@ -675,7 +690,7 @@ impl NativeAuthorityBroker {
         let mut builder = self
             .inner
             .client
-            .request(method, format!("{BUS_HTTP_BASE}{path}"))
+            .request(method, format!("{}{path}", bus_http_base()))
             .bearer_auth(token);
         if let Some(body) = body {
             builder = builder.json(&body);
@@ -828,7 +843,7 @@ fn validate_workspace_route(method: &Method, path: &str, workspace_id: &str) -> 
     {
         return Err(refused());
     }
-    let url = reqwest::Url::parse(&format!("{BUS_HTTP_BASE}{path}")).map_err(|_| refused())?;
+    let url = reqwest::Url::parse(&format!("{}{path}", bus_http_base())).map_err(|_| refused())?;
     let mut names_workspace = false;
     for (key, value) in url.query_pairs() {
         if key == "workspace_id" {
