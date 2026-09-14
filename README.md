@@ -72,12 +72,11 @@ sends a human message, receives fake agent progress/output, and resumes a
 waiting fake agent with a later message. It also verifies bus-owned
 `wait_refresh` generation and delivery acknowledgement state.
 
-## Copilot Adapter
+## Runtime Adapter
 
-`CopilotSdkAdapter` is intentionally gated/deferred. The fake adapter is only
-the no-login fallback for local development and CI. Once a real auth profile is
-configured, Floe selects the Pi lower-layer adapter automatically. You can also
-force it explicitly:
+The fake adapter is the no-login fallback for local development and CI. Once a
+real auth profile is configured, Floe selects the Pi lower-layer adapter
+automatically. You can also force it explicitly:
 
 ```bash
 FLOE_RUNTIME_ADAPTER=pi-agent-core

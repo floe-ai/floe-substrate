@@ -1191,7 +1191,7 @@ export function chooseAdapter(configPath: string, config: LocalConfig): RuntimeA
   if (!configured) return live();
   const selected = configured.trim().toLowerCase();
   if (selected === "fake") return new FakeRuntimeAdapter();
-  if (["pi", "pi-agent-core", "floe-runtime"].includes(selected)) return live();
+  if (["pi", "pi-agent-core"].includes(selected)) return live();
   throw new Error(`Unsupported FLOE runtime adapter "${selected}". Use "fake" or "pi-agent-core".`);
 }
 
@@ -1199,7 +1199,7 @@ function runtimeAdapterMatches(requiredAdapterId: string, activeAdapterName: str
   const required = requiredAdapterId.trim().toLowerCase();
   const active = activeAdapterName.trim().toLowerCase();
   if (required === active) return true;
-  if (active === "pi-agent-core" && ["pi", "floe-runtime"].includes(required)) return true;
+  if (active === "pi-agent-core" && ["pi"].includes(required)) return true;
   return false;
 }
 

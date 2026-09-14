@@ -209,7 +209,6 @@ graph TD
         CA["chooseAdapter()\n(daemon.ts:728)"]
         FA["FakeRuntimeAdapter\n(fake-runtime-adapter.ts)"]
         PA["PiAgentCoreAdapter\n(pi-agent-core-adapter.ts)"]
-        CS["CopilotSdkAdapter\n(copilot-sdk-adapter.ts)\n[gated/deferred]"]
         HR["HookRegistry\n(hooks.ts)"]
         TURN["handleBundle()"]
     end
@@ -221,7 +220,6 @@ graph TD
     BD -->|"at startup"| CA
     CA -->|"no real profile"| FA
     CA -->|"has real profile OR env=pi"| PA
-    CA -->|"env=copilot [gated]"| CS
 
     BD -->|"per workspace attach"| EXT
     EXT -->|"registers handlers on"| HR
@@ -232,7 +230,6 @@ graph TD
 **Adapter selection logic** (`daemon.ts:chooseAdapter`):
 - `FLOE_RUNTIME_ADAPTER` env var overrides config.
 - If no override: presence of a non-fake auth profile → `PiAgentCoreAdapter`; otherwise `FakeRuntimeAdapter`.
-- `CopilotSdkAdapter` exists but is intentionally gated behind `FLOE_LIVE_COPILOT=1` and throws (deferred).
 
 **RuntimeAdapter interface** (`floe-bridge/src/adapters/runtime-adapter.ts`):
 
