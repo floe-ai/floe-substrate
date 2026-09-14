@@ -13,7 +13,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.84.2",
     "@fastify/cors": "^10.0.0",
     "@fastify/websocket": "^11.0.0",
     "@jitl/quickjs-singlefile-mjs-release-asyncify": "0.32.0",
