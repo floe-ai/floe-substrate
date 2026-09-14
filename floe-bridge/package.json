@@ -15,8 +15,9 @@
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.84.2",
     "@earendil-works/pi-ai": "^0.84.2",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "diff": "^9.0.0",
-    "floe-runtime": "github:floe-ai/floe-runtime#4ed5029985052556a2e8e0da1d8054c8222a2473",
+    "floe-runtime": "github:floe-ai/floe-runtime#8e53df185b61eac850dac851ce3d48265ec29b6f",
     "sharp": "0.35.4",
     "vite": "8.0.10",
     "yaml": "^2.6.0",

@@ -13,7 +13,7 @@ import type { DeliveryBundle, EventEnvelope, RuntimeOperationAuthoritySession } 
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
 import type { HookPayload, HookRegistry } from "../hooks.js";
 import { InjectionBaseline } from "../injection-baseline.js";
-import { buildSystemPrompt, appendWorkLog, toNeutralRef, fromNeutralRef, toNeutralEndpoint, deliveryToPrompt, eventAttachments, renderHookInjections } from "../runtime-core/index.js";
+import { buildSystemPrompt, appendWorkLog, toNeutralRef, toNeutralEndpoint, deliveryToPrompt, eventAttachments, renderHookInjections, executeEmit, executeRequest } from "../runtime-core/index.js";
 import type { NeutralEndpoint } from "../runtime-core/index.js";
 import type { WorkLogEntry } from "../runtime-core/index.js";
 import { createRuntimeTools, runtimeToolsFingerprint } from "../tools/runtime-tools.js";
@@ -590,93 +590,13 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         const turn = session.activeTurn;
         const context = session.context;
         if (!turn || !context) throw new Error("No active runtime turn context is available for emit.");
-
-        const destinationRef = String(params?.destination ?? "");
-        let destination: EventEnvelope["destination_json"];
-        let destinationLabel = destinationRef;
-        if (destinationRef === "current_context") {
-          if (!turn.context_id) {
-            return {
-              content: [{ type: "text", text: "emit: this turn has no current Context." }],
-              details: { ok: false, error: "context_unavailable" }
-            };
-          }
-          destination = { kind: "context", context_id: turn.context_id };
-        } else {
-          let targetEndpoint = destinationRef;
-          if (!targetEndpoint.startsWith("actor:")) {
-            const ref = targetEndpoint;
-            const endpoints = await context.bus.listEndpoints(turn.workspace_id);
-            const resolved = fromNeutralRef(ref, endpoints);
-            if (!resolved) {
-              return {
-                content: [{ type: "text", text: `emit: destination '${ref}' did not resolve to a known actor. Use list_endpoints when actor discovery is needed.` }],
-                details: { ok: false, error: "unknown_destination", ref }
-              };
-            }
-            targetEndpoint = resolved;
-          }
-          destination = { kind: "endpoint", endpoint_id: targetEndpoint };
-          destinationLabel = targetEndpoint;
-        }
-
-        const attachments: Array<{ artefact_version_id: string; name: string }> = Array.isArray(params?.attachments)
-          ? params.attachments.map((attachment: { artefact_version_id: string; name: string }) => ({
-            artefact_version_id: attachment.artefact_version_id, name: attachment.name,
-          })) : [];
-        const versionIds = [...new Set<string>([
-          ...(Array.isArray(params?.artefact_version_ids) ? params.artefact_version_ids : []),
-          ...attachments.map(attachment => attachment.artefact_version_id),
-        ])];
-        const receipt = await context.bus.emit({
-          type: String(params?.type ?? "message"),
-          workspace_id: turn.workspace_id,
-          source_endpoint_id: turn.endpoint_id,
-          destination,
-          thread_id: turn.thread_id,
-          context_id: destination.kind === "context" ? turn.context_id : null,
-          current_delivery_context_id: turn.context_id,
-          correlation_id: null,
-          artefact_version_ids: versionIds,
-          content: {
-            text: String(params?.text ?? ""),
-            ...(Array.isArray(params?.references) && params.references.length ? { references: params.references } : {}),
-            ...(attachments.length ? { attachments } : {}),
-            data: {
-              ...(params?.data && typeof params.data === "object" && !Array.isArray(params.data)
-                ? params.data as Record<string, unknown>
-                : {}),
-              origin: "pi_emit_tool",
-              runtime_turn_id: turn.runtime_turn_id,
-              delivery_id: turn.delivery_id,
-              execution_attempt_id: turn.execution_attempt_id
-            }
-          },
-          response: { expected: false },
-          metadata: {
-            runtime: "pi-agent-core",
-            origin: "pi_emit_tool",
-            runtime_turn_id: turn.runtime_turn_id,
-            delivery_id: turn.delivery_id,
-            execution_attempt_id: turn.execution_attempt_id
-          }
+        const { result, emitted } = await executeEmit(context.bus, turn, params, {
+          runtimeName: "pi-agent-core",
+          emitOrigin: "pi_emit_tool",
+          requestOrigin: "pi_request_tool",
         });
-        turn.emitted_events.push({
-          type: String(params?.type ?? "message"),
-          destination: destinationLabel,
-          text_preview: String(params?.text ?? "").slice(0, 120),
-          response_expected: false
-        });
-        const accepted = {
-          ok: true,
-          event_id: receipt?.event_id ?? null,
-          accepted_at: receipt?.accepted_at ?? null,
-          artefact_version_ids: receipt?.event?.artefact_version_ids ?? null,
-        };
-        return {
-          content: [{ type: "text", text: JSON.stringify(accepted) }],
-          details: accepted,
-        };
+        if (emitted) turn.emitted_events.push(emitted);
+        return result;
       }
     };
   }
@@ -697,82 +617,14 @@ export class PiAgentCoreAdapter implements RuntimeAdapter {
         const turn = session.activeTurn;
         const context = session.context;
         if (!turn || !context) throw new Error("No active runtime turn context is available for request.");
-        if (turn.dependency_requested) {
-          return {
-            content: [{ type: "text", text: "request: this processing cycle already has a pending actor dependency" }],
-            details: { ok: false, error: "dependency_already_requested" }
-          };
-        }
-        const actorRef = String(params?.actor ?? "");
-        let targetEndpoint = actorRef;
-        if (!targetEndpoint.startsWith("actor:")) {
-          const endpoints = await context.bus.listEndpoints(turn.workspace_id);
-          const resolved = fromNeutralRef(actorRef, endpoints);
-          if (!resolved) {
-            return {
-              content: [{ type: "text", text: `request: actor '${actorRef}' did not resolve. Use list_endpoints when actor discovery is needed.` }],
-              details: { ok: false, error: "unknown_actor", actor: actorRef }
-            };
-          }
-          targetEndpoint = resolved;
-        }
-        const requestId = `req_${randomUUID()}`;
-        const receipt = await context.bus.emit({
-          type: "request",
-          workspace_id: turn.workspace_id,
-          source_endpoint_id: turn.endpoint_id,
-          destination: { kind: "endpoint", endpoint_id: targetEndpoint },
-          thread_id: turn.thread_id,
-          context_id: null,
-          current_delivery_context_id: turn.context_id,
-          correlation_id: requestId,
-          artefact_version_ids: [...new Set<string>(params?.artefact_version_ids ?? [])],
-          content: {
-            text: String(params?.work ?? ""),
-            data: {
-              origin: "pi_request_tool",
-              runtime_turn_id: turn.runtime_turn_id,
-              delivery_id: turn.delivery_id,
-              execution_attempt_id: turn.execution_attempt_id
-            }
-          },
-          response: {
-            expected: true,
-            mode: "correlated",
-            correlation_id: requestId
-          },
-          metadata: {
-            runtime: "pi-agent-core",
-            origin: "pi_request_tool",
-            request_return_context_id: turn.context_id,
-            request_parent_delivery_id: turn.delivery_id,
-            // A direct Actor request is not a graph Edge. When it is made
-            // during a NodeExecution, these exact references let the result
-            // resume that same logical execution under its pinned revision.
-            request_parent_scope_execution_id: turn.scope_execution_id,
-            request_parent_composition_revision_id: turn.composition_revision_id,
-            request_parent_node_execution_id: turn.node_execution_id,
-            request_parent_target_node_id: turn.target_node_id,
-            request_parent_execution_attempt_id: turn.execution_attempt_id,
-            request_continuation_event_id: turn.invocation_request_event_id,
-            runtime_turn_id: turn.runtime_turn_id,
-            delivery_id: turn.delivery_id,
-            execution_attempt_id: turn.execution_attempt_id
-          }
-        });
-        turn.dependency_requested = true;
-        turn.emitted_events.push({
-          type: "request",
-          destination: String(targetEndpoint),
-          text_preview: String(params?.work ?? "").slice(0, 120),
-          response_expected: true
-        });
-        const accepted = {
-          ok: true, actor: actorRef, event_id: receipt?.event_id ?? null,
-          artefact_version_ids: receipt?.event?.artefact_version_ids ?? null,
-          message: "request accepted; Floe will resume you with this actor's result",
-        };
-        return { content: [{ type: "text", text: JSON.stringify(accepted) }], details: accepted };
+        const { result, emitted, dependencyRequested } = await executeRequest(
+          context.bus, turn, params,
+          { runtimeName: "pi-agent-core", emitOrigin: "pi_emit_tool", requestOrigin: "pi_request_tool" },
+          turn.dependency_requested,
+        );
+        if (dependencyRequested) turn.dependency_requested = true;
+        if (emitted) turn.emitted_events.push(emitted);
+        return result;
       }
     };
   }
