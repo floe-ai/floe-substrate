@@ -17,7 +17,7 @@ import { randomUUID, randomBytes } from "node:crypto";
 import { CopilotRuntime } from "floe-runtime/adapters/copilot";
 import type { ActivityEvent, RunResult, McpServer } from "floe-runtime/adapters/copilot";
 import type { AgentRuntimeConfig } from "../auth.js";
-import type { DeliveryBundle } from "../bus-client.js";
+import type { DeliveryBundle, RuntimeOperationAuthoritySession } from "../bus-client.js";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
 import type { HookPayload } from "../hooks.js";
 import type { WorkLogEntry, WorkLogToolEntry } from "../runtime-core/index.js";
@@ -43,6 +43,8 @@ type FloeTurn = {
   source_endpoint_id: string;
   trigger_event_id: string;
   execution_attempt_id: string | null;
+  operation_authority_session: RuntimeOperationAuthoritySession | null;
+  processing_contract_id: string | null;
   visible_output: string;
   tool_activity: WorkLogToolEntry[];
   emitted_events: EmittedEventSummary[];
@@ -88,6 +90,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
     session.model = model;
     const freshSession = session.sessionId === null;
     const turn = this.startTurn(bundle);
+    turn.operation_authority_session = context.operation_authority_session ?? null;
     session.activeTurn = turn;
 
     // Scope is retained as structural metadata for the work log; actor
@@ -301,6 +304,22 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       this.substrateBridge.register(session.mcpSessionToken, {
         getBus: () => session.context?.bus ?? context.bus,
         getAnchor: () => (session.activeTurn && !session.activeTurn.finalized ? this.turnAnchor(session.activeTurn) : null),
+        getActiveTurn: () => {
+          const turn = session.activeTurn;
+          if (!turn || turn.finalized) return null;
+          // Getters/setters delegate to the live turn so the operation-authority
+          // helper's cache refresh persists across tool calls within one turn.
+          return {
+            workspace_id: turn.workspace_id,
+            context_id: turn.context_id,
+            workspace_locator: session.context?.workspace_locator ?? null,
+            delivery_id: turn.delivery_id,
+            get processing_contract_id() { return turn.processing_contract_id; },
+            set processing_contract_id(value: string | null) { turn.processing_contract_id = value; },
+            get operation_authority_session() { return turn.operation_authority_session; },
+            set operation_authority_session(value: RuntimeOperationAuthoritySession | null) { turn.operation_authority_session = value; },
+          };
+        },
         isDependencyRequested: () => session.activeTurn?.dependency_requested ?? true,
         markDependencyRequested: () => { if (session.activeTurn) session.activeTurn.dependency_requested = true; },
         recordEmitted: (summary) => { session.activeTurn?.emitted_events.push(summary); },
@@ -353,6 +372,8 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       source_endpoint_id: sourceEndpoint,
       trigger_event_id: trigger?.event_id ?? `evt:${bundle.delivery_id}`,
       execution_attempt_id: bundle.execution_attempt_id ?? null,
+      operation_authority_session: null,
+      processing_contract_id: bundle.processing_contract?.processing_contract_id ?? null,
       visible_output: "",
       tool_activity: [],
       emitted_events: [],

@@ -27,7 +27,30 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import type { BusClient } from "../bus-client.js";
-import { executeEmit, executeRequest, type EmittedEventSummary, type SubstrateTurnAnchor } from "../runtime-core/index.js";
+import {
+  executeEmit,
+  executeRequest,
+  executeDiscoverCapabilities,
+  executeUseCapability,
+  type EmittedEventSummary,
+  type SubstrateTurnAnchor,
+  type OperationAuthorityTurn,
+} from "../runtime-core/index.js";
+
+/**
+ * The live, mutable active turn the operation-authority tools (capability
+ * invocation, pulses, artefact reads) need. It carries the Bus operation
+ * scope (workspace/context) plus the mutable authority cache the helper reads
+ * and refreshes. Unlike the emit/request anchor, this MUST be a stable
+ * reference to the runtime's own turn object so the cached authority session
+ * persists across tool calls within one turn.
+ */
+export type SubstrateActiveTurn = OperationAuthorityTurn & {
+  workspace_id: string;
+  context_id: string | null;
+  /** Filesystem locator for workspace-persisted state (e.g. floe.yaml), or null. */
+  workspace_locator: string | null;
+};
 
 /** Per-session hooks the Bridge registers so a tool call resolves to a turn. */
 export type SubstrateSessionHandle = {
@@ -35,6 +58,11 @@ export type SubstrateSessionHandle = {
   getBus: () => BusClient;
   /** The anchor for the currently-active turn, or null when none is running. */
   getAnchor: () => SubstrateTurnAnchor | null;
+  /**
+   * The live mutable active turn for operation-authority tools, or null when
+   * none is running. Must be a stable reference so the authority cache persists.
+   */
+  getActiveTurn: () => SubstrateActiveTurn | null;
   /** Whether the active turn has already made its one allowed dependency request. */
   isDependencyRequested: () => boolean;
   /** Flip the active turn's dependency flag after an accepted request. */
@@ -86,6 +114,36 @@ const EMIT_DESCRIPTION =
 
 const REQUEST_DESCRIPTION =
   "Ask one actor for work whose result you need before continuing. Attach the exact published ArtefactVersion IDs when the work concerns saved inputs. Floe stores the dependency, ends this processing cycle normally, and resumes you when that actor completes or fails. The return path is automatic.";
+
+const CAPABILITY_TARGET_SCHEMA = z.object({
+  kind: z.string().min(1).describe("Canonical resource kind"),
+  id: z.string().min(1).describe("Canonical resource id"),
+});
+
+const DISCOVER_CAPABILITIES_INPUT_SCHEMA = {
+  query: z.string().optional().describe("One or two specific keywords. Long sentences match unrelated operations."),
+  operation_id: z.string().optional().describe("Exact operation_id from a search result; returns this operation's authoritative input contract."),
+  include_result_schema: z.boolean().optional().describe("Include the selected operation's full result schema when building an integration. Ordinary invocation returns its result directly."),
+  category: z.string().optional().describe("Optional category returned by an earlier discovery."),
+  target: CAPABILITY_TARGET_SCHEMA.optional().describe("Optional selected resource used to evaluate target-specific availability. Omit until the operation's target kind is known from discovery."),
+  limit: z.number().min(1).max(20).optional().describe("Maximum matching operations to return."),
+} as const;
+
+const USE_CAPABILITY_INPUT_SCHEMA = {
+  operation_id: z.string().min(1).describe("Exact operation_id returned by discover_capabilities."),
+  operation_version: z.string().min(1).describe("Exact operation_version returned by discover_capabilities."),
+  input_schema_version: z.string().min(1).describe("Exact input.version returned by discover_capabilities."),
+  target: CAPABILITY_TARGET_SCHEMA.optional().describe("Target required by the discovered operation, when applicable."),
+  expected_resource_revision: z.string().optional().describe("Exact target revision when the operation requires or accepts optimistic concurrency."),
+  idempotency_key: z.string().optional().describe("Stable caller key. Reuse it after a timeout when the operation outcome is unknown."),
+  input: z.record(z.string(), z.unknown()).describe("Input matching the exact discovered input.schema."),
+} as const;
+
+const DISCOVER_CAPABILITIES_DESCRIPTION =
+  "Find current Bus operations for a concrete need. Search returns short summaries. Pass an operation_id from a summary to load its exact input contract before using it. Reuse a discovered contract within this turn; rediscover after a version or authority refusal.";
+
+const USE_CAPABILITY_DESCRIPTION =
+  "Invoke one Bus semantic operation using the exact operation and input-schema versions returned by discover_capabilities. Authority and causal provenance come from the active Delivery, not from this input.";
 
 function errorResult(text: string) {
   return { content: [{ type: "text" as const, text }], isError: true };
@@ -181,6 +239,36 @@ export class SubstrateToolBridge {
           return { content: result.content };
         } catch (error) {
           return errorResult(`request: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      },
+    );
+
+    server.registerTool(
+      "discover_capabilities",
+      { title: "Discover Capabilities", description: DISCOVER_CAPABILITIES_DESCRIPTION, inputSchema: DISCOVER_CAPABILITIES_INPUT_SCHEMA },
+      async (params: Record<string, unknown>) => {
+        const turn = handle.getActiveTurn();
+        if (!turn) return errorResult("discover_capabilities: no active Floe turn is running for this session.");
+        try {
+          const result = await executeDiscoverCapabilities(handle.getBus(), turn.workspace_id, turn, params);
+          return { content: result.content };
+        } catch (error) {
+          return errorResult(`discover_capabilities: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      },
+    );
+
+    server.registerTool(
+      "use_capability",
+      { title: "Use Capability", description: USE_CAPABILITY_DESCRIPTION, inputSchema: USE_CAPABILITY_INPUT_SCHEMA },
+      async (params: Record<string, unknown>) => {
+        const turn = handle.getActiveTurn();
+        if (!turn) return errorResult("use_capability: no active Floe turn is running for this session.");
+        try {
+          const result = await executeUseCapability(handle.getBus(), turn.workspace_id, turn, params);
+          return { content: result.content };
+        } catch (error) {
+          return errorResult(`use_capability: ${error instanceof Error ? error.message : String(error)}`);
         }
       },
     );

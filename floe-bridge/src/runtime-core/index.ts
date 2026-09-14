@@ -13,6 +13,9 @@ export type {
   ExecuteEmitResult,
   ExecuteRequestResult,
 } from "./substrate-tools.js";
+export { requireOperationAuthority } from "./substrate-authority.js";
+export type { OperationAuthorityTurn } from "./substrate-authority.js";
+export { executeDiscoverCapabilities, executeUseCapability } from "./substrate-capability-tools.js";
 export { appendWorkLog } from "./worklog.js";
 export type { WorkLogEntry, WorkLogEvent, WorkLogToolEntry, WorkLogEmitEntry } from "./worklog.js";
 export type {
