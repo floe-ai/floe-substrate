@@ -86,11 +86,6 @@ export type WorkspaceConfigurationActorInventory = Readonly<{
     resource_policy: Readonly<Record<string, unknown>>;
     credential_requirement: "none" | "required";
     required_configuration_keys: readonly string[];
-    credential_reference: Readonly<{
-      source_kind: "provider_account";
-      provider_id: string;
-      secret_kind: "runtime_authentication";
-    }> | null;
   }>;
 }>;
 
@@ -175,15 +170,6 @@ function actorInventory(
   if (cleanText(runtime.thinking_level)) configuration.thinking_level = cleanText(runtime.thinking_level);
   assertSafeJson(runtime.resource_policy ?? {}, "resource_policy");
 
-  const providerId = cleanText(runtime.provider);
-  const credentialReference = providerId && (runtime.credential_requirement ?? (runtime.backing_kind === "human" ? "none" : "required")) === "required"
-    ? {
-        source_kind: "provider_account" as const,
-        provider_id: providerId,
-        secret_kind: "runtime_authentication" as const,
-      }
-    : null;
-
   const definition = {
     label,
     charter: cleanText(frontmatter.charter)
@@ -209,7 +195,6 @@ function actorInventory(
       runtime.required_configuration_keys
         ?? ((runtime.backing_kind ?? "model") === "model" ? ["model"] : []),
     ),
-    credential_reference: credentialReference,
   };
 
   return {

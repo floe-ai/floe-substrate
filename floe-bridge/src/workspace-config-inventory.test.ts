@@ -41,7 +41,7 @@ describe("Workspace configuration inventory", () => {
       project: project(),
       runtimes: [{
         agent_id: "floe",
-        adapter_id: "pi-agent-core",
+        adapter_id: "fake",
         provider: "openai-codex",
         model: "gpt-5.6",
         thinking_level: "high",
@@ -52,7 +52,7 @@ describe("Workspace configuration inventory", () => {
       project: project(),
       runtimes: [{
         agent_id: "floe",
-        adapter_id: "pi-agent-core",
+        adapter_id: "fake",
         provider: "openai-codex",
         model: "gpt-5.6",
         thinking_level: "high",
@@ -69,7 +69,7 @@ describe("Workspace configuration inventory", () => {
         instructions: "Work from the operator's outcome.",
       },
       runtime: {
-        adapter_id: "pi-agent-core",
+        adapter_id: "fake",
         backing_kind: "model",
         configuration: {
           provider: "openai-codex",
@@ -78,11 +78,6 @@ describe("Workspace configuration inventory", () => {
         },
         credential_requirement: "required",
         required_configuration_keys: ["model"],
-        credential_reference: {
-          source_kind: "provider_account",
-          provider_id: "openai-codex",
-          secret_kind: "runtime_authentication",
-        },
       },
     });
     const serialized = JSON.stringify(first);
@@ -106,13 +101,13 @@ describe("Workspace configuration inventory", () => {
       runtimes: [
         {
           agent_id: "builder",
-          adapter_id: "pi-agent-core",
+          adapter_id: "fake",
           model: "gpt-5.6",
           required_capability_ids: ["vision", "filesystem", "vision"],
         },
         {
           agent_id: "floe",
-          adapter_id: "pi-agent-core",
+          adapter_id: "fake",
           model: "gpt-5.6",
         },
       ],
@@ -132,7 +127,7 @@ describe("Workspace configuration inventory", () => {
           errors: ["Unable to parse .floe/floe.yaml: token=secret-value"],
         },
       }),
-      runtimes: [{ agent_id: "floe", adapter_id: "pi-agent-core", model: "gpt-5.6" }],
+      runtimes: [{ agent_id: "floe", adapter_id: "fake", model: "gpt-5.6" }],
     });
 
     expect(inventory.validation).toEqual({
@@ -157,7 +152,7 @@ describe("Workspace configuration inventory", () => {
       project: project({
         agents: [{ ...project().agents[0]!, file: "../outside.md" }],
       }),
-      runtimes: [{ agent_id: "floe", adapter_id: "pi-agent-core" }],
+      runtimes: [{ agent_id: "floe", adapter_id: "fake" }],
     })).toThrow(WorkspaceConfigurationInventoryError);
   });
 
@@ -174,7 +169,7 @@ describe("Workspace configuration inventory", () => {
       project: project(),
       runtimes: [{
         agent_id: "floe",
-        adapter_id: "pi-agent-core",
+        adapter_id: "fake",
         ...runtime,
       }],
     })).toThrow(/secret material/);

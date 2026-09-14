@@ -11,7 +11,6 @@ import {
   SqliteSecretRefStore,
   applyCredentialBrokerSchema,
 } from "./credential-broker.js";
-import { providerAccountSecretRefId } from "./credential-operations.js";
 import {
   WorkspaceConfigurationImportBoundaryError,
   WorkspaceConfigurationApplyError,
@@ -28,7 +27,6 @@ const NOW = "2026-09-04T00:00:00.000Z";
 const WORKSPACE_ID = "workspace:one";
 const BINDING_ID = "binding:one";
 const HOST_ID = "host:test";
-const PROVIDER_ID = "openai-codex";
 
 function policy(overrides: Partial<WorkspaceConfigurationImportPolicy> = {}): WorkspaceConfigurationImportPolicy {
   return {
@@ -73,18 +71,13 @@ function actor(
     runtime: {
       label: `${sourceActorId} runtime`,
       backing_kind: "model",
-      adapter_id: "pi-agent-core",
+      adapter_id: "fake",
       configuration: { provider: "openai-codex", model: "gpt-5.6", thinking_level: "high" },
       required_capability_ids: [],
       checkpoint_policy: { mode: "provider_neutral", schema_ref: null },
       resource_policy: {},
-      credential_requirement: "required",
+      credential_requirement: "none",
       required_configuration_keys: ["model"],
-      credential_reference: {
-        source_kind: "provider_account",
-        provider_id: PROVIDER_ID,
-        secret_kind: "runtime_authentication",
-      },
     },
     ...overrides,
   };
@@ -193,9 +186,9 @@ describe("canonical Workspace configuration import", () => {
         source_actor_id: "floe",
         actor_id: "actor:workspace:one:floe",
         runtime_profile_id: "runtime-profile:actor:workspace:one:floe",
-        runtime_status: "unresolved",
-        unresolved_reasons: ["runtime_credential_unresolved"],
-        secret_ref_ids: [providerAccountSecretRefId(HOST_ID, PROVIDER_ID)],
+        runtime_status: "resolved",
+        unresolved_reasons: [],
+        secret_ref_ids: [],
       }],
     });
 
@@ -213,68 +206,15 @@ describe("canonical Workspace configuration import", () => {
       .not.toContain("context.destroy.permanent");
     expect(runtimeProfiles.requireRevision(imported.runtime_profile_revision_id).content)
       .toMatchObject({
-        adapter_id: "pi-agent-core",
+        adapter_id: "fake",
         configuration: { provider: "openai-codex", model: "gpt-5.6", thinking_level: "high" },
         secret_ref_ids: imported.secret_ref_ids,
       });
-    expect(runtimeProfiles.requireActorBinding(imported.actor_runtime_binding_id).status).toBe("unresolved");
+    expect(runtimeProfiles.requireActorBinding(imported.actor_runtime_binding_id).status).toBe("resolved");
     expect(actorDefinitions.listRevisions(imported.actor_id)).toHaveLength(1);
     expect(runtimeProfiles.listRevisions(imported.runtime_profile_id)).toHaveLength(1);
     expect(runtimeProfiles.listActorBindings(imported.actor_id)).toHaveLength(1);
     expect(imports.listReceipts(WORKSPACE_ID)).toHaveLength(1);
-  });
-
-  it("creates a separate exact credential grant and keeps unresolved work blocked", () => {
-    const providerRefId = providerAccountSecretRefId(HOST_ID, PROVIDER_ID);
-    secretRefs.createSecretRef({
-      secret_ref_id: providerRefId,
-      owner: { kind: "host", host_id: HOST_ID },
-      resource: { kind: "provider_account", id: PROVIDER_ID },
-      secret_kind: "runtime_authentication",
-      label: "ChatGPT",
-    });
-    const selectedPolicy = policy({
-      actor_operation_authority: [{
-        source_actor_id: "floe",
-        operation_ids: [
-          "context.inspect",
-          "credential.use",
-          "credential.refresh",
-        ],
-      }],
-    });
-    const imports = importer(selectedPolicy, [
-      "context.inspect",
-      "credential.use",
-      "credential.refresh",
-    ]);
-
-    const imported = imports.import(WORKSPACE_ID, inventory()).receipt.imported_actors[0]!;
-
-    expect(imported.runtime_status).toBe("unresolved");
-    expect(imported.unresolved_reasons).toContain("runtime_credential_unresolved");
-    expect(imported.unresolved_reasons).not.toContain("runtime_credential_authority_unresolved");
-    expect(imported.capability_grant_ids).toHaveLength(2);
-    const credentialGrant = imported.capability_grant_ids
-      .map((grantId) => capabilityGrants.getGrant(grantId))
-      .find((grant) => grant?.operation_ids.includes("credential.use"));
-    expect(credentialGrant).toMatchObject({
-      principal_id: imported.actor_id,
-      boundary: { kind: "workspace", workspace_id: WORKSPACE_ID },
-      operation_ids: ["credential.refresh", "credential.use"],
-      targets: expect.arrayContaining([
-        { kind: "secret_ref", id: imported.secret_ref_ids[0] },
-        { kind: "provider_account", id: PROVIDER_ID },
-      ]),
-    });
-    expect(secretRefs.getGrantConstraint(credentialGrant!.grant_id)).toEqual({
-      grant_id: credentialGrant!.grant_id,
-      secret_ref_id: imported.secret_ref_ids[0],
-      authority_boundary: { kind: "workspace", workspace_id: WORKSPACE_ID },
-      purposes: ["runtime-provider-authentication"],
-    });
-    expect(new Set(actorDefinitions.requireRevision(imported.actor_definition_revision_id).content.capability_grant_ids))
-      .toEqual(new Set(imported.capability_grant_ids));
   });
 
   it("creates immutable Actor, Runtime Profile, and Runtime Binding revisions when Workspace files change", () => {
@@ -434,7 +374,6 @@ describe("canonical Workspace configuration import", () => {
         configuration: {},
         credential_requirement: "none",
         required_configuration_keys: [],
-        credential_reference: null,
       },
     });
 
@@ -450,32 +389,6 @@ describe("canonical Workspace configuration import", () => {
       .toEqual([]);
     expect((db.prepare("SELECT COUNT(*) AS count FROM capability_grants").get() as { count: number }).count)
       .toBe(0);
-  });
-
-  it("does not claim a broker-resolved SecretRef is usable without exact secret-use authority", () => {
-    const secretRefId = providerAccountSecretRefId(HOST_ID, PROVIDER_ID);
-    secretRefs.createSecretRef({
-      secret_ref_id: secretRefId,
-      owner: { kind: "host", host_id: HOST_ID },
-      resource: { kind: "provider_account", id: PROVIDER_ID },
-      secret_kind: "runtime_authentication",
-      label: "ChatGPT",
-    });
-    db.prepare(`
-      UPDATE secret_refs
-      SET resolution = 'resolved', broker_id = 'broker:test', broker_locator = 'opaque:test', generation = 1
-      WHERE owner_kind = 'host' AND owner_id = ? AND secret_ref_id = ?
-    `).run(HOST_ID, secretRefId);
-
-    const result = importer().import(WORKSPACE_ID, inventory());
-
-    expect(result.receipt.imported_actors[0]).toMatchObject({
-      runtime_status: "unresolved",
-      unresolved_reasons: ["runtime_credential_authority_unresolved"],
-      secret_ref_ids: [secretRefId],
-    });
-    expect(secretRefs.getSecretRef(secretRefId)?.binding)
-      .toEqual({ broker_id: "broker:test", locator: "opaque:test" });
   });
 
   it("records file-validation refusal and changes no canonical resources", () => {

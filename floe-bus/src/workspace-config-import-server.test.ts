@@ -109,7 +109,6 @@ describe("authenticated canonical Workspace configuration import", () => {
           resource_policy: {},
           credential_requirement: "none",
           required_configuration_keys: ["model"],
-          credential_reference: null,
         },
       }],
     };

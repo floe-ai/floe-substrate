@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { SqliteCapabilityGrantStore } from "./capability-grants.js";
 import {
   CredentialBrokerOperationError,
@@ -312,14 +311,6 @@ async function handle<Result>(work: () => Promise<OperationHandlerOutcome<Result
   } catch (error) {
     return { state: "refused", refusal: credentialRefusal(error) };
   }
-}
-
-export function providerAccountSecretRefId(hostId: string, providerId: string): string {
-  const digest = createHash("sha256")
-    .update(`${hostId.trim()}\0${providerId.trim()}`, "utf8")
-    .digest("hex")
-    .slice(0, 32);
-  return `secretref_provider_account_${digest}`;
 }
 
 function bindOperation(dependencies: CredentialOperationDependencies): SemanticOperationDefinition<CredentialSourceInput, { credential: ReturnType<typeof publicStatus> }> {

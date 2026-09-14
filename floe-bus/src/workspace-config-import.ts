@@ -22,15 +22,11 @@ import {
 } from "./capability-grants.js";
 import {
   SqliteSecretRefStore,
-  type SecretGrantConstraintRecord,
-  type SecretRefRecord,
 } from "./credential-broker.js";
 import type { SemanticOperationRegistry } from "./operations.js";
 import type { WorkspaceCreationKind } from "./workspace-identities.js";
 import {
-  providerAccountSecretRefId,
   REFRESH_CREDENTIAL_OPERATION_ID,
-  RUNTIME_CREDENTIAL_PURPOSE,
   USE_CREDENTIAL_OPERATION_ID,
 } from "./credential-operations.js";
 
@@ -163,11 +159,6 @@ export type WorkspaceConfigurationActorInput = Readonly<{
     resource_policy: Readonly<Record<string, unknown>>;
     credential_requirement: "none" | "required";
     required_configuration_keys: readonly string[];
-    credential_reference: Readonly<{
-      source_kind: "provider_account";
-      provider_id: string;
-      secret_kind: "runtime_authentication";
-    }> | null;
   }>;
 }>;
 
@@ -568,28 +559,12 @@ export class WorkspaceConfigurationImportStore {
       const profileId = workspaceConfigurationRuntimeProfileId(actorId);
       const operationIds = actorOperationIds(policy, input.source_actor_id);
       const generalOperationIds = operationIds ? nonCredentialOperationIds(operationIds) : [];
-      const credentialOperationIds = operationIds ? runtimeCredentialOperationIds(operationIds) : [];
       const grantId = generalOperationIds.length > 0
         ? workspaceConfigurationGrantId(workspaceId, actorId, policy, generalOperationIds)
         : null;
-      const secretRefId = input.runtime.credential_reference
-        ? providerAccountSecretRefId(this.dependencies.local_host_id, input.runtime.credential_reference.provider_id)
-        : null;
-      const secretRef = secretRefId ? this.dependencies.secret_refs.getSecretRef(secretRefId) : null;
-      const secretRefIds = secretRefId ? [secretRefId] : [];
-      const credentialGrantId = secretRef && credentialOperationIds.length > 0
-        ? workspaceConfigurationCredentialGrantId(
-            workspaceId,
-            actorId,
-            profileId,
-            secretRefIds[0]!,
-            policy,
-            credentialOperationIds,
-          )
-        : null;
       try {
-        validateActorDefinition(actorDefinition(input, [grantId, credentialGrantId].filter(isText)));
-        validateRuntimeProfile(runtimeProfile(input, secretRefIds));
+        validateActorDefinition(actorDefinition(input, [grantId].filter(isText)));
+        validateRuntimeProfile(runtimeProfile(input));
       } catch {
         return invalidConfiguration("The Workspace Actor or Runtime configuration is not valid canonical input.");
       }
@@ -623,7 +598,7 @@ export class WorkspaceConfigurationImportStore {
         }
       }
       if (actor && !ownership) {
-        const desired = actorDefinition(input, [grantId, credentialGrantId].filter(isText));
+        const desired = actorDefinition(input, [grantId].filter(isText));
         const current = actor.current_definition_revision_id
           ? this.dependencies.actor_definitions.requireRevision(actor.current_definition_revision_id)
           : null;
@@ -639,7 +614,7 @@ export class WorkspaceConfigurationImportStore {
         return conflict("A retired canonical Runtime Profile cannot be silently reactivated by Workspace import.");
       }
       if (profile && !ownership) {
-        const desired = runtimeProfile(input, secretRefIds);
+        const desired = runtimeProfile(input);
         const current = profile.current_revision_id
           ? this.dependencies.runtime_profiles.requireRevision(profile.current_revision_id)
           : null;
@@ -658,43 +633,6 @@ export class WorkspaceConfigurationImportStore {
         }
       }
 
-      if (input.runtime.credential_reference) {
-        const secretRefId = providerAccountSecretRefId(
-          this.dependencies.local_host_id,
-          input.runtime.credential_reference.provider_id,
-        );
-        const secretRef = this.dependencies.secret_refs.getSecretRef(secretRefId);
-        if (secretRef && (
-          secretRef.owner.kind !== "host"
-          || secretRef.owner.host_id !== this.dependencies.local_host_id
-          || secretRef.resource.kind !== "provider_account"
-          || secretRef.resource.id !== input.runtime.credential_reference.provider_id
-          || secretRef.secret_kind !== input.runtime.credential_reference.secret_kind
-        )) {
-          return conflict("The deterministic SecretRef identifies different credential metadata.");
-        }
-        if (credentialGrantId) {
-          const credentialGrant = this.dependencies.capability_grants.getGrant(credentialGrantId);
-          if (credentialGrant && (!secretRef || !sameCredentialGrant(
-            credentialGrant,
-            workspaceId,
-            actorId,
-            secretRef,
-            policy,
-            credentialOperationIds,
-          ))) {
-            return conflict("The deterministic credential CapabilityGrant identifies different authority.");
-          }
-          if (credentialGrant?.revoked_at) {
-            return conflict("A revoked credential CapabilityGrant cannot be silently revived.");
-          }
-          const constraint = this.dependencies.secret_refs.getGrantConstraint(credentialGrantId);
-          if (constraint && !sameCredentialConstraint(constraint, workspaceId, secretRefId)) {
-            return conflict("The deterministic credential CapabilityGrant identifies a different purpose constraint.");
-          }
-        }
-      }
-
       if (currentBinding?.status === "disabled") {
         return conflict("A disabled Actor Runtime Binding cannot be silently re-enabled by Workspace import.");
       }
@@ -710,28 +648,11 @@ export class WorkspaceConfigurationImportStore {
     const actorId = workspaceConfigurationActorId(workspaceId, input.source_actor_id);
     const profileId = workspaceConfigurationRuntimeProfileId(actorId);
     const operationIds = actorOperationIds(policy, input.source_actor_id);
-    const secretRefId = input.runtime.credential_reference
-      ? providerAccountSecretRefId(this.dependencies.local_host_id, input.runtime.credential_reference.provider_id)
-      : null;
-    const secretRef = secretRefId ? this.dependencies.secret_refs.getSecretRef(secretRefId) : null;
-    const secretRefs = secretRef ? [secretRef] : [];
-    const secretRefIds = secretRefId ? [secretRefId] : [];
     const generalOperationIds = operationIds ? nonCredentialOperationIds(operationIds) : [];
-    const credentialOperationIds = operationIds ? runtimeCredentialOperationIds(operationIds) : [];
     const grant = generalOperationIds.length > 0
       ? this.ensureGrant(workspaceId, actorId, policy, generalOperationIds)
       : null;
-    const credentialGrant = secretRefs.length > 0 && credentialOperationIds.length > 0
-      ? this.ensureCredentialGrant(
-          workspaceId,
-          actorId,
-          profileId,
-          secretRefs[0]!,
-          policy,
-          credentialOperationIds,
-        )
-      : null;
-    const capabilityGrantIds = [grant?.grant_id, credentialGrant?.grant_id].filter(isText);
+    const capabilityGrantIds = [grant?.grant_id].filter(isText);
     const actorRevision = this.ensureActorDefinition(
       workspaceId,
       actorId,
@@ -739,12 +660,10 @@ export class WorkspaceConfigurationImportStore {
       capabilityGrantIds,
       policy.import_principal_id,
     );
-    const profileRevision = this.ensureRuntimeProfile(workspaceId, profileId, input, secretRefIds, policy.import_principal_id);
+    const profileRevision = this.ensureRuntimeProfile(workspaceId, profileId, input, policy.import_principal_id);
     const status = runtimeBindingStatus(
       input,
-      secretRefs,
       operationIds !== null,
-      input.runtime.credential_requirement !== "required" || credentialGrant !== null,
     );
     const currentBinding = this.dependencies.runtime_profiles.getCurrentActorBinding(actorId);
     const endpointId = actorId;
@@ -775,7 +694,7 @@ export class WorkspaceConfigurationImportStore {
       actor_runtime_binding_id: binding.actor_runtime_binding_id,
       runtime_status: binding.status,
       unresolved_reasons: binding.unresolved_reasons,
-      secret_ref_ids: secretRefIds,
+      secret_ref_ids: [],
     };
   }
 
@@ -800,53 +719,6 @@ export class WorkspaceConfigurationImportStore {
         ref: policy.policy_revision,
       }],
     });
-  }
-
-  private ensureCredentialGrant(
-    workspaceId: string,
-    actorId: string,
-    profileId: string,
-    secretRef: SecretRefRecord,
-    policy: WorkspaceConfigurationImportPolicy,
-    operationIds: readonly string[],
-  ): CapabilityGrantRecord {
-    const grantId = workspaceConfigurationCredentialGrantId(
-      workspaceId,
-      actorId,
-      profileId,
-      secretRef.secret_ref_id,
-      policy,
-      operationIds,
-    );
-    let grant = this.dependencies.capability_grants.getGrant(grantId);
-    if (!grant) {
-      grant = this.dependencies.capability_grants.issueGrant({
-        grant_id: grantId,
-        principal_id: actorId,
-        boundary: { kind: "workspace", workspace_id: workspaceId },
-        operation_ids: operationIds,
-        targets: [
-          { kind: "secret_ref", id: secretRef.secret_ref_id },
-          { kind: secretRef.resource.kind, id: secretRef.resource.id },
-        ],
-        expires_at: policy.expires_at,
-        issuer_id: policy.issuer_id,
-        evidence: [{
-          kind: "workspace_configuration_import_policy",
-          ref: policy.policy_revision,
-        }],
-      });
-    }
-    const constraint = this.dependencies.secret_refs.getGrantConstraint(grantId);
-    if (!constraint) {
-      this.dependencies.secret_refs.attachGrantConstraint({
-        grant_id: grantId,
-        secret_ref_id: secretRef.secret_ref_id,
-        authority_boundary: { kind: "workspace", workspace_id: workspaceId },
-        purposes: [RUNTIME_CREDENTIAL_PURPOSE],
-      }, this.dependencies.capability_grants);
-    }
-    return grant;
   }
 
   private ensureActorDefinition(
@@ -892,10 +764,9 @@ export class WorkspaceConfigurationImportStore {
     workspaceId: string,
     profileId: string,
     input: WorkspaceConfigurationActorInput,
-    secretRefIds: readonly string[],
     principalId: string,
   ): RuntimeProfileRevision {
-    const content = runtimeProfile(input, secretRefIds);
+    const content = runtimeProfile(input);
     const profile = this.dependencies.runtime_profiles.getProfile(profileId);
     if (!profile) {
       const created = this.dependencies.runtime_profiles.createProfile({
@@ -1024,27 +895,6 @@ export function workspaceConfigurationGrantId(
   })).slice(0, 32)}`;
 }
 
-export function workspaceConfigurationCredentialGrantId(
-  workspaceId: string,
-  actorId: string,
-  runtimeProfileId: string,
-  secretRefId: string,
-  policy: WorkspaceConfigurationImportPolicy,
-  operationIds: readonly string[],
-): string {
-  return `capgrant_workspace_credential_${digest(canonicalJson({
-    workspace_id: workspaceId,
-    actor_id: actorId,
-    runtime_profile_id: runtimeProfileId,
-    secret_ref_id: secretRefId,
-    policy_revision: policy.policy_revision,
-    operation_ids: normalizeTextSet(operationIds, "operation_id", true),
-    purpose: RUNTIME_CREDENTIAL_PURPOSE,
-    expires_at: policy.expires_at,
-    issuer_id: policy.issuer_id,
-  })).slice(0, 32)}`;
-}
-
 export function workspaceConfigurationImportReceiptId(
   workspaceId: string,
   bindingId: string,
@@ -1063,14 +913,13 @@ function actorDefinition(input: WorkspaceConfigurationActorInput, grantIds: read
 
 function runtimeProfile(
   input: WorkspaceConfigurationActorInput,
-  secretRefIds: readonly string[],
 ): RuntimeProfileContent {
   return {
     label: input.runtime.label,
     backing_kind: input.runtime.backing_kind,
     adapter_id: input.runtime.adapter_id,
     configuration: input.runtime.configuration,
-    secret_ref_ids: [...secretRefIds].sort((left, right) => left.localeCompare(right)),
+    secret_ref_ids: [],
     required_capability_ids: input.runtime.required_capability_ids,
     checkpoint_policy: input.runtime.checkpoint_policy,
     resource_policy: input.runtime.resource_policy,
@@ -1079,16 +928,12 @@ function runtimeProfile(
 
 function runtimeBindingStatus(
   input: WorkspaceConfigurationActorInput,
-  secretRefs: readonly SecretRefRecord[],
   hasExplicitOperationAuthority: boolean,
-  hasCredentialAuthority: boolean,
 ): Readonly<{ status: "resolved" | "unresolved"; reasons: readonly string[] }> {
   const reasons: string[] = [];
   if (!hasExplicitOperationAuthority) reasons.push("operation_authority_unmapped");
   if (input.runtime.credential_requirement === "required") {
-    if (!input.runtime.credential_reference) reasons.push("runtime_credential_reference_missing");
-    else if (secretRefs.every((ref) => ref.resolution !== "resolved")) reasons.push("runtime_credential_unresolved");
-    else if (!hasCredentialAuthority) reasons.push("runtime_credential_authority_unresolved");
+    reasons.push("runtime_credential_unresolved");
   }
   for (const key of input.runtime.required_configuration_keys) {
     const value = input.runtime.configuration[key];
@@ -1157,11 +1002,6 @@ function actorOperationIds(
   return policy.actor_operation_authority
     .find((entry) => entry.source_actor_id === sourceActorId)
     ?.operation_ids ?? null;
-}
-
-function runtimeCredentialOperationIds(operationIds: readonly string[]): readonly string[] {
-  return operationIds.filter((operationId) =>
-    operationId === USE_CREDENTIAL_OPERATION_ID || operationId === REFRESH_CREDENTIAL_OPERATION_ID);
 }
 
 function nonCredentialOperationIds(operationIds: readonly string[]): readonly string[] {
@@ -1242,7 +1082,7 @@ function normalizeActor(value: unknown, index: number): WorkspaceConfigurationAc
   const runtime = exactObject(actor.runtime, [
     "label", "backing_kind", "adapter_id", "configuration", "required_capability_ids",
     "checkpoint_policy", "resource_policy", "credential_requirement",
-    "required_configuration_keys", "credential_reference",
+    "required_configuration_keys",
   ], `${path}.runtime`);
   const policyRefs = exactObject(definition.policy_refs, ["budget", "trust", "approval"], `${path}.definition.policy_refs`);
   if (!Array.isArray(definition.responsibilities)
@@ -1265,9 +1105,6 @@ function normalizeActor(value: unknown, index: number): WorkspaceConfigurationAc
   }
   const configuration = safeJsonObject(runtime.configuration, `${path}.runtime.configuration`);
   const resourcePolicy = safeJsonObject(runtime.resource_policy, `${path}.runtime.resource_policy`);
-  const credentialReference = runtime.credential_reference == null
-    ? null
-    : normalizeCredentialReference(runtime.credential_reference, `${path}.runtime.credential_reference`);
   const normalized: WorkspaceConfigurationActorInput = {
     source_actor_id: requiredText(actor.source_actor_id, `${path}.source_actor_id`),
     source: {
@@ -1319,22 +1156,9 @@ function normalizeActor(value: unknown, index: number): WorkspaceConfigurationAc
       resource_policy: resourcePolicy,
       credential_requirement: runtime.credential_requirement as "none" | "required",
       required_configuration_keys: normalizeUnknownTextSet(runtime.required_configuration_keys, "required configuration key"),
-      credential_reference: credentialReference,
     },
   };
   return normalized;
-}
-
-function normalizeCredentialReference(value: unknown, path: string): NonNullable<WorkspaceConfigurationActorInput["runtime"]["credential_reference"]> {
-  const reference = exactObject(value, ["source_kind", "provider_id", "secret_kind"], path);
-  if (reference.source_kind !== "provider_account" || reference.secret_kind !== "runtime_authentication") {
-    throw new WorkspaceConfigurationInventoryValidationError(`${path} kind is invalid`);
-  }
-  return {
-    source_kind: "provider_account",
-    provider_id: requiredText(reference.provider_id, `${path}.provider_id`),
-    secret_kind: "runtime_authentication",
-  };
 }
 
 function normalizeRef(value: unknown, path: string): { kind: string; id: string; revision: string | null } {
@@ -1465,39 +1289,6 @@ function sameGrant(
     && grant.evidence.length === 1
     && grant.evidence[0]?.kind === "workspace_configuration_import_policy"
     && grant.evidence[0]?.ref === policy.policy_revision;
-}
-
-function sameCredentialGrant(
-  grant: CapabilityGrantRecord,
-  workspaceId: string,
-  actorId: string,
-  secretRef: SecretRefRecord,
-  policy: WorkspaceConfigurationImportPolicy,
-  operationIds: readonly string[],
-): boolean {
-  return grant.principal_id === actorId
-    && grant.boundary.kind === "workspace"
-    && grant.boundary.workspace_id === workspaceId
-    && grant.expires_at === policy.expires_at
-    && grant.issuer_id === policy.issuer_id
-    && sameStrings(grant.operation_ids, operationIds)
-    && grant.targets.length === 2
-    && grant.targets.some((target) => target.kind === "secret_ref" && target.id === secretRef.secret_ref_id)
-    && grant.targets.some((target) => target.kind === secretRef.resource.kind && target.id === secretRef.resource.id)
-    && grant.evidence.length === 1
-    && grant.evidence[0]?.kind === "workspace_configuration_import_policy"
-    && grant.evidence[0]?.ref === policy.policy_revision;
-}
-
-function sameCredentialConstraint(
-  constraint: SecretGrantConstraintRecord,
-  workspaceId: string,
-  secretRefId: string,
-): boolean {
-  return constraint.authority_boundary.kind === "workspace"
-    && constraint.authority_boundary.workspace_id === workspaceId
-    && constraint.secret_ref_id === secretRefId
-    && sameStrings(constraint.purposes, [RUNTIME_CREDENTIAL_PURPOSE]);
 }
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
