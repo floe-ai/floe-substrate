@@ -23,13 +23,17 @@ authority broker — Rust and `cargo` (install from <https://rustup.rs/>).
 ```bash
 npm install
 npm run build --workspace floe-cli          # compiles the native authority broker (needs cargo)
-npm run floe -- setup -- --yes --no-autostart
+node bin/floe.mjs setup --yes --no-autostart
 ```
 
+The CLI runs from source through `node bin/floe.mjs`. Do not run it through
+`npm run floe` — npm eats any flag it recognises (`--help`, `--workspace`,
+`-w`, `--version`) before the flag reaches the CLI, so it is silently dropped.
+`node bin/floe.mjs` forwards every flag exactly as typed.
+
 Step 2 is required before first run: the register, seed, and `identity` commands
-reach the Bus through the native authority broker, and `npm run floe` runs the
-CLI from source without building it. If you skip step 2, `setup` stops with an
-error naming this exact build command.
+reach the Bus through the native authority broker. If you skip step 2, `setup`
+stops with an error naming this exact build command.
 
 `setup` writes `~/.floe/config.yaml` if missing, starts the Bus and Bridge,
 verifies health, and — when the current directory contains a `.floe/` folder —
@@ -39,16 +43,12 @@ registered Workspace id.
 Useful commands:
 
 ```bash
-npm run floe -- status
-npm run floe -- stop
-npm run floe -- restart
-npm run floe -- logs
-npm run floe -- autostart off
+node bin/floe.mjs status
+node bin/floe.mjs stop
+node bin/floe.mjs restart
+node bin/floe.mjs logs
+node bin/floe.mjs autostart off
 ```
-
-When passing CLI flags through `npm run floe`, put `--` before the flags, as in
-`npm run floe -- setup -- --yes --no-autostart`. A packaged `floe` binary does
-not need the extra separator.
 
 ### Admitting a terminal client identity
 
@@ -58,9 +58,9 @@ client-held keypair. Admit its public key to the workspace it may act in. Run
 for you — no id to copy:
 
 ```bash
-npm run floe -- identity generate --name "Console"    # optional: mint a keypair
-npm run floe -- identity add --name "Console" --pubkey <npub>
-npm run floe -- identity list
+node bin/floe.mjs identity generate --name "Console"    # optional: mint a keypair
+node bin/floe.mjs identity add --name "Console" --pubkey <npub>
+node bin/floe.mjs identity list
 ```
 
 `identity add` prints which workspace it admitted into. If you run it outside any
