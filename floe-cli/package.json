@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "commander": "^12.1.0",
+    "nostr-tools": "^2.25.2",
     "yaml": "^2.6.0",
     "zod": "^3.24.0"
   },

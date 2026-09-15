@@ -16,6 +16,7 @@ import {
   type ServiceName
 } from "./process-manager.js";
 import { registerOperationsCommand } from "./operations-command.js";
+import { registerIdentityCommand } from "./identity-command.js";
 import { registerLocalWorkspaceViaBroker, fetchHostControlToken } from "./operation-client.js";
 import { startAll, waitForHealth, isHealthy } from "./startup.js";
 
@@ -176,6 +177,7 @@ program
   });
 
 registerOperationsCommand(program, {});
+registerIdentityCommand(program, {});
 
 program.action(async () => {
   const { configPath, config, created } = ensureConfig(program.opts().config);

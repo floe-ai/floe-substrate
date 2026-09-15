@@ -38,6 +38,7 @@ import {
 import { encodeEventCursor, InvalidEventCursorError } from "./event-cursor.js";
 import { buildScopeProjection } from "./scopes/projection.js";
 import { listAuthModels, listAuthProfiles } from "./auth.js";
+import { encodeNpub, normalizePubkeyToHex, verifyAuthEvent } from "./client-identity-auth.js";
 import { browseDir } from "./fs/browseDir.js";
 import { listAgentFiles } from "./fs/agentFiles.js";
 import { PathEscapesRootError, resolveWithinRoot, RootNotFoundError } from "./fs/resolveWithinRoot.js";
@@ -2957,6 +2958,133 @@ export async function createBusServer(
     });
   });
 
+  // --- Client identity: unprivileged keypair authentication (ADR-0015) ---
+  // Admission is the trust anchor: only host_control may add a public key to the
+  // roster. This is the same authority class as seeding the operator actor.
+  const identityRelay = (config.bus.http_base_url ?? "").replace(/\/+$/, "");
+
+  app.post("/v1/identities", async (request, reply) => {
+    const authority = requestAuthorities.get(request);
+    if (authority?.audience !== "host_control") return sendTransportForbidden(reply);
+    const body = z.object({
+      display_name: z.string().min(1).max(200),
+      pubkey: z.string().min(1),
+    }).strict().safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: "identity_request_invalid" });
+    const pubkeyHex = normalizePubkeyToHex(body.data.pubkey);
+    if (!pubkeyHex) return reply.code(400).send({ error: "identity_pubkey_invalid" });
+    const identity = store.clientIdentityStore.admitIdentity({
+      pubkey_hex: pubkeyHex,
+      display_name: body.data.display_name,
+      principal_id: store.localOperatorPrincipalId,
+      admitted_by: authority.credential_id,
+    });
+    return reply.code(201).send({ identity: publicIdentity(identity) });
+  });
+
+  // Challenge issuance is public: possessing an admitted key is proven at the
+  // authenticate step, not here. The Bus is authoritative for the exact relay
+  // string the client must echo, sidestepping URL-normalization ambiguity.
+  app.get("/v1/identity/challenge", async (request, reply) => {
+    const query = z.object({ workspace_id: z.string().min(1) }).safeParse(request.query);
+    if (!query.success) return reply.code(400).send({ error: "identity_challenge_request_invalid" });
+    if (!store.getWorkspace(query.data.workspace_id)) return reply.code(404).send({ error: "workspace_not_found" });
+    if (!identityRelay) return reply.code(503).send({ error: "identity_relay_unconfigured" });
+    const issued = store.clientIdentityStore.issueChallenge({
+      workspace_id: query.data.workspace_id,
+      relay: identityRelay,
+    });
+    reply.header("cache-control", "no-store");
+    return { challenge: issued.challenge, relay: issued.relay, expires_at: issued.expires_at };
+  });
+
+  // Authentication is unprivileged: a valid NIP-42 signature over a live
+  // challenge by an admitted, non-revoked key mints the same scoped
+  // workspace_operation bearer the local desktop path already issues.
+  app.post("/v1/identity/authenticate", async (request, reply) => {
+    const body = z.object({
+      workspace_id: z.string().min(1),
+      auth_event: z.record(z.unknown()),
+    }).strict().safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: "identity_auth_request_invalid" });
+    const workspace = store.getWorkspace(body.data.workspace_id);
+    if (!workspace) return reply.code(404).send({ error: "workspace_not_found" });
+
+    const challenge = challengeTagOf(body.data.auth_event);
+    const consumed = challenge
+      ? store.clientIdentityStore.consumeChallenge(challenge, body.data.workspace_id)
+      : null;
+    if (!consumed) return sendIdentityAuthFailed(reply);
+
+    const verification = verifyAuthEvent(body.data.auth_event, {
+      relay: consumed.relay,
+      challenge,
+      now_ms: Date.now(),
+    });
+    if (!verification.ok) return sendIdentityAuthFailed(reply);
+
+    const identity = store.clientIdentityStore.getIdentityByPubkey(verification.pubkey_hex);
+    if (!identity || identity.revoked_at !== null) return sendIdentityAuthFailed(reply);
+
+    const host = transportAuthenticator.authenticateHostControl(localControlToken);
+    if (!host.verified || host.authority.audience !== "host_control") {
+      return reply.code(503).send({ error: "identity_mint_unavailable" });
+    }
+    const session = issueWorkspaceOperationSession(
+      host.authority,
+      body.data.workspace_id,
+      { interaction_session_id: `client-identity:${identity.identity_id}:${randomUUID()}`, expires_in_seconds: 3_600 },
+      `floe-client-identity:${identity.identity_id}`,
+    );
+    store.clientIdentityStore.recordSession({
+      authority_session_id: session.authority_session_id,
+      identity_id: identity.identity_id,
+      workspace_id: body.data.workspace_id,
+      issued_at: new Date().toISOString(),
+      expires_at: session.expires_at,
+    });
+    reply.header("cache-control", "no-store");
+    return {
+      bearer_token: session.bearer_token,
+      workspace_id: session.workspace_id,
+      expires_at: session.expires_at,
+      identity: publicIdentity(identity),
+    };
+  });
+
+  // Legibility and revocation are host_control. The operator sees exactly who
+  // holds a bearer and can revoke a named identity's live sessions immediately.
+  app.get("/v1/clients", async (request, reply) => {
+    const authority = requestAuthorities.get(request);
+    if (authority?.audience !== "host_control") return sendTransportForbidden(reply);
+    const nowMs = Date.now();
+    const clients = store.clientIdentityStore.listIdentities().map((identity) => ({
+      ...publicIdentity(identity),
+      sessions: store.clientIdentityStore.listSessionsForIdentity(identity.identity_id)
+        .filter((session) => Date.parse(session.expires_at) > nowMs)
+        .map((session) => ({
+          authority_session_id: session.authority_session_id,
+          workspace_id: session.workspace_id,
+          issued_at: session.issued_at,
+          expires_at: session.expires_at,
+        })),
+    }));
+    return { clients };
+  });
+
+  app.delete("/v1/clients/:identity_id", async (request, reply) => {
+    const authority = requestAuthorities.get(request);
+    if (authority?.audience !== "host_control") return sendTransportForbidden(reply);
+    const params = z.object({ identity_id: z.string().min(1) }).parse(request.params);
+    const identity = store.clientIdentityStore.getIdentity(params.identity_id);
+    if (!identity) return reply.code(404).send({ error: "identity_not_found" });
+    store.clientIdentityStore.revokeIdentity(identity.identity_id);
+    for (const session of store.clientIdentityStore.listSessionsForIdentity(identity.identity_id)) {
+      store.operationAuthoritySessions.revokeSession(session.authority_session_id);
+    }
+    return { revoked: true, identity_id: identity.identity_id };
+  });
+
   app.delete("/v1/endpoints/:endpoint_id", async (request, reply) => {
     const params = z.object({ endpoint_id: z.string() }).parse(request.params);
     try {
@@ -3689,6 +3817,7 @@ export async function createBusServer(
   app.get("/v1/pending-responses", async (request) => {
     const query = z.object({
       workspace_id: z.string().optional(),
+      waiting_endpoint_id: z.string().optional(),
       limit: z.coerce.number().int().positive().max(500).optional()
     }).parse(request.query);
     return { pending: store.listPendingResponses(query) };
@@ -3992,6 +4121,11 @@ export function resolveTransportRequirement(request: any, store: BusStore): Tran
   if (["/v1/browser/providers", "/v1/browser/providers/:provider/connect", "/v1/browser/providers/:provider/runtime-access", "/v1/browser/provider-connections/:id/answer"].includes(route)) return { kind: "public" };
   if (["/v1/browser/host/operations", "/v1/browser/host/operations/invoke", "/v1/browser/host/operation-receipts/:receipt_id"].includes(route)) return { kind: "public" };
   if (route === "/v1/events/stream") return { kind: "websocket" };
+  // Client identity challenge/authenticate are public: possession of an admitted
+  // key is proven by the signature inside the handler, not by a bearer (ADR-0015).
+  if (route === "/v1/identity/challenge" || route === "/v1/identity/authenticate") {
+    return { kind: "public" };
+  }
   // This transfer route authenticates its one-time, purpose-bound ingress
   // credential inside the handler. It must not be interpreted as a reusable
   // Bus transport credential by the generic pre-handler.
@@ -4052,6 +4186,9 @@ export function resolveTransportRequirement(request: any, store: BusStore): Tran
     || route === "/v1/workspaces/:workspace_id/fs/agents"
     || route === "/v1/workspaces/:workspace_id/fs/file"
     || route.startsWith("/v1/webhooks/")
+    || route === "/v1/identities"
+    || route === "/v1/clients"
+    || route === "/v1/clients/:identity_id"
     || (route === "/v1/configs" && method !== "GET")
   ) {
     return { kind: "host_control" };
@@ -4156,6 +4293,43 @@ function sendTransportForbidden(reply: any) {
     error: "transport_authority_forbidden",
     message: "The authenticated connection cannot act on that resource.",
   });
+}
+
+function sendIdentityAuthFailed(reply: any) {
+  return reply.code(401).send({
+    error: "identity_auth_failed",
+    message: "The identity authentication was not accepted.",
+  });
+}
+
+/** Public projection of an admitted identity; never exposes internal-only fields. */
+function publicIdentity(identity: {
+  identity_id: string;
+  pubkey_hex: string;
+  display_name: string;
+  admitted_at: string;
+  revoked_at: string | null;
+}) {
+  return {
+    identity_id: identity.identity_id,
+    display_name: identity.display_name,
+    pubkey_hex: identity.pubkey_hex,
+    npub: encodeNpub(identity.pubkey_hex),
+    admitted_at: identity.admitted_at,
+    revoked_at: identity.revoked_at,
+  };
+}
+
+/** Read the NIP-42 `challenge` tag value from a candidate event, defensively. */
+function challengeTagOf(event: Record<string, unknown>): string {
+  const tags = event.tags;
+  if (!Array.isArray(tags)) return "";
+  for (const tag of tags) {
+    if (Array.isArray(tag) && tag.length >= 2 && tag[0] === "challenge" && typeof tag[1] === "string") {
+      return tag[1];
+    }
+  }
+  return "";
 }
 
 type RequestWorkspaceResolution =

@@ -175,6 +175,10 @@ import {
   applyOperationAuthoritySessionSchema,
 } from "./operation-authority-sessions.js";
 import {
+  SqliteClientIdentityStore,
+  applyClientIdentitySchema,
+} from "./client-identity-store.js";
+import {
   SqliteCapabilityGrantStore,
   applyCapabilityGrantSchema,
 } from "./capability-grants.js";
@@ -756,6 +760,7 @@ export class BusStore {
   readonly transportCredentialStore: SqliteTransportCredentialStore;
   readonly operationAuthoritySessions: SqliteOperationAuthoritySessionStore;
   readonly operationAuthorityVerifier: OperationAuthorityVerifier;
+  readonly clientIdentityStore: SqliteClientIdentityStore;
   readonly operationRegistry: SemanticOperationRegistry;
   readonly workspaceConfigurationImportStore: WorkspaceConfigurationImportStore;
   readonly contextOperationBackend: BusContextOperationBackend;
@@ -940,6 +945,7 @@ export class BusStore {
       this.operationAuthoritySessions,
       this.capabilityGrantStore,
     );
+    this.clientIdentityStore = new SqliteClientIdentityStore(this.db);
     let operationRegistry = registerArtefactOperations(
       new SemanticOperationRegistry(
         new AjvOperationSchemaValidator(),
@@ -1402,6 +1408,7 @@ export class BusStore {
     applyTransportPushStreamSchema(this.db);
     applyLocalOperatorPrincipalSchema(this.db);
     applyOperationAuthoritySessionSchema(this.db);
+    applyClientIdentitySchema(this.db);
     applyDeliveryOperationAuthoritySchema(this.db);
     applyWorkspaceConfigurationImportSchema(this.db);
     applyWorkspacePortabilitySchema(this.db);
@@ -6401,15 +6408,23 @@ export class BusStore {
     return new Map(rows.map(({ context_id, ...summary }) => [context_id, summary]));
   }
 
-  listPendingResponses(filters: { workspace_id?: string; limit?: number }): unknown[] {
+  listPendingResponses(filters: { workspace_id?: string; waiting_endpoint_id?: string; limit?: number }): unknown[] {
     const limit = Math.min(Math.max(filters.limit ?? 100, 1), 500);
+    const clauses: string[] = [];
+    const args: (string | number)[] = [];
     if (filters.workspace_id) {
-      return this.db.prepare(`
-        SELECT * FROM pending_responses WHERE workspace_id = ?
-        ORDER BY created_at ASC LIMIT ?
-      `).all(filters.workspace_id, limit);
+      clauses.push("workspace_id = ?");
+      args.push(filters.workspace_id);
     }
-    return this.db.prepare("SELECT * FROM pending_responses ORDER BY created_at ASC LIMIT ?").all(limit);
+    if (filters.waiting_endpoint_id) {
+      clauses.push("waiting_endpoint_id = ?");
+      args.push(filters.waiting_endpoint_id);
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    args.push(limit);
+    return this.db.prepare(
+      `SELECT * FROM pending_responses ${where} ORDER BY created_at ASC LIMIT ?`,
+    ).all(...args);
   }
 
   listConfigs(): unknown[] {
