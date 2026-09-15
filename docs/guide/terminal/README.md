@@ -29,8 +29,9 @@ Full detail: [[CLI reference]].
    integration adapter. Floe does not print reusable host or provider
    credentials for copying into commands.
 4. Discover the allowed operation through the routes in [[Bus API]].
-5. Invoke that exact operation with an idempotency key and, where required, the
-   expected resource revision.
+5. Invoke that exact operation. Supply an idempotency key for a write so a
+   retry replays safely, and the expected resource revision where required; a
+   read needs neither.
 6. Keep the operation receipt and query it after a timeout or reconnect.
 
 The operation definition owns the input schema, grants, availability,

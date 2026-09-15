@@ -126,6 +126,38 @@ describe("CLI semantic operation client", () => {
     expect(invocation).not.toHaveProperty("bearer_token");
   });
 
+  it("does not require an idempotency key for a read operation", async () => {
+    const readOp = descriptor({ effects: { mode: "read", reversibility: "none", external: false } });
+    const broker = mockBroker(readOp, { kind: "receipt" });
+    const client = new CliOperationClient(broker, "cli:test");
+
+    await client.invokeSelected({
+      boundary: { kind: "workspace", workspace_id: WORKSPACE_ID },
+      operation_id: readOp.operation_id,
+      input: {},
+    });
+
+    const invocation = broker.invokeOperation.mock.calls[0]![0].invocation as unknown as Record<string, unknown>;
+    expect(typeof invocation.idempotency_key).toBe("string");
+    expect(invocation.idempotency_key as string).toMatch(/^read:/);
+  });
+
+  it("refuses a write operation with no idempotency key and never invokes it", async () => {
+    const writeOp = descriptor({
+      operation_id: "scope.create",
+      effects: { mode: "write", reversibility: "reversible", external: false },
+    });
+    const broker = mockBroker(writeOp, { kind: "receipt" });
+    const client = new CliOperationClient(broker, "cli:test");
+
+    await expect(client.invokeSelected({
+      boundary: { kind: "workspace", workspace_id: WORKSPACE_ID },
+      operation_id: writeOp.operation_id,
+      input: {},
+    })).rejects.toThrow(/writes, so it needs --idempotency-key/);
+    expect(broker.invokeOperation).not.toHaveBeenCalled();
+  });
+
   it("returns the canonical receipt or refusal unchanged", async () => {
     const refusal = {
       kind: "receipt",

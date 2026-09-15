@@ -169,6 +169,11 @@ Request content is intent only:
 discovered definition permits that. Reusing an idempotency key with different
 intent is refused.
 
+`idempotency_key` is a write concept: it lets a retried write replay safely
+instead of applying twice. A read operation (its discovered `effects.mode` is
+`read`) cannot apply twice, so you do not need to supply one — send it only for
+a write, using a stable value so a retry of that exact intent is safe.
+
 Every consequential invocation returns a stable receipt. Query it after timeout
 or reconnection rather than guessing whether the operation committed:
 

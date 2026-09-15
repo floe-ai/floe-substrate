@@ -60,7 +60,7 @@ export type InvokeSelectedOperationInput = Readonly<{
   boundary: CliOperationBoundary;
   operation_id: string;
   input: unknown;
-  idempotency_key: string;
+  idempotency_key?: string;
   target?: OperationTarget | null;
   expected_resource_revision?: string | null;
   confirm?: (confirmation: OperationConfirmation) => Promise<boolean>;
@@ -224,7 +224,7 @@ export class CliOperationClient {
       operation_version: descriptor.operation_version,
       input_schema_version: descriptor.input.version,
       target: input.target ?? null,
-      idempotency_key: requireText(input.idempotency_key, "idempotency key"),
+      idempotency_key: resolveIdempotencyKey(descriptor, input.idempotency_key),
       input: input.input,
       ...(input.expected_resource_revision !== undefined
         ? { expected_resource_revision: input.expected_resource_revision }
@@ -491,4 +491,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function requireText(value: string, label: string): string {
   if (!value.trim() || /[\u0000-\u001f\u007f]/.test(value)) throw new Error(`The ${label} is invalid.`);
   return value;
+}
+
+/**
+ * Idempotency is a write concept: a stable key lets a retried write replay
+ * safely instead of applying twice. A read cannot apply twice, so a caller
+ * should never have to invent a key for one. When the caller omits a key we
+ * require it only for a write (stating that at the point of need) and mint an
+ * ephemeral key for a read, so the wire contract stays satisfied.
+ */
+function resolveIdempotencyKey(
+  descriptor: CliOperationDescriptor,
+  provided: string | undefined,
+): string {
+  if (provided !== undefined && provided.trim()) {
+    return requireText(provided, "idempotency key");
+  }
+  if (descriptor.effects.mode === "write") {
+    throw new Error(
+      `Operation '${descriptor.operation_id}' writes, so it needs --idempotency-key `
+      + "<stable key> — a stable key lets a retry replay safely instead of applying twice.",
+    );
+  }
+  return `read:${randomBytes(12).toString("base64url")}`;
 }

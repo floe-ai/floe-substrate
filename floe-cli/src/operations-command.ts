@@ -24,7 +24,7 @@ type CommonOptions = {
 
 type InvokeOptions = CommonOptions & {
   input: string;
-  idempotencyKey: string;
+  idempotencyKey?: string;
   expectedRevision?: string;
 };
 
@@ -81,7 +81,7 @@ export function registerOperationsCommand(
     .argument("<operation-id>", "exact semantic operation id")
     .description("Invoke one discovered operation using JSON intent"))
     .requiredOption("--input <json-or-@file>", "JSON operation intent, or @path to a JSON file")
-    .requiredOption("--idempotency-key <key>", "stable key for safe replay of this exact request")
+    .option("--idempotency-key <key>", "stable key so a retry of a write is safe to replay; reads do not need one")
     .option("--expected-revision <revision>", "expected target revision for compare-and-swap")
     .action(async (operationId: string, options: InvokeOptions) => {
       const client = createClient(dependencies);
@@ -90,7 +90,9 @@ export function registerOperationsCommand(
         boundary,
         operation_id: operationId,
         input: parseJsonIntent(options.input, dependencies.read_file),
-        idempotency_key: options.idempotencyKey,
+        ...(options.idempotencyKey !== undefined
+          ? { idempotency_key: options.idempotencyKey }
+          : {}),
         target: parseTarget(options),
         ...(options.expectedRevision !== undefined
           ? { expected_resource_revision: options.expectedRevision }
