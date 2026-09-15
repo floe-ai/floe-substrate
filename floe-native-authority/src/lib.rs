@@ -36,7 +36,11 @@ fn bus_http_base() -> String {
         .unwrap_or_else(|| DEFAULT_BUS_HTTP_BASE.to_string())
 }
 const VAULT_SERVICE: &str = "com.floe.console";
-const VAULT_ACCOUNT: &str = "local-bus-host-control";
+/// The user-wide account the host-control credential lived under before it was
+/// scoped per install. It is no longer the storage location — it survives only
+/// as a one-time migration source for the default install that historically
+/// owned it (see `load_or_create_host_credential`).
+const LEGACY_HOST_CONTROL_ACCOUNT: &str = "local-bus-host-control";
 const WORKSPACE_SESSION_SECONDS: u64 = 15 * 60;
 const MAX_CONTEXT_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 
@@ -724,21 +728,79 @@ struct IssuedWorkspaceSession {
     bearer_token: String,
 }
 
+/// The credential vault account for a given install's host-control credential.
+///
+/// It is keyed to the install's Bus base URL — the same value F8 uses to decide
+/// "is this my bus". Two installs on one machine necessarily answer on different
+/// Bus URLs (if they shared one, F8 would already refuse to seed into it), so
+/// each install gets its own credential and neither can read the other's. This
+/// reuses the install identity that already exists (`FLOE_BUS_HTTP_BASE`) rather
+/// than inventing a second notion of which install this is.
+fn host_control_account_for(bus_base: &str) -> String {
+    format!("{LEGACY_HOST_CONTROL_ACCOUNT}::{bus_base}")
+}
+
+/// Only the default install may adopt the legacy user-wide credential, because
+/// it is the install that historically owned it. Any other install must mint its
+/// own — that is both the true cold start and the guarantee that a second install
+/// cannot silently inherit the first install's credential.
+fn legacy_migration_eligible(bus_base: &str) -> bool {
+    bus_base == DEFAULT_BUS_HTTP_BASE
+}
+
+fn install_host_control_account() -> String {
+    host_control_account_for(&bus_http_base())
+}
+
 fn load_or_create_host_credential() -> Result<String, String> {
+    let account = install_host_control_account();
     let entry =
-        keyring::Entry::new(VAULT_SERVICE, VAULT_ACCOUNT).map_err(|_| secure_storage_message())?;
+        keyring::Entry::new(VAULT_SERVICE, &account).map_err(|_| secure_storage_message())?;
     match entry.get_password() {
         Ok(token) if token.len() >= 32 => Ok(token),
         Ok(_) => Err(recovery_required_message()),
-        Err(keyring::Error::NoEntry) => {
-            let token = format!("floe_host_control_{}", random_secret(32));
-            entry
-                .set_password(&token)
-                .map_err(|_| secure_storage_message())?;
-            Ok(token)
-        }
+        Err(keyring::Error::NoEntry) => mint_or_migrate_host_credential(&entry),
         Err(_) => Err(secure_storage_message()),
     }
+}
+
+/// This install has no host-control credential yet. There is exactly one honest
+/// non-minting source: the legacy user-wide credential, and only for the default
+/// install that historically owned it. Carrying that exact secret forward keeps
+/// the operator's Bus working (the Bus DB is built against that token) — this is
+/// a migration, never a silent regeneration. Any non-default install gets no
+/// legacy fallback: it mints a genuinely fresh credential. That is both the true
+/// cold start and the guarantee that a second install cannot adopt the first's
+/// credential.
+fn mint_or_migrate_host_credential(entry: &keyring::Entry) -> Result<String, String> {
+    if legacy_migration_eligible(&bus_http_base()) {
+        let legacy = keyring::Entry::new(VAULT_SERVICE, LEGACY_HOST_CONTROL_ACCOUNT)
+            .map_err(|_| secure_storage_message())?;
+        match legacy.get_password() {
+            Ok(token) if token.len() >= 32 => {
+                entry
+                    .set_password(&token)
+                    .map_err(|_| secure_storage_message())?;
+                // stdout carries the JSON protocol, so this human-visible notice
+                // goes to stderr. It is deliberately not silent: the operator is
+                // told their existing credential moved rather than being surprised.
+                eprintln!(
+                    "floe: migrated the host-control credential to this install's own vault entry \
+                     ({VAULT_SERVICE} / {}). Your existing bus keeps working; no new credential was minted.",
+                    install_host_control_account()
+                );
+                return Ok(token);
+            }
+            Ok(_) => return Err(recovery_required_message()),
+            Err(keyring::Error::NoEntry) => {}
+            Err(_) => return Err(secure_storage_message()),
+        }
+    }
+    let token = format!("floe_host_control_{}", random_secret(32));
+    entry
+        .set_password(&token)
+        .map_err(|_| secure_storage_message())?;
+    Ok(token)
 }
 
 fn random_secret(bytes: usize) -> String {
@@ -1008,6 +1070,31 @@ fn recovery_required_message() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_control_account_is_scoped_per_install_bus_url() {
+        // Distinct installs (distinct Bus URLs) resolve to distinct accounts, so
+        // their host-control credentials cannot collide or read each other.
+        let default = host_control_account_for(DEFAULT_BUS_HTTP_BASE);
+        let second = host_control_account_for("http://127.0.0.1:5999");
+        assert_ne!(default, second);
+        assert!(default.starts_with(LEGACY_HOST_CONTROL_ACCOUNT));
+        assert!(default.contains(DEFAULT_BUS_HTTP_BASE));
+        // The scoped account is never the bare legacy account, so a scoped read
+        // never lands on the user-wide entry by accident.
+        assert_ne!(default, LEGACY_HOST_CONTROL_ACCOUNT);
+    }
+
+    #[test]
+    fn only_the_default_install_may_migrate_the_legacy_credential() {
+        // The default install adopts the legacy user-wide credential (migration).
+        assert!(legacy_migration_eligible(DEFAULT_BUS_HTTP_BASE));
+        // Any other install must mint fresh — no legacy fallback, so a second
+        // install on the same machine gets a genuinely cold credential and can
+        // never inherit the operator's.
+        assert!(!legacy_migration_eligible("http://127.0.0.1:5999"));
+        assert!(!legacy_migration_eligible("http://127.0.0.1:6000"));
+    }
 
     #[test]
     fn typed_discovery_builds_only_declared_operation_filters() {
