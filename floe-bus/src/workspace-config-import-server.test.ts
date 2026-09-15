@@ -6,6 +6,7 @@ import YAML from "yaml";
 
 import { defaultConfig } from "./config.js";
 import { createBusServer } from "./server.js";
+import { emitViaRoute } from "./test-support/emit-via-route.js";
 import { LEGACY_WORKSPACE_MODEL_ACTOR_OPERATION_IDS_V1 } from "./workspace-config-import.js";
 import { applyLocalFloeDelegationPolicy, applyLocalFloeExportPolicy, applyLocalFloeApprovalResponsePolicy, localProductWorkspacePolicy, LOCAL_FLOE_ACTOR_OPERATIONS_V1 } from "./local-product-policy.js";
 import type { BusServerOptions } from "./server.js";
@@ -18,6 +19,21 @@ const CREATED_WORKSPACE = "workspace:created-import";
 const HOST_CONTROL_TOKEN = `workspace-import-host-${"h".repeat(40)}`;
 
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
+
+function bearer(token: string): { authorization: string } {
+  return { authorization: `Bearer ${token}` };
+}
+
+async function issueWorkspaceSession(handle: ServerHandle, workspaceId: string): Promise<{ authorization: string }> {
+  const response = await handle.app.inject({
+    method: "POST",
+    url: `/v1/local/workspaces/${encodeURIComponent(workspaceId)}/operation-sessions`,
+    headers: bearer(HOST_CONTROL_TOKEN),
+    payload: { interaction_session_id: `interaction:${workspaceId}` },
+  });
+  expect(response.statusCode, response.body).toBe(201);
+  return bearer(response.json().bearer_token as string);
+}
 
 describe("authenticated canonical Workspace configuration import", () => {
   const cleanups: Array<() => Promise<void>> = [];
@@ -170,6 +186,7 @@ describe("authenticated canonical Workspace configuration import", () => {
   it.each([false, true])("reattaches saved settings and delivers the retained request (invalid files: %s)", async invalidFiles => {
     const { handle, bridge_headers, binding_id } = await fixture();
     const workspaceId = LEGACY_WORKSPACE;
+    const workspaceHeaders = await issueWorkspaceSession(handle, workspaceId);
     const bindingId = binding_id(workspaceId);
     const importUrl = `/v1/workspaces/${encodeURIComponent(workspaceId)}/import-config`;
     const first = await handle.app.inject({ method: "POST", url: importUrl, headers: bridge_headers, payload: inventory(bindingId) });
@@ -214,11 +231,11 @@ describe("authenticated canonical Workspace configuration import", () => {
 
     handle.store.registerEndpoint({ endpoint_id: imported.actor_id, workspace_id: workspaceId, name: "Old label", status: "runtime_unconfigured" }, () => {});
     handle.store.registerEndpoint({ endpoint_id: "operator:test", workspace_id: workspaceId, name: "Operator" }, () => {});
-    const sent = handle.store.submitEvent({ type: "message", workspace_id: workspaceId,
+    const sent = await emitViaRoute(handle, { type: "message", workspace_id: workspaceId,
       source_endpoint_id: "operator:test", destination: { kind: "endpoint", endpoint_id: imported.actor_id },
       thread_id: "", correlation_id: null, metadata: {}, content: { text: "Finish the saved result." },
       idempotency_key: "retained-before-restart",
-    }, () => {});
+    }, { headers: workspaceHeaders });
     expect(handle.store.db.prepare("SELECT delivery_id FROM delivery_bundles").all()).toHaveLength(0);
 
     const address = await handle.app.listen({ host: "127.0.0.1", port: 0 });

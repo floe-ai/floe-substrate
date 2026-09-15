@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
 import { createBusServer } from "./server.js";
+import { emitViaRoute } from "./test-support/emit-via-route.js";
 import { defaultConfig, type LocalConfig } from "./config.js";
 import { AjvOperationSchemaValidator } from "./operation-schema-validator-ajv.js";
 import { createTestOperationRegistry } from "./operation-test-fixtures.js";
@@ -643,14 +644,14 @@ describe("Bus-owned Scope semantic operations", () => {
     const principalId = registerEndpoint(handle, workspaceId, "operator-session");
     const recipientId = registerEndpoint(handle, workspaceId, "cause-recipient");
     const principal = authority(principalId, workspaceId, "interactive");
-    const cause = handle.store.submitEvent({
+    const cause = (await emitViaRoute(handle, {
       type: "message",
       workspace_id: workspaceId,
       source_endpoint_id: principalId,
       destination: { kind: "endpoint", endpoint_id: recipientId },
       content: { text: "Begin the approved pipeline" },
       response: { expected: false },
-    }, handle.broadcast).event;
+    })).event;
     const draft = handle.store.createScopeCompositionDraft({
       workspace_id: workspaceId,
       scope_id: "delivery",

@@ -12,8 +12,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
 import { ContextStore, applyContextSchema } from "./store.js";
-import { BusStore, type EventCommand } from "../store.js";
-import { defaultConfig } from "../config.js";
+import { type EventCommand } from "../store.js";
+import { defaultConfig, type LocalConfig } from "../config.js";
+import { createBusServer } from "../server.js";
+import { emitViaRoute } from "../test-support/emit-via-route.js";
 
 const WS = "workspace:test-subs";
 const E1 = "actor:subs:e1";
@@ -169,22 +171,36 @@ describe("ContextStore — isSubscribed (Slice 2)", () => {
 
 const noop = () => {};
 
-function makeStore(): { store: BusStore; cleanup: () => void } {
+type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
+
+async function makeServer(): Promise<{ handle: ServerHandle; cleanup: () => Promise<void> }> {
   const tmp = mkdtempSync(join(tmpdir(), "floe-bus-ctx-routing-"));
   const cfgPath = join(tmp, "config.yaml");
-  const cfg = defaultConfig(tmp);
+  const cfg: LocalConfig = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const store = new BusStore(cfgPath, cfg);
+  const handle = await createBusServer(cfgPath, cfg, { unsafe_in_process_test_auth_bypass: true });
+  await handle.app.ready();
+  const timestamp = new Date().toISOString();
+  handle.store.workspaceIdentityStore.restoreWorkspace({
+    snapshot: {
+      workspace_id: WS,
+      name: "Test WS",
+      creation_kind: "created",
+      source_workspace_id: null,
+      created_at: timestamp,
+      updated_at: timestamp,
+    },
+  });
   for (const id of [E1, E2, E3]) {
-    store.registerEndpoint(
+    handle.store.registerEndpoint(
       { endpoint_id: id, workspace_id: WS, name: id, bridge_id: null, status: "idle" },
       noop
     );
   }
   return {
-    store,
-    cleanup: () => {
-      try { store.close(); } catch {}
+    handle,
+    cleanup: async () => {
+      try { await handle.app.close(); } catch {}
       rmSync(tmp, { recursive: true, force: true });
     },
   };
@@ -213,17 +229,19 @@ function emitCommand(
 }
 
 describe("BusStore — context-addressed delivery routing (Slice 2)", () => {
-  let store: BusStore;
-  let cleanup: () => void;
+  let handle: ServerHandle;
+  let store: ServerHandle["store"];
+  let cleanup: () => Promise<void>;
 
-  beforeEach(() => {
-    const made = makeStore();
-    store = made.store;
+  beforeEach(async () => {
+    const made = await makeServer();
+    handle = made.handle;
+    store = handle.store;
     cleanup = made.cleanup;
   });
-  afterEach(() => cleanup());
+  afterEach(async () => await cleanup());
 
-  it("delivers to all actors subscribed to '*' when emitting into a context", () => {
+  it("delivers to all actors subscribed to '*' when emitting into a context", async () => {
     const ctx = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: E1,
@@ -233,14 +251,13 @@ describe("BusStore — context-addressed delivery routing (Slice 2)", () => {
     store.contextStore.subscribeToContext(ctx, E2, ["*"]);
     store.contextStore.subscribeToContext(ctx, E3, ["*"]);
 
-    const result = store.submitEvent(
+    const result = await emitViaRoute(handle,
       emitCommand({
         type: "message",
         source_endpoint_id: E1,
         destination: { kind: "context", context_id: ctx },
         context_id: ctx,
       }),
-      noop
     );
 
     const queued = store.db
@@ -250,7 +267,7 @@ describe("BusStore — context-addressed delivery routing (Slice 2)", () => {
     expect(destinations).toEqual([E1, E2, E3].sort());
   });
 
-  it("delivers only to actors subscribed to the specific event type", () => {
+  it("delivers only to actors subscribed to the specific event type", async () => {
     const ctx = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: E1,
@@ -260,14 +277,13 @@ describe("BusStore — context-addressed delivery routing (Slice 2)", () => {
     store.contextStore.subscribeToContext(ctx, E2, ["task.done"]); // different type
     store.contextStore.subscribeToContext(ctx, E3, ["message"]);
 
-    const result = store.submitEvent(
+    const result = await emitViaRoute(handle,
       emitCommand({
         type: "message",
         source_endpoint_id: E1,
         destination: { kind: "context", context_id: ctx },
         context_id: ctx,
       }),
-      noop
     );
 
     const queued = store.db
@@ -279,7 +295,7 @@ describe("BusStore — context-addressed delivery routing (Slice 2)", () => {
     expect(destinations).not.toContain(E2);
   });
 
-  it("delivers to zero actors when all subscriptions have empty event_types (silent watchers)", () => {
+  it("delivers to zero actors when all subscriptions have empty event_types (silent watchers)", async () => {
     const ctx = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: E1,
@@ -288,14 +304,13 @@ describe("BusStore — context-addressed delivery routing (Slice 2)", () => {
     store.contextStore.subscribeToContext(ctx, E1, []);
     store.contextStore.subscribeToContext(ctx, E2, []);
 
-    const result = store.submitEvent(
+    const result = await emitViaRoute(handle,
       emitCommand({
         type: "message",
         source_endpoint_id: E1,
         destination: { kind: "context", context_id: ctx },
         context_id: ctx,
       }),
-      noop
     );
 
     const queued = store.db
@@ -304,7 +319,7 @@ describe("BusStore — context-addressed delivery routing (Slice 2)", () => {
     expect(queued).toHaveLength(0);
   });
 
-  it("records the event with zero deliveries when no subscriptions exist in the context", () => {
+  it("records the event with zero deliveries when no subscriptions exist in the context", async () => {
     const ctx = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: E1,
@@ -312,14 +327,13 @@ describe("BusStore — context-addressed delivery routing (Slice 2)", () => {
     });
     // No subscriptions — participants present but none subscribed
 
-    const result = store.submitEvent(
+    const result = await emitViaRoute(handle,
       emitCommand({
         type: "message",
         source_endpoint_id: E1,
         destination: { kind: "context", context_id: ctx },
         context_id: ctx,
       }),
-      noop
     );
 
     const queued = store.db
@@ -391,7 +405,7 @@ describe("BusStore — context-addressed delivery routing (Slice 2)", () => {
     expect(queued).toHaveLength(0);
   });
 
-  it("an actor subscribed to nothing is a silent watcher — emitting into the context does not wake it", () => {
+  it("an actor subscribed to nothing is a silent watcher — emitting into the context does not wake it", async () => {
     const ctx = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: E1,
@@ -400,14 +414,13 @@ describe("BusStore — context-addressed delivery routing (Slice 2)", () => {
     // Only E1 subscribed; E2 and E3 are silent participants
     store.contextStore.subscribeToContext(ctx, E1, ["*"]);
 
-    const result = store.submitEvent(
+    const result = await emitViaRoute(handle,
       emitCommand({
         type: "message",
         source_endpoint_id: E1,
         destination: { kind: "context", context_id: ctx },
         context_id: ctx,
       }),
-      noop
     );
 
     const queued = store.db

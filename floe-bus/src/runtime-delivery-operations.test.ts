@@ -3,29 +3,35 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { BusStore } from "./store.js";
+import { createBusServer } from "./server.js";
+import type { BusStore } from "./store.js";
 import { defaultConfig } from "./config.js";
 import { registerExecutableActorFixture } from "./executable-actor-test-fixture.js";
 import { CANCEL_RUNTIME_DELIVERY_OPERATION_ID as OP } from "./runtime-delivery-operations.js";
 import type { OperationAuthorityContext, OperationInvocationRequest } from "./operations.js";
+import { emitViaRoute } from "./test-support/emit-via-route.js";
 
 const WS = "workspace:stop-response";
 const ACTOR = `actor:${WS}:floe`;
 const noop = () => {};
+type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
 
 describe("direct runtime response cancellation", () => {
   let root: string;
+  let handle: ServerHandle;
   let store: BusStore;
-  beforeEach(() => {
+  beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "floe-stop-response-"));
     const config = defaultConfig(root);
     const configPath = join(root, "config.yaml");
     writeFileSync(configPath, YAML.stringify(config));
-    store = new BusStore(configPath, config);
+    handle = await createBusServer(configPath, config, { unsafe_in_process_test_auth_bypass: true });
+    await handle.app.ready();
+    store = handle.store;
     store.registerEndpoint({ endpoint_id: ACTOR, workspace_id: WS, name: "Floe", bridge_id: "bridge:test", status: "idle" }, noop);
     registerExecutableActorFixture(store, WS, ACTOR);
   });
-  afterEach(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  afterEach(async () => { try { await handle.app.close(); } catch {} rmSync(root, { recursive: true, force: true }); });
 
   function start(claim = true) {
     const contextId = store.contextStore.createContext({ workspace_id: WS, scope_id: null, participants: [ACTOR], created_by_endpoint_id: null });
@@ -78,15 +84,15 @@ describe("direct runtime response cancellation", () => {
     expect(store.recordRuntimeTurnResult({ delivery_id: delivery.delivery_id, outcome: "completed", text: "Saved" }, noop).result_event.event_id).toBe(result.result_event.event_id);
   });
 
-  it("keeps requested work inspectable from its original Context across completion and restart", () => {
+  it("keeps requested work inspectable from its original Context across completion and restart", async () => {
     const { delivery: parent, contextId } = start();
     const reviewer = "actor:reviewer";
     store.registerEndpoint({ endpoint_id: reviewer, workspace_id: WS, name: "Reviewer", bridge_id: "bridge:reviewer", status: "idle" }, noop);
     registerExecutableActorFixture(store, WS, reviewer);
-    const request = store.submitEvent({ type: "request", workspace_id: WS, source_endpoint_id: ACTOR,
+    const request = await emitViaRoute(handle, { type: "request", workspace_id: WS, source_endpoint_id: ACTOR,
       destination: { kind: "endpoint", endpoint_id: reviewer }, current_delivery_context_id: contextId,
       correlation_id: "review:1", content: { text: "Review" }, response: { expected: true, mode: "correlated", correlation_id: "review:1" },
-      metadata: { request_parent_delivery_id: parent.delivery_id, request_return_context_id: contextId } }, noop);
+      metadata: { request_parent_delivery_id: parent.delivery_id, request_return_context_id: contextId } });
     const [child] = store.claimDeliveries("bridge:reviewer", 1, noop);
     expect(request.event.context_id).not.toBe(contextId);
     store.recordRuntimeTurnResult({ delivery_id: parent.delivery_id, outcome: "completed", text: "Review underway" }, noop);
@@ -96,15 +102,15 @@ describe("direct runtime response cancellation", () => {
     const otherActor = "actor:unrelated";
     store.registerEndpoint({ endpoint_id: otherActor, workspace_id: WS, name: "Unrelated", bridge_id: "bridge:other", status: "idle" }, noop);
     registerExecutableActorFixture(store, WS, otherActor);
-    store.submitEvent({ type: "message", workspace_id: WS, source_endpoint_id: ACTOR,
-      destination: { kind: "endpoint", endpoint_id: otherActor }, content: { text: "Unrelated work" } }, noop);
+    await emitViaRoute(handle, { type: "message", workspace_id: WS, source_endpoint_id: ACTOR,
+      destination: { kind: "endpoint", endpoint_id: otherActor }, content: { text: "Unrelated work" } });
     const [unrelated] = store.claimDeliveries("bridge:other", 1, noop);
     const foreignWorkspace = "workspace:foreign", foreignActor = "actor:foreign";
     store.registerEndpoint({ endpoint_id: foreignActor, workspace_id: foreignWorkspace, name: "Foreign", bridge_id: "bridge:foreign", status: "idle" }, noop);
     registerExecutableActorFixture(store, foreignWorkspace, foreignActor);
-    store.submitEvent({ type: "message", workspace_id: foreignWorkspace, source_endpoint_id: foreignActor,
+    await emitViaRoute(handle, { type: "message", workspace_id: foreignWorkspace, source_endpoint_id: foreignActor,
       destination: { kind: "endpoint", endpoint_id: foreignActor }, content: { text: "Unrelated workspace" },
-      metadata: { request_parent_delivery_id: parent.delivery_id } }, noop);
+      metadata: { request_parent_delivery_id: parent.delivery_id } });
     store.claimDeliveries("bridge:foreign", 1, noop);
     const query = { workspace_id: WS, context_id: contextId, limit: 1 };
     expect(store.listDeliveries(query)).toEqual([expect.objectContaining({ delivery_id: child.delivery_id })]);
@@ -113,8 +119,10 @@ describe("direct runtime response cancellation", () => {
       .toEqual({ active_count: 1, latest_state: "delivered_to_bridge" });
     expect(store.getContextDeliverySummaries(["missing"]).size).toBe(0);
     cancel(child.delivery_id);
-    store.close();
-    store = new BusStore(join(root, "config.yaml"), defaultConfig(root));
+    await handle.app.close();
+    handle = await createBusServer(join(root, "config.yaml"), defaultConfig(root), { unsafe_in_process_test_auth_bypass: true });
+    await handle.app.ready();
+    store = handle.store;
     expect(store.listDeliveries({ ...query, limit: 500 })).toEqual(expect.arrayContaining([
       expect.objectContaining({ delivery_id: child.delivery_id, state: "cancelled" }),
       expect.objectContaining({ delivery_id: parent.delivery_id, state: "acknowledged" }),
@@ -125,6 +133,10 @@ describe("direct runtime response cancellation", () => {
     expect(store.getRuntimeDelivery(child.delivery_id)?.state).toBe("cancelled");
     expect(store.getContextDeliverySummaries([contextId]).get(contextId))
       .toEqual({ active_count: 0, latest_state: "cancelled" });
+    await handle.app.close();
+    handle = await createBusServer(join(root, "config.yaml"), defaultConfig(root), { unsafe_in_process_test_auth_bypass: true });
+    await handle.app.ready();
+    store = handle.store;
     store.registerEndpoint({ endpoint_id: ACTOR, workspace_id: WS, name: "Floe", bridge_id: "bridge:test", status: "idle" }, noop);
     store.submitPrincipalContextCommunication({ workspace_id: WS, context_id: contextId, principal_id: "operator:test", type: "message",
       recipient_endpoint_id: ACTOR, content: { text: "Continue the review" }, artefact_version_ids: [], attachment_ingress_ids: [],
@@ -138,7 +150,7 @@ describe("direct runtime response cancellation", () => {
     expect(store.getRuntimeDelivery(child.delivery_id)?.state).toBe("cancelled");
   });
 
-  it("keeps a nested collaborator's returned work visible and stoppable from the originating Context", () => {
+  it("keeps a nested collaborator's returned work visible and stoppable from the originating Context", async () => {
     const { delivery: parent, contextId } = start();
     const lead = "actor:lead", checker = "actor:checker";
     for (const [endpoint, bridge] of [[lead, "bridge:lead"], [checker, "bridge:checker"]]) {
@@ -151,19 +163,19 @@ describe("direct runtime response cancellation", () => {
       store.reportTurnEnd(endpoint, noop);
       return result;
     };
-    const leadRequest = store.submitEvent({ type: "request", workspace_id: WS, source_endpoint_id: ACTOR,
+    const leadRequest = (await emitViaRoute(handle, { type: "request", workspace_id: WS, source_endpoint_id: ACTOR,
       destination: { kind: "endpoint", endpoint_id: lead }, current_delivery_context_id: contextId,
       correlation_id: "lead", content: { text: "Commission and assess an independent check" },
       response: { expected: true, mode: "correlated", correlation_id: "lead" },
-      metadata: { request_parent_delivery_id: parent.delivery_id, request_return_context_id: contextId } }, noop).event;
+      metadata: { request_parent_delivery_id: parent.delivery_id, request_return_context_id: contextId } })).event;
     const [firstLead] = store.claimDeliveries("bridge:lead", 1, noop);
     finish(parent.delivery_id, ACTOR, "bridge:test", "Lead commissioned");
-    const checkRequest = store.submitEvent({ type: "request", workspace_id: WS, source_endpoint_id: lead,
+    const checkRequest = (await emitViaRoute(handle, { type: "request", workspace_id: WS, source_endpoint_id: lead,
       destination: { kind: "endpoint", endpoint_id: checker }, current_delivery_context_id: leadRequest.context_id,
       correlation_id: "check", content: { text: "Check the result" },
       response: { expected: true, mode: "correlated", correlation_id: "check" },
       metadata: { request_parent_delivery_id: firstLead.delivery_id, request_return_context_id: leadRequest.context_id,
-        request_continuation_event_id: leadRequest.event_id } }, noop).event;
+        request_continuation_event_id: leadRequest.event_id } })).event;
     const [check] = store.claimDeliveries("bridge:checker", 1, noop);
     finish(firstLead.delivery_id, lead, "bridge:lead", "Waiting for independent evidence");
     finish(check.delivery_id, checker, "bridge:checker", "Independent evidence");
@@ -173,16 +185,18 @@ describe("direct runtime response cancellation", () => {
     store.registerEndpoint({ endpoint_id: foreignActor, workspace_id: foreignWorkspace, name: "Foreign",
       bridge_id: "bridge:foreign-return", status: "idle" }, noop);
     registerExecutableActorFixture(store, foreignWorkspace, foreignActor);
-    store.submitEvent({ type: "request.result", workspace_id: foreignWorkspace, source_endpoint_id: foreignActor,
+    await emitViaRoute(handle, { type: "request.result", workspace_id: foreignWorkspace, source_endpoint_id: foreignActor,
       destination: { kind: "endpoint", endpoint_id: foreignActor }, content: { text: "Forged return" },
-      metadata: { origin: "runtime_request_return", request_event_id: checkRequest.event_id } }, noop);
+      metadata: { origin: "runtime_request_return", request_event_id: checkRequest.event_id } });
     store.claimDeliveries("bridge:foreign-return", 1, noop);
     const query = { workspace_id: WS, context_id: contextId, limit: 1 };
     expect(store.listDeliveries(query)).toEqual([expect.objectContaining({ delivery_id: returnedLead.delivery_id })]);
     expect(store.getContextDeliverySummaries([contextId]).get(contextId))
       .toEqual({ active_count: 1, latest_state: "delivered_to_bridge" });
-    store.close();
-    store = new BusStore(join(root, "config.yaml"), defaultConfig(root));
+    await handle.app.close();
+    handle = await createBusServer(join(root, "config.yaml"), defaultConfig(root), { unsafe_in_process_test_auth_bypass: true });
+    await handle.app.ready();
+    store = handle.store;
     expect(store.listDeliveries(query)).toEqual([expect.objectContaining({ delivery_id: returnedLead.delivery_id })]);
     expect(cancel(returnedLead.delivery_id)).toMatchObject({ cancelled: true, state: "cancelled" });
     expect(store.listPendingResponses({ workspace_id: WS })).toEqual(expect.arrayContaining([
@@ -196,11 +210,13 @@ describe("direct runtime response cancellation", () => {
       .toThrow("cancelled");
   });
 
-  it("keeps cancelled work stopped after reopening the database", () => {
+  it("keeps cancelled work stopped after reopening the database", async () => {
     const { delivery } = start();
     cancel(delivery.delivery_id);
-    store.close();
-    store = new BusStore(join(root, "config.yaml"), defaultConfig(root));
+    await handle.app.close();
+    handle = await createBusServer(join(root, "config.yaml"), defaultConfig(root), { unsafe_in_process_test_auth_bypass: true });
+    await handle.app.ready();
+    store = handle.store;
     expect(store.getRuntimeDelivery(delivery.delivery_id)?.state).toBe("cancelled");
     expect(store.claimDeliveries("bridge:test", 10, noop)).toEqual([]);
   });

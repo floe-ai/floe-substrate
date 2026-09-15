@@ -3,8 +3,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { BusStore, type EventCommand } from "./store.js";
+import type { BusStore } from "./store.js";
 import { defaultConfig } from "./config.js";
+import { createBusServer } from "./server.js";
+import { emitViaRoute } from "./test-support/emit-via-route.js";
+
+type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
 
 const noop = () => {};
 
@@ -13,29 +17,37 @@ const PROCESSOR_EP = "actor:sym:processor";
 const OBSERVER_EP = "actor:sym:observer";
 const BRIDGE = "bridge:sym:b1";
 
-function makeStore(): { store: BusStore; cleanup: () => void } {
+async function makeServer(): Promise<{ handle: ServerHandle; store: BusStore; cleanup: () => Promise<void> }> {
   const tmp = mkdtempSync(join(tmpdir(), "floe-bus-delivery-sym-"));
   const cfgPath = join(tmp, "config.yaml");
   const cfg = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const store = new BusStore(cfgPath, cfg);
+  const handle = await createBusServer(cfgPath, cfg, { unsafe_in_process_test_auth_bypass: true });
+  await handle.app.ready();
   return {
-    store,
-    cleanup: () => {
-      try { store.close(); } catch {}
+    handle,
+    store: handle.store,
+    cleanup: async () => {
+      try { await handle.app.close(); } catch {}
       rmSync(tmp, { recursive: true, force: true });
     }
   };
 }
 
 describe("Delivery symmetry", () => {
+  let handle: ServerHandle;
   let store: BusStore;
-  let cleanup: () => void;
+  let cleanup: () => Promise<void>;
 
-  beforeEach(() => {
-    ({ store, cleanup } = makeStore());
+  beforeEach(async () => {
+    const m = await makeServer();
+    handle = m.handle;
+    store = m.store;
+    cleanup = m.cleanup;
   });
-  afterEach(() => cleanup());
+  afterEach(async () => {
+    await cleanup();
+  });
 
   it("registers an actor-neutral endpoint record", () => {
     const ep = store.registerEndpoint({
@@ -49,7 +61,7 @@ describe("Delivery symmetry", () => {
     expect((ep as any).bridge_id).toBe(BRIDGE);
   });
 
-  it("creates delivery for actor with bridge_id", () => {
+  it("creates delivery for actor with bridge_id", async () => {
     store.registerEndpoint({
       endpoint_id: PROCESSOR_EP,
       workspace_id: WS,
@@ -58,22 +70,21 @@ describe("Delivery symmetry", () => {
       status: "idle"
     }, noop);
 
-    const cmd: EventCommand = {
+    const result = await emitViaRoute(handle, {
       type: "message",
       workspace_id: WS,
       source_endpoint_id: OBSERVER_EP,
       destination: { kind: "endpoint", endpoint_id: PROCESSOR_EP },
       content: { body: "hello" },
       response: { expected: false }
-    };
-    const envelope = store.submitEvent(cmd, noop);
-    expect(envelope).toBeTruthy();
+    });
+    expect(result.event).toBeTruthy();
 
     const deliveries = store.claimDeliveries(BRIDGE, 10, noop);
     expect(deliveries.length).toBeGreaterThan(0);
   });
 
-  it("does not create delivery for actor without bridge_id", () => {
+  it("does not create delivery for actor without bridge_id", async () => {
     store.registerEndpoint({
       endpoint_id: OBSERVER_EP,
       workspace_id: WS,
@@ -82,21 +93,20 @@ describe("Delivery symmetry", () => {
       status: "idle"
     }, noop);
 
-    const cmd: EventCommand = {
+    await emitViaRoute(handle, {
       type: "message",
       workspace_id: WS,
       source_endpoint_id: PROCESSOR_EP,
       destination: { kind: "endpoint", endpoint_id: OBSERVER_EP },
       content: { body: "hello observer" },
       response: { expected: false }
-    };
-    store.submitEvent(cmd, noop);
+    });
 
     const deliveries = store.claimDeliveries(BRIDGE, 10, noop);
     expect(deliveries.length).toBe(0);
   });
 
-  it("broadcast with_delivery_processor targets only actors with bridge_id", () => {
+  it("broadcast with_delivery_processor targets only actors with bridge_id", async () => {
     store.registerEndpoint({
       endpoint_id: PROCESSOR_EP,
       workspace_id: WS,
@@ -112,23 +122,22 @@ describe("Delivery symmetry", () => {
       status: "idle"
     }, noop);
 
-    const cmd: EventCommand = {
+    const result = await emitViaRoute(handle, {
       type: "notification",
       workspace_id: WS,
       source_endpoint_id: OBSERVER_EP,
       destination: { kind: "broadcast", scope: "workspace", target: "with_delivery_processor" },
       content: { body: "system alert" },
       response: { expected: false }
-    };
-    const envelope = store.submitEvent(cmd, noop);
-    expect(envelope).toBeTruthy();
+    });
+    expect(result.event).toBeTruthy();
 
     const deliveries = store.claimDeliveries(BRIDGE, 10, noop);
     expect(deliveries.length).toBeGreaterThan(0);
     expect(deliveries[0].endpoint_id).toBe(PROCESSOR_EP);
   });
 
-  it("broadcast active_with_delivery_processor queues active actors with bridge_id without concurrent delivery", () => {
+  it("broadcast active_with_delivery_processor queues active actors with bridge_id without concurrent delivery", async () => {
     store.registerEndpoint({
       endpoint_id: PROCESSOR_EP,
       workspace_id: WS,
@@ -144,15 +153,14 @@ describe("Delivery symmetry", () => {
       status: "active"
     }, noop);
 
-    const cmd: EventCommand = {
+    await emitViaRoute(handle, {
       type: "notification",
       workspace_id: WS,
       source_endpoint_id: OBSERVER_EP,
       destination: { kind: "broadcast", scope: "workspace", target: "active_with_delivery_processor" },
       content: { body: "active processor alert" },
       response: { expected: false }
-    };
-    store.submitEvent(cmd, noop);
+    });
 
     const queued = (store as any).db.prepare(
       "SELECT * FROM event_queue WHERE destination_endpoint_id = ? AND state = 'queued'"
@@ -161,7 +169,7 @@ describe("Delivery symmetry", () => {
     expect(store.claimDeliveries(BRIDGE, 10, noop)).toEqual([]);
   });
 
-  it("broadcast active_without_delivery_processor targets active actors without bridge_id", () => {
+  it("broadcast active_without_delivery_processor targets active actors without bridge_id", async () => {
     store.registerEndpoint({
       endpoint_id: PROCESSOR_EP,
       workspace_id: WS,
@@ -177,15 +185,14 @@ describe("Delivery symmetry", () => {
       status: "active"
     }, noop);
 
-    const cmd: EventCommand = {
+    await emitViaRoute(handle, {
       type: "notification",
       workspace_id: WS,
       source_endpoint_id: PROCESSOR_EP,
       destination: { kind: "broadcast", scope: "workspace", target: "active_without_delivery_processor" },
       content: { body: "active pollable alert" },
       response: { expected: false }
-    };
-    store.submitEvent(cmd, noop);
+    });
 
     const queued = (store as any).db.prepare(
       "SELECT * FROM event_queue WHERE destination_endpoint_id = ?"
@@ -194,7 +201,7 @@ describe("Delivery symmetry", () => {
     expect(store.claimDeliveries(BRIDGE, 10, noop)).toEqual([]);
   });
 
-  it("broadcast all targets all actors", () => {
+  it("broadcast all targets all actors", async () => {
     store.registerEndpoint({
       endpoint_id: PROCESSOR_EP,
       workspace_id: WS,
@@ -210,15 +217,14 @@ describe("Delivery symmetry", () => {
       status: "idle"
     }, noop);
 
-    const cmd: EventCommand = {
+    await emitViaRoute(handle, {
       type: "notification",
       workspace_id: WS,
       source_endpoint_id: PROCESSOR_EP,
       destination: { kind: "broadcast", scope: "workspace", target: "all", exclude_source: true },
       content: { body: "hello everyone" },
       response: { expected: false }
-    };
-    store.submitEvent(cmd, noop);
+    });
 
     const queued = (store as any).db.prepare(
       "SELECT * FROM event_queue WHERE destination_endpoint_id = ?"
@@ -226,7 +232,7 @@ describe("Delivery symmetry", () => {
     expect(queued.length).toBeGreaterThan(0);
   });
 
-  it("deferred delivery sets runtime_unconfigured for bridge actors only", () => {
+  it("deferred delivery sets runtime_unconfigured for bridge actors only", async () => {
     store.registerEndpoint({
       endpoint_id: PROCESSOR_EP,
       workspace_id: WS,
@@ -235,15 +241,14 @@ describe("Delivery symmetry", () => {
       status: "idle"
     }, noop);
 
-    const cmd: EventCommand = {
+    await emitViaRoute(handle, {
       type: "message",
       workspace_id: WS,
       source_endpoint_id: OBSERVER_EP,
       destination: { kind: "endpoint", endpoint_id: PROCESSOR_EP },
       content: { body: "test deferred" },
       response: { expected: false }
-    };
-    store.submitEvent(cmd, noop);
+    });
     const deliveries = store.claimDeliveries(BRIDGE, 10, noop);
     expect(deliveries.length).toBeGreaterThan(0);
     const delivery = deliveries[0];
@@ -259,7 +264,7 @@ describe("Delivery symmetry", () => {
     expect(ep.status).toBe("runtime_unconfigured");
   });
 
-  it("surfaces a visible runtime_unconfigured signal when messaging an unconfigured endpoint", () => {
+  it("surfaces a visible runtime_unconfigured signal when messaging an unconfigured endpoint", async () => {
     store.registerEndpoint({
       endpoint_id: PROCESSOR_EP,
       workspace_id: WS,
@@ -268,14 +273,14 @@ describe("Delivery symmetry", () => {
       status: "runtime_unconfigured"
     }, noop);
 
-    store.submitEvent({
+    await emitViaRoute(handle, {
       type: "message",
       workspace_id: WS,
       source_endpoint_id: OBSERVER_EP,
       destination: { kind: "endpoint", endpoint_id: PROCESSOR_EP },
       content: { body: "hello into the void" },
       response: { expected: false }
-    }, noop);
+    });
 
     // No delivery is created for an unconfigured endpoint...
     expect(store.claimDeliveries(BRIDGE, 10, noop)).toEqual([]);
@@ -289,7 +294,7 @@ describe("Delivery symmetry", () => {
     expect(String(payload.message)).toMatch(/auth profile/i);
   });
 
-  it("makes queued work deliverable at normal turn end for an active delivery processor", () => {
+  it("makes queued work deliverable at normal turn end for an active delivery processor", async () => {
     store.registerEndpoint({
       endpoint_id: PROCESSOR_EP,
       workspace_id: WS,
@@ -298,27 +303,27 @@ describe("Delivery symmetry", () => {
       status: "idle"
     }, noop);
 
-    store.submitEvent({
+    await emitViaRoute(handle, {
       type: "message",
       workspace_id: WS,
       source_endpoint_id: OBSERVER_EP,
       destination: { kind: "endpoint", endpoint_id: PROCESSOR_EP },
       content: { body: "first" },
       response: { expected: false }
-    }, noop);
+    });
 
     const firstDeliveries = store.claimDeliveries(BRIDGE, 10, noop);
     expect(firstDeliveries).toHaveLength(1);
     expect((store.getEndpoint(PROCESSOR_EP) as any).status).toBe("active");
 
-    store.submitEvent({
+    await emitViaRoute(handle, {
       type: "message",
       workspace_id: WS,
       source_endpoint_id: OBSERVER_EP,
       destination: { kind: "endpoint", endpoint_id: PROCESSOR_EP },
       content: { body: "second" },
       response: { expected: false }
-    }, noop);
+    });
 
     expect(store.claimDeliveries(BRIDGE, 10, noop)).toEqual([]);
 
@@ -334,7 +339,7 @@ describe("Delivery symmetry", () => {
     expect(nextDeliveries[0].trigger_event_id).not.toBe(firstDeliveries[0].trigger_event_id);
   });
 
-  it("webhook ingest targets first actor with bridge_id", () => {
+  it("webhook ingest targets first actor with bridge_id", async () => {
     store.registerEndpoint({
       endpoint_id: OBSERVER_EP,
       workspace_id: WS,

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import YAML from "yaml";
 import { createBusServer } from "./server.js";
 import { defaultConfig, type LocalConfig } from "./config.js";
+import { emitViaRoute } from "./test-support/emit-via-route.js";
 
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
 
@@ -261,7 +262,7 @@ describe("Scope Graph API", () => {
     });
     expect(started.json().events.map((event: any) => event.destination_json.endpoint_id)).toEqual([planner]);
 
-    const emitToComposition = (source: string, type: string) => handle.store.submitEvent({
+    const emitToComposition = async (source: string, type: string) => emitViaRoute(handle, {
       type,
       workspace_id: workspaceId,
       source_endpoint_id: source,
@@ -270,11 +271,11 @@ describe("Scope Graph API", () => {
       current_delivery_context_id: graph.context_id,
       content: { app_id: "acme" },
       response: { expected: false },
-    }, () => {});
+    });
 
-    emitToComposition(planner, "application.build.requested");
-    emitToComposition(builder, "application.review.requested");
-    emitToComposition(judge, "application.rework.requested");
+    await emitToComposition(planner, "application.build.requested");
+    await emitToComposition(builder, "application.review.requested");
+    await emitToComposition(judge, "application.rework.requested");
 
     const routed = handle.store.db.prepare(`
       SELECT e.type, q.destination_endpoint_id

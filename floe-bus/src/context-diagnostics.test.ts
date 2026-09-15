@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import YAML from "yaml";
 import { defaultConfig, type LocalConfig } from "./config.js";
 import { createBusServer } from "./server.js";
+import { emitViaRoute } from "./test-support/emit-via-route.js";
 
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
 
@@ -57,8 +58,8 @@ describe("context diagnostic projection", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  function send(text: string, contextId?: string) {
-    return handle.store.submitEvent({
+  async function send(text: string, contextId?: string) {
+    const { event } = await emitViaRoute(handle, {
       type: "message",
       workspace_id: workspaceId,
       source_endpoint_id: operatorId,
@@ -69,13 +70,14 @@ describe("context diagnostic projection", () => {
       metadata: {},
       idempotency_key: null,
       context_id: contextId,
-    }, handle.broadcast).event;
+    });
+    return event;
   }
 
   it("returns only bounded facts related to the requested Context", async () => {
-    const first = send("expected message");
-    send("newest message", first.context_id);
-    const unrelated = send("unrelated context");
+    const first = await send("expected message");
+    await send("newest message", first.context_id);
+    const unrelated = await send("unrelated context");
 
     const relatedDeliveries = handle.store.listContextDeliveries({
       workspace_id: workspaceId,
@@ -153,7 +155,7 @@ describe("context diagnostic projection", () => {
   });
 
   it("does not expose a Context through the wrong workspace", async () => {
-    const event = send("private to this workspace");
+    const event = await send("private to this workspace");
     const response = await handle.app.inject({
       method: "GET",
       url: `/v1/workspaces/${encodeURIComponent("workspace:other")}/diagnostics/contexts/${encodeURIComponent(event.context_id)}`,

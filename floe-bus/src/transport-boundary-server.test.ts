@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { defaultConfig, type LocalConfig } from "./config.js";
 import { createBusServer } from "./server.js";
+import { emitViaRoute } from "./test-support/emit-via-route.js";
 import { registerExecutableActorFixture } from "./executable-actor-test-fixture.js";
 import { BusClient } from "../../floe-bridge/src/bus-client.js";
 import {
@@ -168,6 +169,7 @@ describe("authenticated Bus transport boundary", () => {
     const { handle } = await makeServer();
     const owner = handle.issueBridgeServiceCredential("bridge:runtime-owner");
     const other = handle.issueBridgeServiceCredential("bridge:runtime-other");
+    const workspaceToken = await issueWorkspaceSession(handle, WORKSPACE_ONE);
     for (const issued of [owner, other]) {
       const registered = await handle.app.inject({
         method: "POST",
@@ -206,7 +208,7 @@ describe("authenticated Bus transport boundary", () => {
       stream.socket.send(JSON.stringify({ type: "authenticate", bearer_token: owner.bearer_token }));
       await waitFor(stream.messages, message => message.type === "caught_up");
     }
-    const submitted = handle.store.submitEvent({
+    const submitted = await emitViaRoute(handle, {
       type: "message",
       workspace_id: WORKSPACE_ONE,
       source_endpoint_id: "operator:transport-one",
@@ -216,7 +218,7 @@ describe("authenticated Bus transport boundary", () => {
       content: { text: "Do the bounded work." },
       metadata: {},
       idempotency_key: null,
-    }, handle.broadcast);
+    }, { headers: bearer(workspaceToken) });
 
     let claimed: Record<string, unknown>;
     if (stream) {

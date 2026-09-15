@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import YAML from "yaml";
 
 import { defaultConfig } from "./config.js";
-import { BusStore } from "./store.js";
+import type { BusStore } from "./store.js";
+import { createBusServer } from "./server.js";
+import { emitViaRoute } from "./test-support/emit-via-route.js";
 import { BIND_CREDENTIAL_OPERATION_ID } from "./credential-operations.js";
 import { RECORD_CONNECTOR_HEALTH_OPERATION_ID } from "./connector-operations.js";
 import { ENABLE_EXTENSION_OPERATION_ID } from "./extension-operations.js";
@@ -21,22 +23,24 @@ import {
 } from "./workspace-portability-operations.js";
 import { WorkspacePortabilityError } from "./workspace-portability.js";
 
+type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
+
 const WORKSPACE_ID = "workspace_portability_integration";
 const ENDPOINT_ID = "actor:portability:worker";
 const BRIDGE_ID = "bridge:portability:test";
 const PULSE_ID = "pulse_portability_test";
-const opened: Array<{ store: BusStore; root: string }> = [];
+const opened: Array<{ handle: ServerHandle; root: string }> = [];
 
-afterEach(() => {
+afterEach(async () => {
   for (const item of opened.splice(0)) {
-    try { item.store.close(); } catch {}
+    try { await item.handle.app.close(); } catch {}
     rmSync(item.root, { recursive: true, force: true });
   }
 });
 
 describe("BusStore portable Workspace integration", () => {
-  it("registers the shared operations and exports the complete live schema", () => {
-    const { store, workspaceRoot } = makeStore();
+  it("registers the shared operations and exports the complete live schema", async () => {
+    const { handle, store, workspaceRoot } = await makeServer();
     const workspaceOperations = operationIds(store, "workspace");
     const hostOperations = operationIds(store, "host");
 
@@ -71,8 +75,8 @@ describe("BusStore portable Workspace integration", () => {
     expect(exported.bundle_directory).not.toContain(workspaceRoot);
   });
 
-  it("fails closed when any application table has no portability classification", () => {
-    const { store } = makeStore();
+  it("fails closed when any application table has no portability classification", async () => {
+    const { handle, store } = await makeServer();
     store.db.exec(`
       CREATE TABLE unclassified_relation_only (
         left_id TEXT NOT NULL,
@@ -86,8 +90,8 @@ describe("BusStore portable Workspace integration", () => {
     );
   });
 
-  it("holds Delivery claims and Pulse activation without rewriting retained states", () => {
-    const { store } = makeStore();
+  it("holds Delivery claims and Pulse activation without rewriting retained states", async () => {
+    const { handle, store } = await makeServer();
     const broadcast = () => {};
     store.registerEndpoint({
       endpoint_id: ENDPOINT_ID,
@@ -96,7 +100,7 @@ describe("BusStore portable Workspace integration", () => {
       bridge_id: BRIDGE_ID,
       status: "idle",
     }, broadcast);
-    store.submitEvent({
+    await emitViaRoute(handle, {
       type: "message",
       workspace_id: WORKSPACE_ID,
       source_endpoint_id: "actor:portability:operator",
@@ -104,7 +108,7 @@ describe("BusStore portable Workspace integration", () => {
       destination: { kind: "endpoint", endpoint_id: ENDPOINT_ID },
       content: { text: "Retain this queued work." },
       response: { expected: true },
-    }, broadcast);
+    });
 
     const contextId = store.contextStore.createContext({
       workspace_id: WORKSPACE_ID,
@@ -144,16 +148,17 @@ describe("BusStore portable Workspace integration", () => {
   });
 });
 
-function makeStore(): { store: BusStore; workspaceRoot: string } {
+async function makeServer(): Promise<{ handle: ServerHandle; store: BusStore; workspaceRoot: string }> {
   const root = mkdtempSync(join(tmpdir(), "floe-portability-store-"));
   const configPath = join(root, "config.yaml");
   const config = defaultConfig(root);
   writeFileSync(configPath, YAML.stringify(config), "utf8");
-  const store = new BusStore(configPath, config);
+  const handle = await createBusServer(configPath, config, { unsafe_in_process_test_auth_bypass: true });
+  await handle.app.ready();
   const workspaceRoot = join(root, "workspace-on-host-a");
   mkdirSync(workspaceRoot, { recursive: true });
   const timestamp = "2026-09-04T00:00:00.000Z";
-  store.workspaceIdentityStore.restoreWorkspace({
+  handle.store.workspaceIdentityStore.restoreWorkspace({
     snapshot: {
       workspace_id: WORKSPACE_ID,
       name: "Portable integration",
@@ -163,14 +168,14 @@ function makeStore(): { store: BusStore; workspaceRoot: string } {
       updated_at: timestamp,
     },
     binding: {
-      host_id: store.localHostId,
-      platform: store.localWorkspacePlatform,
+      host_id: handle.store.localHostId,
+      platform: handle.store.localWorkspacePlatform,
       locator: workspaceRoot,
       init_authorized: true,
     },
   });
-  opened.push({ store, root });
-  return { store, workspaceRoot };
+  opened.push({ handle, root });
+  return { handle, store: handle.store, workspaceRoot };
 }
 
 function operationIds(store: BusStore, boundary: "workspace" | "host"): string[] {

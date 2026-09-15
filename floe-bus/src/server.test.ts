@@ -5,6 +5,7 @@ import { join } from "node:path";
 import YAML from "yaml";
 import { createBusServer } from "./server.js";
 import { defaultConfig, type LocalConfig } from "./config.js";
+import { emitViaRoute } from "./test-support/emit-via-route.js";
 
 const WS = "workspace:server-test";
 const E1 = "actor:test:e1";
@@ -50,15 +51,15 @@ async function makeServer(): Promise<{ handle: ServerHandle; cleanup: () => Prom
   };
 }
 
-function emit(handle: ServerHandle, opts: {
+async function emit(handle: ServerHandle, opts: {
   source: string;
   destination: string;
   text?: string;
   context_id?: string | null;
   current_delivery_context_id?: string | null;
   type?: string;
-}): { event: any; status: number; body: any } {
-  const result = handle.store.submitEvent({
+}): Promise<{ event: any; status: number; body: any }> {
+  return emitViaRoute(handle, {
     type: opts.type ?? "message",
     workspace_id: WS,
     source_endpoint_id: opts.source,
@@ -70,8 +71,7 @@ function emit(handle: ServerHandle, opts: {
     idempotency_key: null,
     context_id: opts.context_id,
     current_delivery_context_id: opts.current_delivery_context_id
-  }, () => {});
-  return { event: result.event, status: 0, body: null };
+  });
 }
 
 describe("Slice 2 — Context API HTTP routes", () => {
@@ -95,9 +95,9 @@ describe("Slice 2 — Context API HTTP routes", () => {
     });
 
     it("returns only contexts the endpoint participates in", async () => {
-      const a = emit(handle, { source: E1, destination: E2, text: "a" }).event.context_id;
-      const b = emit(handle, { source: E2, destination: E3, text: "b" }).event.context_id;
-      const c = emit(handle, { source: E1, destination: E3, text: "c" }).event.context_id;
+      const a = (await emit(handle, { source: E1, destination: E2, text: "a" })).event.context_id;
+      const b = (await emit(handle, { source: E2, destination: E3, text: "b" })).event.context_id;
+      const c = (await emit(handle, { source: E1, destination: E3, text: "c" })).event.context_id;
       const res = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });
       expect(res.statusCode).toBe(200);
       const ids = (res.json().contexts as any[]).map((c) => c.context_id).sort();
@@ -106,13 +106,13 @@ describe("Slice 2 — Context API HTTP routes", () => {
     });
 
     it("sorts results by last_event_at descending", async () => {
-      const a = emit(handle, { source: E1, destination: E2, text: "first-a" }).event.context_id;
+      const a = (await emit(handle, { source: E1, destination: E2, text: "first-a" })).event.context_id;
       // small delay to ensure distinct timestamps
       await new Promise((r) => setTimeout(r, 5));
-      const b = emit(handle, { source: E1, destination: E3, text: "first-b" }).event.context_id;
+      const b = (await emit(handle, { source: E1, destination: E3, text: "first-b" })).event.context_id;
       await new Promise((r) => setTimeout(r, 5));
       // bump A by emitting again into it
-      emit(handle, { source: E1, destination: E2, text: "second-a", context_id: a });
+      await emit(handle, { source: E1, destination: E2, text: "second-a", context_id: a });
       const res = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });
       const ids = (res.json().contexts as any[]).map((c) => c.context_id);
       expect(ids[0]).toBe(a);
@@ -120,7 +120,7 @@ describe("Slice 2 — Context API HTTP routes", () => {
     });
 
     it("includes participants, last_event_at, parent_context_id, created_at, created_by_endpoint_id, workspace_id", async () => {
-      const a = emit(handle, { source: E1, destination: E2, text: "hi" }).event.context_id;
+      const a = (await emit(handle, { source: E1, destination: E2, text: "hi" })).event.context_id;
       const res = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });
       const entry = (res.json().contexts as any[])[0];
       expect(entry.context_id).toBe(a);
@@ -133,7 +133,7 @@ describe("Slice 2 — Context API HTTP routes", () => {
     });
 
     it("first_message_preview reflects the first message event text", async () => {
-      const a = emit(handle, { source: E1, destination: E2, text: "hello world" }).event.context_id;
+      const a = (await emit(handle, { source: E1, destination: E2, text: "hello world" })).event.context_id;
       const res = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });
       const entry = (res.json().contexts as any[]).find((c) => c.context_id === a);
       expect(entry.first_message_preview).toBe("hello world");
@@ -142,9 +142,9 @@ describe("Slice 2 — Context API HTTP routes", () => {
     });
 
     it("pages newest participant Contexts with an opaque backward cursor", async () => {
-      const oldest = emit(handle, { source: E1, destination: E2, text: "oldest" }).event.context_id;
+      const oldest = (await emit(handle, { source: E1, destination: E2, text: "oldest" })).event.context_id;
       await new Promise((resolve) => setTimeout(resolve, 5));
-      const newest = emit(handle, { source: E1, destination: E3, text: "newest" }).event.context_id;
+      const newest = (await emit(handle, { source: E1, destination: E3, text: "newest" })).event.context_id;
 
       const first = await handle.app.inject({
         method: "GET",
@@ -165,7 +165,7 @@ describe("Slice 2 — Context API HTTP routes", () => {
 
     it("first_message_preview is truncated to ~80 chars", async () => {
       const long = "x".repeat(200);
-      const a = emit(handle, { source: E1, destination: E2, text: long }).event.context_id;
+      const a = (await emit(handle, { source: E1, destination: E2, text: long })).event.context_id;
       const res = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });
       const entry = (res.json().contexts as any[]).find((c) => c.context_id === a);
       expect(entry.first_message_preview.length).toBeLessThanOrEqual(81);
@@ -192,7 +192,7 @@ describe("Slice 2 — Context API HTTP routes", () => {
 
   describe("GET /v1/contexts/:id", () => {
     it("returns context metadata + participants", async () => {
-      const a = emit(handle, { source: E1, destination: E2, text: "hi" }).event.context_id;
+      const a = (await emit(handle, { source: E1, destination: E2, text: "hi" })).event.context_id;
       const res = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(a)}` });
       expect(res.statusCode).toBe(200);
       const body = res.json();
@@ -212,14 +212,14 @@ describe("Slice 2 — Context API HTTP routes", () => {
     });
 
     it("returns one bounded Context tree without unrelated workspace Contexts", async () => {
-      const root = emit(handle, { source: E1, destination: E2, text: "root" }).event.context_id;
-      const child = emit(handle, {
+      const root = (await emit(handle, { source: E1, destination: E2, text: "root" })).event.context_id;
+      const child = (await emit(handle, {
         source: E2,
         destination: E3,
         text: "child",
         current_delivery_context_id: root,
-      }).event.context_id;
-      emit(handle, { source: E1, destination: E3, text: "unrelated" });
+      })).event.context_id;
+      await emit(handle, { source: E1, destination: E3, text: "unrelated" });
 
       const res = await handle.app.inject({
         method: "GET",
@@ -234,13 +234,13 @@ describe("Slice 2 — Context API HTTP routes", () => {
 
   describe("GET /v1/contexts/:id/events", () => {
     it("returns events for that context only (T7)", async () => {
-      const r1 = emit(handle, { source: E1, destination: E2, text: "a-1" });
-      const r2 = emit(handle, { source: E1, destination: E3, text: "b-1" });
+      const r1 = await emit(handle, { source: E1, destination: E2, text: "a-1" });
+      const r2 = await emit(handle, { source: E1, destination: E3, text: "b-1" });
       const ctxA = r1.event.context_id;
       const ctxB = r2.event.context_id;
       // bump each
-      emit(handle, { source: E1, destination: E2, text: "a-2", context_id: ctxA });
-      emit(handle, { source: E1, destination: E3, text: "b-2", context_id: ctxB });
+      await emit(handle, { source: E1, destination: E2, text: "a-2", context_id: ctxA });
+      await emit(handle, { source: E1, destination: E3, text: "b-2", context_id: ctxB });
 
       const resA = await handle.app.inject({ method: "GET", url: `/v1/contexts/${ctxA}/events` });
       expect(resA.statusCode).toBe(200);
@@ -258,9 +258,9 @@ describe("Slice 2 — Context API HTTP routes", () => {
     });
 
     it("returns events in chronological order (oldest first)", async () => {
-      const r1 = emit(handle, { source: E1, destination: E2, text: "first" });
+      const r1 = await emit(handle, { source: E1, destination: E2, text: "first" });
       const ctx = r1.event.context_id;
-      emit(handle, { source: E1, destination: E2, text: "second", context_id: ctx });
+      await emit(handle, { source: E1, destination: E2, text: "second", context_id: ctx });
       const res = await handle.app.inject({ method: "GET", url: `/v1/contexts/${ctx}/events` });
       const events = res.json().events as any[];
       const times = events.map((e) => e.created_at);
@@ -285,10 +285,10 @@ describe("Slice 2 — Context API HTTP routes", () => {
 
   describe("GET /v1/events backward history", () => {
     it("returns the newest bounded Context page and an earlier-page cursor", async () => {
-      const first = emit(handle, { source: E1, destination: E2, text: "first" });
+      const first = await emit(handle, { source: E1, destination: E2, text: "first" });
       const contextId = first.event.context_id;
-      emit(handle, { source: E1, destination: E2, text: "second", context_id: contextId });
-      emit(handle, { source: E1, destination: E2, text: "third", context_id: contextId });
+      await emit(handle, { source: E1, destination: E2, text: "second", context_id: contextId });
+      await emit(handle, { source: E1, destination: E2, text: "third", context_id: contextId });
 
       const latest = await handle.app.inject({
         method: "GET",
@@ -318,10 +318,10 @@ describe("Slice 2 — Context API HTTP routes", () => {
 
   describe("DELETE /v1/contexts/:id", () => {
     it("archives a conversation without deleting retained history", async () => {
-      const r1 = emit(handle, { source: E1, destination: E2, text: "delete me" });
+      const r1 = await emit(handle, { source: E1, destination: E2, text: "delete me" });
       const ctx = r1.event.context_id;
-      emit(handle, { source: E1, destination: E2, text: "delete me too", context_id: ctx });
-      const other = emit(handle, { source: E1, destination: E2, text: "keep me" });
+      await emit(handle, { source: E1, destination: E2, text: "delete me too", context_id: ctx });
+      const other = await emit(handle, { source: E1, destination: E2, text: "keep me" });
       const otherCtx = other.event.context_id;
 
       const before = await handle.app.inject({ method: "GET", url: `/v1/contexts?participant=${encodeURIComponent(E1)}` });

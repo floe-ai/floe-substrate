@@ -15,8 +15,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { BusStore, type EventCommand } from "../store.js";
-import { defaultConfig } from "../config.js";
+import { type EventCommand } from "../store.js";
+import { defaultConfig, type LocalConfig } from "../config.js";
+import { createBusServer } from "../server.js";
+import { emitViaRoute } from "../test-support/emit-via-route.js";
 import { registerExecutableActorFixture } from "../executable-actor-test-fixture.js";
 
 const WS = "workspace:test-runtime-delivery";
@@ -26,16 +28,30 @@ const BRIDGE = "bridge:test-runtime";
 
 const noop = () => {};
 
-function makeStore(): { store: BusStore; cleanup: () => void } {
+type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
+
+async function makeServer(): Promise<{ handle: ServerHandle; cleanup: () => Promise<void> }> {
   const tmp = mkdtempSync(join(tmpdir(), "floe-bus-runtime-"));
   const cfgPath = join(tmp, "config.yaml");
-  const cfg = defaultConfig(tmp);
+  const cfg: LocalConfig = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const store = new BusStore(cfgPath, cfg);
+  const handle = await createBusServer(cfgPath, cfg, { unsafe_in_process_test_auth_bypass: true });
+  await handle.app.ready();
+  const timestamp = new Date().toISOString();
+  handle.store.workspaceIdentityStore.restoreWorkspace({
+    snapshot: {
+      workspace_id: WS,
+      name: "Test WS",
+      creation_kind: "created",
+      source_workspace_id: null,
+      created_at: timestamp,
+      updated_at: timestamp,
+    },
+  });
   return {
-    store,
-    cleanup: () => {
-      try { store.close(); } catch {}
+    handle,
+    cleanup: async () => {
+      try { await handle.app.close(); } catch {}
       rmSync(tmp, { recursive: true, force: true });
     },
   };
@@ -64,15 +80,17 @@ function emitCommand(
 }
 
 describe("BusStore — runtime-based delivery gate (Slice 3 rework)", () => {
-  let store: BusStore;
-  let cleanup: () => void;
+  let handle: ServerHandle;
+  let store: ServerHandle["store"];
+  let cleanup: () => Promise<void>;
 
-  beforeEach(() => {
-    const made = makeStore();
-    store = made.store;
+  beforeEach(async () => {
+    const made = await makeServer();
+    handle = made.handle;
+    store = handle.store;
     cleanup = made.cleanup;
   });
-  afterEach(() => cleanup());
+  afterEach(async () => await cleanup());
 
   function replaceBinding(status: "resolved" | "unresolved") {
     const current = store.runtimeProfileStore.getCurrentActorBinding(ACTOR_WITH_RUNTIME)!;
@@ -100,7 +118,7 @@ describe("BusStore — runtime-based delivery gate (Slice 3 rework)", () => {
 
   it("pushes queued work when its runtime becomes configured and preserves its exact binding", async () => {
     await unconfiguredRuntime();
-    const sent = store.submitEvent(emitCommand({ source_endpoint_id: ACTOR_NO_RUNTIME, destination: { kind: "endpoint", endpoint_id: ACTOR_WITH_RUNTIME } }), noop);
+    const sent = await emitViaRoute(handle, emitCommand({ source_endpoint_id: ACTOR_NO_RUNTIME, destination: { kind: "endpoint", endpoint_id: ACTOR_WITH_RUNTIME } }));
     expect(store.claimDeliveries(BRIDGE, 1, noop)).toHaveLength(0);
     const ready = replaceBinding("resolved");
     await Promise.resolve();
@@ -145,7 +163,7 @@ describe("BusStore — runtime-based delivery gate (Slice 3 rework)", () => {
     expect(store.getEndpoint(ACTOR_WITH_RUNTIME)).toMatchObject({ name: "Updated name", status });
   });
 
-  it("an actor with no runtime attached receives no delivery bundle but accrues context history", () => {
+  it("an actor with no runtime attached receives no delivery bundle but accrues context history", async () => {
     // Register actor with no bridge_id (runtime-less)
     store.registerEndpoint(
       { endpoint_id: ACTOR_NO_RUNTIME, workspace_id: WS, name: "Actor A" },
@@ -157,12 +175,11 @@ describe("BusStore — runtime-based delivery gate (Slice 3 rework)", () => {
     );
 
     // Route a message to the runtime-less actor
-    const result = store.submitEvent(
+    const result = await emitViaRoute(handle,
       emitCommand({
         source_endpoint_id: ACTOR_WITH_RUNTIME,
         destination: { kind: "endpoint", endpoint_id: ACTOR_NO_RUNTIME },
       }),
-      noop
     );
 
     // No delivery bundle for the runtime-less actor
@@ -183,7 +200,7 @@ describe("BusStore — runtime-based delivery gate (Slice 3 rework)", () => {
     expect(eventRow).not.toBeUndefined();
   });
 
-  it("an actor with a live runtime attached receives a delivery bundle", () => {
+  it("an actor with a live runtime attached receives a delivery bundle", async () => {
     // Provision a bridge so ACTOR_WITH_RUNTIME has a real runtime
     store.db.prepare(`
       INSERT INTO bridges (bridge_id, status, capabilities_json, last_seen_at, created_at)
@@ -206,12 +223,11 @@ describe("BusStore — runtime-based delivery gate (Slice 3 rework)", () => {
     );
 
     // Route a message to the runtime-connected actor
-    store.submitEvent(
+    await emitViaRoute(handle,
       emitCommand({
         source_endpoint_id: ACTOR_NO_RUNTIME,
         destination: { kind: "endpoint", endpoint_id: ACTOR_WITH_RUNTIME },
       }),
-      noop
     );
 
     const bundles = store.db
@@ -220,7 +236,7 @@ describe("BusStore — runtime-based delivery gate (Slice 3 rework)", () => {
     expect(bundles.length).toBeGreaterThan(0);
   });
 
-  it("pins direct Context work to one exact Actor definition and runtime revision", () => {
+  it("pins direct Context work to one exact Actor definition and runtime revision", async () => {
     store.db.prepare(`
       INSERT INTO bridges (bridge_id, status, capabilities_json, last_seen_at, created_at)
       VALUES (?, 'online', '{}', ?, ?)
@@ -241,12 +257,11 @@ describe("BusStore — runtime-based delivery gate (Slice 3 rework)", () => {
     );
     registerExecutableActorFixture(store, WS, ACTOR_WITH_RUNTIME);
 
-    const submitted = store.submitEvent(
+    const submitted = await emitViaRoute(handle,
       emitCommand({
         source_endpoint_id: ACTOR_NO_RUNTIME,
         destination: { kind: "endpoint", endpoint_id: ACTOR_WITH_RUNTIME },
       }),
-      noop,
     );
     const originalActor = store.actorDefinitionStore.getActor(ACTOR_WITH_RUNTIME)!;
     const originalDefinition = store.actorDefinitionStore.getRevision(

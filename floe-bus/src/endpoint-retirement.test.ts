@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
 import { defaultConfig } from "./config.js";
-import { BusStore, EndpointRetirementBlockedError, type EventCommand } from "./store.js";
+import { createBusServer } from "./server.js";
+import { EndpointRetirementBlockedError, type BusStore, type EventCommand } from "./store.js";
+import { emitViaRoute } from "./test-support/emit-via-route.js";
+
+type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
 
 const WS = "workspace:retirement";
 const ACTOR = "actor:workspace:retirement:controller";
@@ -13,14 +17,17 @@ const noop = () => {};
 
 describe("Endpoint retirement", () => {
   let root: string;
+  let handle: ServerHandle;
   let store: BusStore;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "floe-endpoint-retirement-"));
     const configPath = join(root, "config.yaml");
     const config = defaultConfig(root);
     writeFileSync(configPath, YAML.stringify(config), "utf8");
-    store = new BusStore(configPath, config);
+    handle = await createBusServer(configPath, config, { unsafe_in_process_test_auth_bypass: true });
+    await handle.app.ready();
+    store = handle.store;
     store.registerEndpoint({
       endpoint_id: ACTOR,
       workspace_id: WS,
@@ -38,12 +45,12 @@ describe("Endpoint retirement", () => {
     }, noop);
   });
 
-  afterEach(() => {
-    try { store.close(); } catch {}
+  afterEach(async () => {
+    try { await handle.app.close(); } catch {}
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("makes an idle Endpoint inert while preserving its historical identity and participation", () => {
+  it("makes an idle Endpoint inert while preserving its historical identity and participation", async () => {
     const contextId = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: OPERATOR,
@@ -73,8 +80,8 @@ describe("Endpoint retirement", () => {
       content: { text: "Are you still there?" },
       response: { expected: false },
     };
-    const submitted = store.submitEvent(command, noop);
-    expect(submitted.deliveries_created).toBe(0);
+    const submitted = await emitViaRoute(handle, command);
+    expect(submitted.body.deliveries_created).toBe(0);
     expect(store.getEndpoint(ACTOR)).toMatchObject({ status: "retired" });
   });
 

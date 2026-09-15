@@ -3,10 +3,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { BusStore, type EventCommand } from "./store.js";
+import { createBusServer } from "./server.js";
+import type { BusStore, EventCommand } from "./store.js";
 import { defaultConfig } from "./config.js";
 import type { ScopeCompositionContent } from "./scope-compositions.js";
 import { registerExecutableActorFixture } from "./executable-actor-test-fixture.js";
+import { emitViaRoute } from "./test-support/emit-via-route.js";
 
 const WS = "workspace:turn-result";
 const A = `actor:${WS}:a`;
@@ -14,6 +16,7 @@ const B = `actor:${WS}:b`;
 const C = `actor:${WS}:c`;
 const OPERATOR = `actor:${WS}:operator`;
 const noop = () => {};
+type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
 
 function requestCommand(input: {
   source: string;
@@ -116,15 +119,18 @@ function delegatingActorComposition(
 }
 
 describe("runtime turn results and causal requests", () => {
+  let handle: ServerHandle;
   let store: BusStore;
   let root: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "floe-turn-result-"));
     const configPath = join(root, "config.yaml");
     const config = defaultConfig(root);
     writeFileSync(configPath, YAML.stringify(config), "utf8");
-    store = new BusStore(configPath, config);
+    handle = await createBusServer(configPath, config, { unsafe_in_process_test_auth_bypass: true });
+    await handle.app.ready();
+    store = handle.store;
     for (const [endpoint_id, bridge_id] of [[OPERATOR, null], [A, "bridge:a"], [B, "bridge:b"], [C, "bridge:c"]] as const) {
       store.registerEndpoint({ endpoint_id, workspace_id: WS, name: endpoint_id, bridge_id, status: "idle" }, noop);
     }
@@ -132,20 +138,20 @@ describe("runtime turn results and causal requests", () => {
     registerExecutableActorFixture(store, WS, B);
   });
 
-  afterEach(() => {
-    try { store.close(); } catch {}
+  afterEach(async () => {
+    try { await handle.app.close(); } catch {}
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("records ordinary completion in its originating Context with no result delivery", () => {
-    const submitted = store.submitEvent({
+  it("records ordinary completion in its originating Context with no result delivery", async () => {
+    const submitted = await emitViaRoute(handle, {
       type: "message",
       workspace_id: WS,
       source_endpoint_id: OPERATOR,
       destination: { kind: "endpoint", endpoint_id: B },
       content: { text: "answer naturally" },
       response: { expected: true }
-    }, noop);
+    });
     const [delivery] = store.claimDeliveries("bridge:b", 10, noop);
 
     const recorded = store.recordRuntimeTurnResult({
@@ -171,14 +177,14 @@ describe("runtime turn results and causal requests", () => {
     ]);
   });
 
-  it("does not duplicate a stored result when its delivery acknowledgement is retried", () => {
-    const submitted = store.submitEvent({
+  it("does not duplicate a stored result when its delivery acknowledgement is retried", async () => {
+    const submitted = await emitViaRoute(handle, {
       type: "message",
       workspace_id: WS,
       source_endpoint_id: OPERATOR,
       destination: { kind: "endpoint", endpoint_id: B },
       content: { text: "answer once" }
-    }, noop);
+    });
     const [firstDelivery] = store.claimDeliveries("bridge:b", 10, noop);
     const first = store.recordRuntimeTurnResult({
       delivery_id: firstDelivery.delivery_id,
@@ -275,7 +281,7 @@ describe("runtime turn results and causal requests", () => {
     expect(right.result_event.context_id).not.toBe(ingressContextId);
   });
 
-  it("resumes a delegated request in the same NodeExecution and pinned revision", () => {
+  it("resumes a delegated request in the same NodeExecution and pinned revision", async () => {
     store.createScope({ workspace_id: WS, scope_id: "delegation", title: "Delegation" }, noop);
     const ingressContextId = store.contextStore.createContext({
       workspace_id: WS,
@@ -320,7 +326,7 @@ describe("runtime turn results and causal requests", () => {
       request_parent_target_node_id: firstA.target_node_id,
       request_parent_execution_attempt_id: firstAttempt.execution_attempt_id,
     };
-    store.submitEvent(childRequest, noop);
+    await emitViaRoute(handle, childRequest);
     const [deliveryB] = store.claimDeliveries("bridge:b", 1, noop);
     store.reportDeliveryStatus({
       bridge_id: "bridge:b",
@@ -383,28 +389,28 @@ describe("runtime turn results and causal requests", () => {
     expect(coordinator.status).toBe("completed");
   });
 
-  it("only the requested actor's natural completion resolves and resumes the exact request", () => {
+  it("only the requested actor's natural completion resolves and resumes the exact request", async () => {
     const parent = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: A,
       participants: [A, OPERATOR]
     });
-    const request = store.submitEvent(requestCommand({
+    const request = (await emitViaRoute(handle, requestCommand({
       source: A,
       destination: B,
       correlation: "corr-exact",
       currentContext: parent
-    }), noop).event;
+    }))).event;
     const [deliveryB] = store.claimDeliveries("bridge:b", 10, noop);
 
-    store.submitEvent({
+    await emitViaRoute(handle, {
       type: "message",
       workspace_id: WS,
       source_endpoint_id: C,
       destination: { kind: "endpoint", endpoint_id: A },
       correlation_id: "corr-exact",
       content: { text: "unrelated but same correlation" }
-    }, noop);
+    });
     expect(store.listPendingResponses({ workspace_id: WS })).toEqual([
       expect.objectContaining({ source_event_id: request.event_id, status: "pending" })
     ]);
@@ -437,28 +443,28 @@ describe("runtime turn results and causal requests", () => {
     ]);
   });
 
-  it("preserves a durable nested A to B to C return chain", () => {
+  it("preserves a durable nested A to B to C return chain", async () => {
     const parent = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: A,
       participants: [A, OPERATOR]
     });
-    const requestAB = store.submitEvent(requestCommand({
+    const requestAB = (await emitViaRoute(handle, requestCommand({
       source: A,
       destination: B,
       correlation: "corr-ab",
       currentContext: parent
-    }), noop).event;
+    }))).event;
     const [deliveryB1] = store.claimDeliveries("bridge:b", 10, noop);
 
-    const requestBC = store.submitEvent(requestCommand({
+    const requestBC = (await emitViaRoute(handle, requestCommand({
       source: B,
       destination: C,
       correlation: "corr-bc",
       currentContext: requestAB.context_id,
       parentDelivery: deliveryB1.delivery_id,
       continuation: requestAB.event_id
-    }), noop).event;
+    }))).event;
     const [deliveryC] = store.claimDeliveries("bridge:c", 10, noop);
 
     // C can finish before B's first processing cycle has fully ended. That
@@ -508,18 +514,18 @@ describe("runtime turn results and causal requests", () => {
     ]));
   });
 
-  it("returns terminal requested-actor failure through the same causal path", () => {
+  it("returns terminal requested-actor failure through the same causal path", async () => {
     const parent = store.contextStore.createContext({
       workspace_id: WS,
       created_by_endpoint_id: A,
       participants: [A]
     });
-    const request = store.submitEvent(requestCommand({
+    const request = (await emitViaRoute(handle, requestCommand({
       source: A,
       destination: B,
       correlation: "corr-failure",
       currentContext: parent
-    }), noop).event;
+    }))).event;
     const [deliveryB] = store.claimDeliveries("bridge:b", 10, noop);
 
     const failed = store.recordRuntimeTurnResult({
@@ -539,14 +545,14 @@ describe("runtime turn results and causal requests", () => {
     });
   });
 
-  it("dead-letters a failed turn after three bounded delivery attempts", () => {
-    store.submitEvent({
+  it("dead-letters a failed turn after three bounded delivery attempts", async () => {
+    await emitViaRoute(handle, {
       type: "message",
       workspace_id: WS,
       source_endpoint_id: OPERATOR,
       destination: { kind: "endpoint", endpoint_id: B },
       content: { text: "work that keeps failing" }
-    }, noop);
+    });
 
     for (let expectedAttempt = 1; expectedAttempt <= 3; expectedAttempt += 1) {
       const [delivery] = store.claimDeliveries("bridge:b", 10, noop);
