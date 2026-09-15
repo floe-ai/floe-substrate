@@ -110,7 +110,7 @@ const RULES: VocabularyRule[] = [
   }
 ];
 
-function collectFiles(root: string, extensions: string[]): string[] {
+function collectFilesUncached(root: string, extensions: string[]): string[] {
   const absolute = join(REPO_ROOT, root);
   if (!existsSync(absolute)) return [];
   if (statSync(absolute).isFile()) {
@@ -121,12 +121,37 @@ function collectFiles(root: string, extensions: string[]): string[] {
     if (SKIPPED_DIR_NAMES.has(entry)) continue;
     const child = join(absolute, entry);
     if (statSync(child).isDirectory()) {
-      files.push(...collectFiles(relative(REPO_ROOT, child), extensions));
+      files.push(...collectFilesUncached(relative(REPO_ROOT, child), extensions));
     } else if (extensions.some((ext) => entry.endsWith(ext))) {
       files.push(child);
     }
   }
   return files;
+}
+
+// The rules below share roots and extensions, so walking the tree and reading
+// files once per rule repeated the same filesystem work N times and made each
+// case slow enough to trip the wall-clock test timeout under parallel load.
+// Cache both the per-(root, extensions) file list and the per-file contents so
+// the whole lint reads each file at most once.
+const fileListCache = new Map<string, string[]>();
+const fileLinesCache = new Map<string, string[]>();
+
+function collectFiles(root: string, extensions: string[]): string[] {
+  const key = `${root}\u0000${[...extensions].sort().join(",")}`;
+  const cached = fileListCache.get(key);
+  if (cached) return cached;
+  const files = collectFilesUncached(root, extensions);
+  fileListCache.set(key, files);
+  return files;
+}
+
+function readLines(file: string): string[] {
+  const cached = fileLinesCache.get(file);
+  if (cached) return cached;
+  const lines = readFileSync(file, "utf8").split("\n");
+  fileLinesCache.set(file, lines);
+  return lines;
 }
 
 describe("vocabulary drift lint", () => {
@@ -138,7 +163,7 @@ describe("vocabulary drift lint", () => {
         for (const file of collectFiles(root, rule.extensions)) {
           const repoPath = relative(REPO_ROOT, file).split(sep).join("/");
           if (repoPath === SELF) continue;
-          const lines = readFileSync(file, "utf8").split("\n");
+          const lines = readLines(file);
           lines.forEach((line, index) => {
             if (!rule.pattern.test(line)) return;
             if (repoPath in rule.allowed) {
