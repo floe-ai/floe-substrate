@@ -15,11 +15,12 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "diff": "^9.0.0",
-    "floe-runtime": "github:floe-ai/floe-runtime#8e53df185b61eac850dac851ce3d48265ec29b6f",
+    "floe-runtime": "file:../../floe-runtime",
     "sharp": "0.35.4",
     "vite": "8.0.10",
     "yaml": "^2.6.0",
-    "zod": "^3.24.0"
+    "zod": "^3.24.0",
+    "zod-to-json-schema": "^3.25.1"
   },
   "devDependencies": {
     "@types/diff": "^7.0.2",
