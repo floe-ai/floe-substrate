@@ -105,10 +105,14 @@ describe("identity-actor gate [fake]", () => {
     expect(clientBearer).toBeTruthy();
     expect(authed.workspace_id).toBe(workspaceId);
 
-    // The client discovers the operator through ORDINARY Actor listing — no role
-    // marker to hunt for — and is refused a host_control route.
+    // The client discovers the Actor it executes through ORDINARY Actor listing:
+    // it filters on the resolved runtime adapter (`client`), never a role marker
+    // and never a constructed id convention. It is also refused a host_control
+    // route. F-DISCOVERY: ordinary listing alone is sufficient.
     const listed = await asJson(await fetch(`${busUrl}/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`, { headers: authz(clientBearer) }));
-    const operator = (listed.endpoints ?? []).find((e: any) => e.endpoint_id === operatorEndpoint);
+    const clientExecuted = (listed.endpoints ?? []).filter((e: any) => e.adapter_id === "client");
+    expect(clientExecuted.length).toBeGreaterThan(0);
+    const operator = clientExecuted.find((e: any) => e.endpoint_id === operatorEndpoint);
     expect(operator).toBeTruthy();
     const clientsProbe = await fetch(`${busUrl}/v1/clients`, { headers: authz(clientBearer) });
     expect([401, 403]).toContain(clientsProbe.status);

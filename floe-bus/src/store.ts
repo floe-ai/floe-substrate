@@ -4963,10 +4963,13 @@ export class BusStore {
       : this.db.prepare("SELECT * FROM endpoints ORDER BY workspace_id, name").all();
     // Parse metadata_json into a self-describing `metadata` object so a generic
     // client can read endpoint metadata without knowing the column is a JSON
-    // string.
+    // string. Also resolve the runtime `adapter_id` that executes each Endpoint's
+    // turns, so ordinary listing is enough to find a client-executed Actor (its
+    // adapter is `client`) — no id convention and no role marker to match on.
     return (rows as Array<Record<string, unknown>>).map((row) => ({
       ...row,
       metadata: parseJson<Record<string, unknown>>((row.metadata_json as string) ?? "{}"),
+      adapter_id: this.resolveEndpointAdapterId(row.endpoint_id as string),
     }));
   }
 
