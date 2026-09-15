@@ -326,6 +326,7 @@ export const NON_PORTABLE_HOST_TABLES = new Set([
   "client_identities",
   "client_identity_challenges",
   "client_identity_sessions",
+  "client_identity_workspaces",
   "command_worker_bindings",
   "host_capability_policy_revisions",
   "local_host_identity",

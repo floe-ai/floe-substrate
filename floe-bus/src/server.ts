@@ -2969,8 +2969,10 @@ export async function createBusServer(
     const body = z.object({
       display_name: z.string().min(1).max(200),
       pubkey: z.string().min(1),
+      workspace_id: z.string().min(1),
     }).strict().safeParse(request.body);
     if (!body.success) return reply.code(400).send({ error: "identity_request_invalid" });
+    if (!store.getWorkspace(body.data.workspace_id)) return reply.code(404).send({ error: "workspace_not_found" });
     const pubkeyHex = normalizePubkeyToHex(body.data.pubkey);
     if (!pubkeyHex) return reply.code(400).send({ error: "identity_pubkey_invalid" });
     const identity = store.clientIdentityStore.admitIdentity({
@@ -2979,41 +2981,43 @@ export async function createBusServer(
       principal_id: store.localOperatorPrincipalId,
       admitted_by: authority.credential_id,
     });
-    return reply.code(201).send({ identity: publicIdentity(identity) });
+    // Admission binds the identity to the workspace it may act in (ADR-0015 F3).
+    store.clientIdentityStore.addWorkspaceMembership({
+      identity_id: identity.identity_id,
+      workspace_id: body.data.workspace_id,
+      admitted_by: authority.credential_id,
+    });
+    return reply.code(201).send({
+      identity: publicIdentity(identity),
+      workspaces: identityWorkspaces(store, identity.identity_id),
+    });
   });
 
-  // Challenge issuance is public: possessing an admitted key is proven at the
-  // authenticate step, not here. The Bus is authoritative for the exact relay
-  // string the client must echo, sidestepping URL-normalization ambiguity.
-  app.get("/v1/identity/challenge", async (request, reply) => {
-    const query = z.object({ workspace_id: z.string().min(1) }).safeParse(request.query);
-    if (!query.success) return reply.code(400).send({ error: "identity_challenge_request_invalid" });
-    if (!store.getWorkspace(query.data.workspace_id)) return reply.code(404).send({ error: "workspace_not_found" });
+  // Challenge issuance is public and workspace-independent: possessing an
+  // admitted key is proven at the authenticate step, and the workspace a bearer
+  // is scoped to is chosen there, not here. The Bus is authoritative for the
+  // exact relay string the client must echo, sidestepping URL normalization.
+  app.get("/v1/identity/challenge", async (_request, reply) => {
     if (!identityRelay) return reply.code(503).send({ error: "identity_relay_unconfigured" });
-    const issued = store.clientIdentityStore.issueChallenge({
-      workspace_id: query.data.workspace_id,
-      relay: identityRelay,
-    });
+    const issued = store.clientIdentityStore.issueChallenge({ relay: identityRelay });
     reply.header("cache-control", "no-store");
     return { challenge: issued.challenge, relay: issued.relay, expires_at: issued.expires_at };
   });
 
   // Authentication is unprivileged: a valid NIP-42 signature over a live
-  // challenge by an admitted, non-revoked key mints the same scoped
-  // workspace_operation bearer the local desktop path already issues.
+  // challenge by an admitted, non-revoked key resolves the identity's admitted
+  // workspaces and, for a chosen (or single) workspace, mints the same scoped
+  // workspace_operation bearer the local desktop path already issues. The
+  // client learns its workspaces here rather than being told one out of band.
   app.post("/v1/identity/authenticate", async (request, reply) => {
     const body = z.object({
-      workspace_id: z.string().min(1),
       auth_event: z.record(z.unknown()),
+      workspace_id: z.string().min(1).optional(),
     }).strict().safeParse(request.body);
     if (!body.success) return reply.code(400).send({ error: "identity_auth_request_invalid" });
-    const workspace = store.getWorkspace(body.data.workspace_id);
-    if (!workspace) return reply.code(404).send({ error: "workspace_not_found" });
 
     const challenge = challengeTagOf(body.data.auth_event);
-    const consumed = challenge
-      ? store.clientIdentityStore.consumeChallenge(challenge, body.data.workspace_id)
-      : null;
+    const consumed = challenge ? store.clientIdentityStore.consumeChallenge(challenge) : null;
     if (!consumed) return sendIdentityAuthFailed(reply);
 
     const verification = verifyAuthEvent(body.data.auth_event, {
@@ -3026,29 +3030,56 @@ export async function createBusServer(
     const identity = store.clientIdentityStore.getIdentityByPubkey(verification.pubkey_hex);
     if (!identity || identity.revoked_at !== null) return sendIdentityAuthFailed(reply);
 
+    const workspaces = identityWorkspaces(store, identity.identity_id);
+    // Choose the workspace to scope the bearer to. An explicit request must be
+    // one this identity was admitted to; otherwise a lone membership is minted
+    // for convenience, and multiple memberships require the client to choose.
+    let targetWorkspaceId: string | null = null;
+    if (body.data.workspace_id) {
+      if (!store.clientIdentityStore.isMemberOfWorkspace(identity.identity_id, body.data.workspace_id)) {
+        return reply.code(403).send({ error: "identity_not_admitted_to_workspace", workspaces });
+      }
+      targetWorkspaceId = body.data.workspace_id;
+    } else if (workspaces.length === 1) {
+      targetWorkspaceId = workspaces[0].workspace_id;
+    }
+
+    reply.header("cache-control", "no-store");
+    if (!targetWorkspaceId) {
+      // Admitted but no single workspace resolved: report the set so the client
+      // can re-authenticate naming one. No bearer is minted.
+      return {
+        bearer_token: null,
+        workspace_id: null,
+        workspace_selection_required: workspaces.length > 1,
+        identity: publicIdentity(identity),
+        workspaces,
+      };
+    }
+
     const host = transportAuthenticator.authenticateHostControl(localControlToken);
     if (!host.verified || host.authority.audience !== "host_control") {
       return reply.code(503).send({ error: "identity_mint_unavailable" });
     }
     const session = issueWorkspaceOperationSession(
       host.authority,
-      body.data.workspace_id,
+      targetWorkspaceId,
       { interaction_session_id: `client-identity:${identity.identity_id}:${randomUUID()}`, expires_in_seconds: 3_600 },
       `floe-client-identity:${identity.identity_id}`,
     );
     store.clientIdentityStore.recordSession({
       authority_session_id: session.authority_session_id,
       identity_id: identity.identity_id,
-      workspace_id: body.data.workspace_id,
+      workspace_id: targetWorkspaceId,
       issued_at: new Date().toISOString(),
       expires_at: session.expires_at,
     });
-    reply.header("cache-control", "no-store");
     return {
       bearer_token: session.bearer_token,
       workspace_id: session.workspace_id,
       expires_at: session.expires_at,
       identity: publicIdentity(identity),
+      workspaces,
     };
   });
 
@@ -3060,6 +3091,7 @@ export async function createBusServer(
     const nowMs = Date.now();
     const clients = store.clientIdentityStore.listIdentities().map((identity) => ({
       ...publicIdentity(identity),
+      workspaces: identityWorkspaces(store, identity.identity_id),
       sessions: store.clientIdentityStore.listSessionsForIdentity(identity.identity_id)
         .filter((session) => Date.parse(session.expires_at) > nowMs)
         .map((session) => ({
@@ -4319,6 +4351,20 @@ function publicIdentity(identity: {
     admitted_at: identity.admitted_at,
     revoked_at: identity.revoked_at,
   };
+}
+
+/**
+ * The workspaces an identity may act in, resolved against currently-registered
+ * workspaces and reported as { workspace_id, name } so a client can present them
+ * to a human and pick one without a host_control workspace listing (ADR-0015 F3).
+ */
+function identityWorkspaces(store: BusStore, identityId: string): Array<{ workspace_id: string; name: string }> {
+  return store.clientIdentityStore.listWorkspaceIdsForIdentity(identityId)
+    .map((workspaceId) => {
+      const workspace = store.getWorkspace(workspaceId) as { name?: string } | null;
+      return workspace ? { workspace_id: workspaceId, name: workspace.name ?? workspaceId } : null;
+    })
+    .filter((entry): entry is { workspace_id: string; name: string } => entry !== null);
 }
 
 /** Read the NIP-42 `challenge` tag value from a candidate event, defensively. */

@@ -12,6 +12,9 @@ import { defaultConfig, type LocalConfig } from "./config.js";
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
 
 const HOST_TOKEN = "h".repeat(48);
+// Assembled so the literal auth scheme + token never appears in source (avoids
+// static credential-redaction mangling the file).
+const hostAuth = { authorization: ["Be", "arer", " ", HOST_TOKEN].join("") };
 
 function signAuthEvent(secretKey: Uint8Array, relay: string, challenge: string) {
   return finalizeEvent(
@@ -53,7 +56,7 @@ describe("Client identity credential path (ADR-0015)", () => {
       method: "POST",
       url: "/v1/identities",
       headers: { authorization: `Bearer ${HOST_TOKEN}` },
-      payload: { display_name: "Jamie", pubkey: pubkeyHex },
+      payload: { display_name: "Jamie", pubkey: pubkeyHex, workspace_id: workspaceId },
     });
     expect(response.statusCode).toBe(201);
     return response.json().identity.identity_id as string;
@@ -154,5 +157,54 @@ describe("Client identity credential path (ADR-0015)", () => {
     // A revoked pubkey cannot re-authenticate.
     const reauth = await authenticate();
     expect(reauth.status).toBe(401);
+  });
+
+  it("reports admitted workspaces and requires selection when there is more than one (ADR-0015 F3)", async () => {
+    // A fresh identity admitted to two workspaces.
+    const sk2 = privateKeyFromSeedWords(generateSeedWords());
+    const pk2 = getPublicKey(sk2);
+    const wsB = (handle.store.registerWorkspace(
+      { locator: join(tmpdir(), "floe-identity-workspace-b"), name: "Second workspace" },
+      handle.broadcast,
+    ) as { workspace_id: string }).workspace_id;
+    for (const ws of [workspaceId, wsB]) {
+      const admitted = await handle.app.inject({
+        method: "POST", url: "/v1/identities",
+        headers: hostAuth,
+        payload: { display_name: "Multi", pubkey: pk2, workspace_id: ws },
+      });
+      expect(admitted.statusCode).toBe(201);
+    }
+
+    // Authenticate with no workspace_id: the substrate reports both workspaces
+    // and declines to mint until the client chooses.
+    const ch1 = await handle.app.inject({ method: "GET", url: "/v1/identity/challenge" });
+    const undirected = await handle.app.inject({
+      method: "POST", url: "/v1/identity/authenticate",
+      payload: { auth_event: signAuthEvent(sk2, ch1.json().relay, ch1.json().challenge) },
+    });
+    expect(undirected.statusCode).toBe(200);
+    expect(undirected.json().bearer_token).toBeNull();
+    expect(undirected.json().workspace_selection_required).toBe(true);
+    expect(new Set((undirected.json().workspaces as Array<{ workspace_id: string }>).map((w) => w.workspace_id)))
+      .toEqual(new Set([workspaceId, wsB]));
+
+    // Authenticate naming one of them: a bearer scoped to that workspace.
+    const ch2 = await handle.app.inject({ method: "GET", url: "/v1/identity/challenge" });
+    const directed = await handle.app.inject({
+      method: "POST", url: "/v1/identity/authenticate",
+      payload: { workspace_id: wsB, auth_event: signAuthEvent(sk2, ch2.json().relay, ch2.json().challenge) },
+    });
+    expect(directed.statusCode).toBe(200);
+    expect(directed.json().bearer_token).toBeTruthy();
+    expect(directed.json().workspace_id).toBe(wsB);
+
+    // Authenticate naming a workspace it was never admitted to: refused.
+    const ch3 = await handle.app.inject({ method: "GET", url: "/v1/identity/challenge" });
+    const foreign = await handle.app.inject({
+      method: "POST", url: "/v1/identity/authenticate",
+      payload: { workspace_id: "workspace_never", auth_event: signAuthEvent(sk2, ch3.json().relay, ch3.json().challenge) },
+    });
+    expect(foreign.statusCode).toBe(403);
   });
 });

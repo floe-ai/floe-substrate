@@ -63,28 +63,33 @@ export function registerIdentityCommand(
       write(SEED_LOSS_WARNING);
       write("");
       write("To admit this identity, an operator runs:");
-      write(`  floe identity add --name "<display name>" --pubkey ${npub}`);
+      write(`  floe identity add --name "<display name>" --workspace <workspace_id> --pubkey ${npub}`);
     });
 
   identity
     .command("add")
-    .description("Admit a public key under a display name (requires host control)")
+    .description("Admit a public key to a workspace under a display name (requires host control)")
     .requiredOption("--name <name>", "the human display name for this identity")
     .requiredOption("--pubkey <npub|hex>", "the identity public key, as npub or 64-char hex")
-    .action(async (options: { name: string; pubkey: string }) => {
+    .requiredOption("--workspace <workspace_id>", "the workspace this identity may act in (repeat `add` to admit to more)")
+    .action(async (options: { name: string; pubkey: string; workspace: string }) => {
       const { config } = resolveConfig();
       const token = await hostControlToken();
       const response = await httpFetch(`${busBase(config)}/v1/identities`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-        body: JSON.stringify({ display_name: options.name, pubkey: options.pubkey }),
+        body: JSON.stringify({ display_name: options.name, pubkey: options.pubkey, workspace_id: options.workspace }),
       });
       if (!response.ok) {
         throw new Error(`Admission failed (${response.status}): ${await safeBody(response)}`);
       }
-      const body = await response.json() as { identity: { identity_id: string; display_name: string; npub: string } };
+      const body = await response.json() as {
+        identity: { identity_id: string; display_name: string; npub: string };
+        workspaces: Array<{ workspace_id: string; name: string }>;
+      };
       write(`Admitted "${body.identity.display_name}" as ${body.identity.identity_id}`);
       write(`  ${body.identity.npub}`);
+      write(`  workspaces: ${body.workspaces.map((w) => `${w.name} (${w.workspace_id})`).join(", ") || "none"}`);
       write("");
       write("Re-admitting a lost key is re-admission, not recovery: a lost seed is unrecoverable.");
     });
@@ -108,6 +113,7 @@ export function registerIdentityCommand(
           display_name: string;
           npub: string;
           revoked_at: string | null;
+          workspaces: Array<{ workspace_id: string; name: string }>;
           sessions: Array<{ workspace_id: string; expires_at: string }>;
         }>;
       };
@@ -123,6 +129,7 @@ export function registerIdentityCommand(
         const state = client.revoked_at ? "revoked" : `${client.sessions.length} live session(s)`;
         write(`${client.identity_id}  ${client.display_name}  [${state}]`);
         write(`  ${client.npub}`);
+        write(`  workspaces: ${client.workspaces.map((w) => `${w.name} (${w.workspace_id})`).join(", ") || "none"}`);
       }
     });
 
