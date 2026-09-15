@@ -89,7 +89,7 @@ const SESSION_TOKEN_HEADER = "x-floe-session-token";
 /** Path copilot connects to for the MCP Streamable HTTP endpoint. */
 const MCP_PATH = "/mcp";
 
-const EMIT_INPUT_SCHEMA = {
+export const EMIT_INPUT_SCHEMA = {
   type: z.string(),
   destination: z.string().describe("A neutral actor ref from list_endpoints, or 'current_context'."),
   text: z.string(),
@@ -109,16 +109,16 @@ const EMIT_INPUT_SCHEMA = {
   data: z.record(z.string(), z.unknown()).optional().describe("Optional structured Event data. Use only when a client or extension contract requires it."),
 } as const;
 
-const REQUEST_INPUT_SCHEMA = {
+export const REQUEST_INPUT_SCHEMA = {
   actor: z.string().describe("A neutral actor ref from list_endpoints."),
   work: z.string().describe("The bounded work or question for that actor."),
   artefact_version_ids: z.array(z.string().min(1)).optional().describe("Exact published input versions for the actor to inspect with read_artefact."),
 } as const;
 
-const EMIT_DESCRIPTION =
+export const EMIT_DESCRIPTION =
   "Deliberately publish an event that should cause or communicate something beyond your local turn result. Use attachments for named, openable saved results and references for named links to records returned by discovered operations, such as a saved approval. A reference is navigation, not proof of approval or authority. The returned Event reference confirms acceptance and its exact attachments. Your normal final answer is already recorded in the current Context. Use 'current_context' as the destination only when you intentionally want Context subscription/effect semantics.";
 
-const REQUEST_DESCRIPTION =
+export const REQUEST_DESCRIPTION =
   "Ask one actor for work whose result you need before continuing. Attach the exact published ArtefactVersion IDs when the work concerns saved inputs. Floe stores the dependency, ends this processing cycle normally, and resumes you when that actor completes or fails. The return path is automatic.";
 
 const CAPABILITY_TARGET_SCHEMA = z.object({
@@ -126,7 +126,7 @@ const CAPABILITY_TARGET_SCHEMA = z.object({
   id: z.string().min(1).describe("Canonical resource id"),
 });
 
-const DISCOVER_CAPABILITIES_INPUT_SCHEMA = {
+export const DISCOVER_CAPABILITIES_INPUT_SCHEMA = {
   query: z.string().optional().describe("One or two specific keywords. Long sentences match unrelated operations."),
   operation_id: z.string().optional().describe("Exact operation_id from a search result; returns this operation's authoritative input contract."),
   include_result_schema: z.boolean().optional().describe("Include the selected operation's full result schema when building an integration. Ordinary invocation returns its result directly."),
@@ -135,7 +135,7 @@ const DISCOVER_CAPABILITIES_INPUT_SCHEMA = {
   limit: z.number().min(1).max(20).optional().describe("Maximum matching operations to return."),
 } as const;
 
-const USE_CAPABILITY_INPUT_SCHEMA = {
+export const USE_CAPABILITY_INPUT_SCHEMA = {
   operation_id: z.string().min(1).describe("Exact operation_id returned by discover_capabilities."),
   operation_version: z.string().min(1).describe("Exact operation_version returned by discover_capabilities."),
   input_schema_version: z.string().min(1).describe("Exact input.version returned by discover_capabilities."),
@@ -145,10 +145,10 @@ const USE_CAPABILITY_INPUT_SCHEMA = {
   input: z.record(z.string(), z.unknown()).describe("Input matching the exact discovered input.schema."),
 } as const;
 
-const DISCOVER_CAPABILITIES_DESCRIPTION =
+export const DISCOVER_CAPABILITIES_DESCRIPTION =
   "Find current Bus operations for a concrete need. Search returns short summaries. Pass an operation_id from a summary to load its exact input contract before using it. Reuse a discovered contract within this turn; rediscover after a version or authority refusal.";
 
-const USE_CAPABILITY_DESCRIPTION =
+export const USE_CAPABILITY_DESCRIPTION =
   "Invoke one Bus semantic operation using the exact operation and input-schema versions returned by discover_capabilities. Authority and causal provenance come from the active Delivery, not from this input.";
 
 const PULSE_SUBSCRIBER_SCHEMA = z.union([
@@ -168,7 +168,7 @@ const PULSE_CONTENT_SCHEMA = z.object({
   instructions: z.string().optional().describe("Instructions for endpoint subscribers to process when delivered."),
 });
 
-const CREATE_PULSE_INPUT_SCHEMA = {
+export const CREATE_PULSE_INPUT_SCHEMA = {
   pulse_id: z.string().min(1).describe("Unique pulse identifier within the workspace."),
   trigger: z.object({
     type: z.enum(["once", "cron"]).describe("'once' for a one-off scheduled pulse, 'cron' for a recurring one."),
@@ -187,31 +187,31 @@ const CREATE_PULSE_INPUT_SCHEMA = {
   scope_id: z.string().optional().describe("Optional organising Scope id. Omit unless a Scope must own the pulse."),
 } as const;
 
-const LIST_PULSES_INPUT_SCHEMA = {
+export const LIST_PULSES_INPUT_SCHEMA = {
   status: z.string().optional().describe("Filter by status: active, paused, cancelled, or fired."),
 } as const;
 
-const PULSE_ID_INPUT_SCHEMA = {
+export const PULSE_ID_INPUT_SCHEMA = {
   pulse_id: z.string().min(1).describe("The exact pulse identifier."),
 } as const;
 
-const READ_ARTEFACT_INPUT_SCHEMA = {
+export const READ_ARTEFACT_INPUT_SCHEMA = {
   artefact_version_id: z.string().min(1).describe("Exact immutable ArtefactVersion identity to read."),
   offset: z.number().int().min(0).optional().describe("Text offset (UTF-16 units), starting at 0. Use the previous page's next_offset to continue."),
   limit: z.number().int().min(1).max(16_000).optional().describe("Maximum text units to return (default 16,000). Smaller for a focused inspection."),
 } as const;
 
-const CREATE_PULSE_DESCRIPTION =
+export const CREATE_PULSE_DESCRIPTION =
   "Create a scheduled pulse that fires canonical pulse.fired events to its subscribers. Use trigger.type 'once' with trigger.at (or trigger.after_seconds) for a one-off, or 'cron' with trigger.schedule for recurring. Use a context subscriber to render a reminder in a conversation; use an endpoint subscriber to wake an actor. Use persistence 'workspace' to persist into committed floe.yaml, or 'local' (default) for a runtime-backed pulse.";
 
-const LIST_PULSES_DESCRIPTION =
+export const LIST_PULSES_DESCRIPTION =
   "List pulses registered for this workspace. Optionally filter by status (active, paused, cancelled, fired).";
 
-const PAUSE_PULSE_DESCRIPTION = "Pause an active pulse. It stops firing until resumed.";
-const RESUME_PULSE_DESCRIPTION = "Resume a paused pulse. Cron pulses recompute their next fire from now.";
-const CANCEL_PULSE_DESCRIPTION = "Permanently cancel a pulse. This cannot be undone.";
+export const PAUSE_PULSE_DESCRIPTION = "Pause an active pulse. It stops firing until resumed.";
+export const RESUME_PULSE_DESCRIPTION = "Resume a paused pulse. Cron pulses recompute their next fire from now.";
+export const CANCEL_PULSE_DESCRIPTION = "Permanently cancel a pulse. This cannot be undone.";
 
-const READ_ARTEFACT_DESCRIPTION =
+export const READ_ARTEFACT_DESCRIPTION =
   "Read one exact ArtefactVersion shared into your work. Images enter your model context for visual inspection. Text returns a bounded page; use next_offset to read the remainder without rereading a mutable workspace file. Uses your active Delivery authority and verifies the saved content, up to 20MB.";
 
 function errorResult(text: string) {

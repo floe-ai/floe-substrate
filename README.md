@@ -102,9 +102,11 @@ waiting fake agent with a later message. It also verifies bus-owned
 ## Runtime Adapter
 
 The fake adapter is the no-login fallback for local development and CI. Real
-execution runs through the `floe-runtime` adapter, which spawns the official
-vendor CLI (for example `copilot --acp`); the vendor CLI owns model
-authentication, so Floe brokers no model credentials. Select it explicitly:
+execution runs through the `floe-runtime` adapter, backed by the official
+Copilot SDK. Floe passes its first-session instructions as an appended system
+message and exposes Bridge-owned tools directly; it does not broker model
+credentials. The ACP path and its local MCP transport are rollback-only
+internals, not a user-facing runtime selection. Select it explicitly:
 
 ```bash
 FLOE_RUNTIME_ADAPTER=floe-runtime
