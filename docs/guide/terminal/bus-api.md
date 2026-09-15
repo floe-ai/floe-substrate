@@ -245,7 +245,9 @@ Current semantic operation IDs are:
 - `context.list`, `context.get`, and `context.inspect`;
 - `context.create`, `context.archive`, and `context.restore`;
 - `context.participant.set_access` and `context.participant.remove`;
-- `context.communication.emit`; and
+- `context.communication.emit` (the discoverable wrapper over Event submission;
+  for a direct or correlated reply a client may also use the raw
+  [direct communication ingress](#direct-communication-ingress-emit)); and
 - `context.destroy_permanently`.
 
 Archive is reversible. Permanent destruction is separately named, requires
@@ -319,9 +321,38 @@ Forward Event reads return `next_cursor`. Backward reads return
 `previous_cursor` for earlier history. A Delivery transports an Event and exact
 ArtefactVersion references; it does not replace NodeExecution.
 
-Direct `emit` and Actor `request` remain valid non-graph communication. A
-natural runtime completion is recorded in the origin Context and does not
-advance a ScopeExecution.
+### Direct communication ingress (emit)
+
+`POST /v1/events/emit` is a **supported, first-class communication ingress**,
+not a legacy compatibility route. It is how an Actor, the operator, or an
+unprivileged client emits a direct (non-graph) Event — including a correlated
+reply to a request addressed to the operator. It is accepted for
+`workspace_operation` and `bridge_service` bearers (`bridge_service` may only
+emit as an Endpoint its Bridge owns). A natural runtime completion is recorded
+in the origin Context and does not advance a ScopeExecution.
+
+The request body is the canonical Event command. `content` is a free-form
+object and the message text lives in `content.text`. A correlated reply names
+the pending `correlation_id` and targets the waiting Endpoint:
+
+```json
+{
+  "type": "response",
+  "workspace_id": "workspace_123",
+  "source_endpoint_id": "actor:workspace_123:operator",
+  "destination": { "kind": "endpoint", "endpoint_id": "<waiting_endpoint_id>" },
+  "correlation_id": "<correlation_id>",
+  "content": { "text": "Approved by the console operator." }
+}
+```
+
+Success is `202`; a body that fails the schema is `400 invalid_event_command`.
+The **`context.communication.emit` semantic operation** (in *Canonical Context
+operations* above) is the discoverable wrapper used where an operation receipt,
+confirmation, or richer Context routing is wanted; it delegates to the same
+Event submission. For an unprivileged client answering a correlated question,
+raw `emit` is authoritative and sufficient — the full field-by-field body is in
+[Client identity protocol → Acting as the operator](../../reference/client-identity-protocol.md#acting-as-the-operator-client-only-human).
 
 ## Resumable WebSocket stream
 
@@ -389,10 +420,14 @@ migration, and older clients. In particular:
   use the same `/operations` discovery and invocation contract as other clients,
   with authority issued for the active Delivery.
 
-Product clients must discover and invoke semantic operations. A remaining raw
-mutation is acceptable only when it delegates to the same operation handler or
-is an authenticated internal transport that is not exposed as normal product
-capability.
+Product clients must discover and invoke semantic operations for state-changing
+intent. Two named routes are **not** in this legacy set and are supported
+product surfaces: the identity routes (`/v1/identity/*`, `/v1/identities`,
+`/v1/clients`) documented in the [Client identity protocol](../../reference/client-identity-protocol.md),
+and the direct communication ingress `POST /v1/events/emit` described above. A
+remaining raw *mutation* is acceptable only when it delegates to the same
+operation handler or is an authenticated internal transport that is not exposed
+as normal product capability.
 
 ## Implementation
 

@@ -93,7 +93,9 @@ the authenticate step.
 
 To avoid URL-normalization ambiguity in the signed `relay` tag, the challenge
 response returns the **exact `relay` string** the client must echo in the signed
-event. Sign against that value verbatim.
+event. Sign against that value verbatim. That string is the Bus's own HTTP base
+URL (the loopback Bus, e.g. `http://127.0.0.1:5377`) — there is no separate relay
+service. Do not hardcode it: always echo the value the challenge returns.
 
 ## Wire protocol
 
@@ -147,7 +149,7 @@ GET /v1/identity/challenge
 ```json
 {
   "challenge": "<high-entropy hex string>",
-  "relay": "http://127.0.0.1:5174",
+  "relay": "http://127.0.0.1:5377",
   "expires_at": "<ISO timestamp>"
 }
 ```
@@ -164,7 +166,7 @@ Construct a NIP-01 event and sign it with the identity key (BIP-340 Schnorr):
   "kind": 22242,
   "created_at": 1789000000,
   "tags": [
-    ["relay", "http://127.0.0.1:5174"],
+    ["relay", "http://127.0.0.1:5377"],
     ["challenge", "<the challenge from step 2>"]
   ],
   "content": "",
@@ -282,9 +284,47 @@ question an actor addressed to the operator:
    `waiting_endpoint_id` (the actor that asked and is awaiting the reply) and the
    `correlation_id` to reply against. (`waiting_endpoint_id` is also accepted as a
    filter, but it selects rows where that endpoint is the one *waiting*, which is
-   the opposite of answering as the operator.)
-3. Emit a correlated reply as the operator Endpoint via
-   `POST /v1/events/emit`, matching the pending `correlation_id` and addressing
-   the reply to the `waiting_endpoint_id` (the actor). A `workspace_operation`
-   bearer is permitted to emit as the operator Endpoint; Endpoint ownership is
-   enforced only for `bridge_service` callers.
+   the opposite of answering as the operator.) The question the actor asked is
+   the source Event's `content.text`; read the source Event
+   (`GET /v1/events?workspace_id=…&context_id=…`, or the row's referenced event)
+   to show the human what they are answering.
+3. Emit a correlated reply as the operator Endpoint via `POST /v1/events/emit`,
+   matching the pending `correlation_id` and addressing the reply to the
+   `waiting_endpoint_id` (the actor). A `workspace_operation` bearer is permitted
+   to emit as the operator Endpoint; Endpoint ownership is enforced only for
+   `bridge_service` callers.
+
+### The `POST /v1/events/emit` body (authoritative for a product client)
+
+This is the request body — there is no separate operation to discover for this
+reply. `content` is a free-form object; **the answer text goes in
+`content.text`**, the same field the pending question arrived in. The reply
+`type` is `response`:
+
+```http
+POST /v1/events/emit
+Authorization: ****** workspace_operation bearer>
+Content-Type: application/json
+
+{
+  "type": "response",
+  "workspace_id": "<the workspace the bearer is scoped to>",
+  "source_endpoint_id": "<the operator endpoint id from step 1>",
+  "destination": { "kind": "endpoint", "endpoint_id": "<waiting_endpoint_id from step 2>" },
+  "correlation_id": "<correlation_id from step 2>",
+  "content": { "text": "Approved by the console operator." }
+}
+```
+
+Success is `202` with `{ "ok": true, "event_id": "…", "deliveries_created": 1 }`.
+A body that does not match the schema is refused with `400`
+`{ "ok": false, "error": { "code": "invalid_event_command", … } }` — the fields
+above (`type`, `workspace_id`, `source_endpoint_id`, `destination`, `content`)
+are all required; `correlation_id` is required to resolve the pending request.
+The `destination.kind` for a direct reply is `"endpoint"`; do not guess other
+shapes. After a successful emit the pending row from step 2 reads
+`status: "resolved"`.
+
+This raw `emit` route — not a discovered semantic operation — is the supported
+path for an unprivileged client answering a correlated request. See
+[Bus API → Direct communication ingress](../guide/terminal/bus-api.md#direct-communication-ingress-emit).
