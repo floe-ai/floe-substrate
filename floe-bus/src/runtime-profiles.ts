@@ -8,7 +8,7 @@ export type RuntimeProfileOwner = Readonly<{
 
 export type RuntimeProfileContent = Readonly<{
   label: string;
-  backing_kind: "human" | "model" | "service" | "team";
+  backing_kind: "model" | "service" | "team";
   adapter_id: string;
   /** Provider-neutral or adapter-owned settings. Secret values are forbidden. */
   configuration: Readonly<Record<string, unknown>>;

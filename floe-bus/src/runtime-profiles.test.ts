@@ -138,7 +138,7 @@ describe("RuntimeProfileStore", () => {
       runtime_profile_id: "runtime-profile:human",
       owner: { kind: "workspace", id: "workspace:one" },
       created_by_principal_id: "principal:operator",
-      content: { ...profile("Human"), backing_kind: "human", adapter_id: "human-attention", secret_ref_ids: [] },
+      content: { ...profile("Human"), backing_kind: "service", adapter_id: "worker", secret_ref_ids: [] },
     });
     const revision = store.publishDraft({
       runtime_profile_revision_id: runtime.draft.runtime_profile_revision_id,

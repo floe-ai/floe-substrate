@@ -1097,7 +1097,7 @@ function normalizeActor(value: unknown, index: number): WorkspaceConfigurationAc
   if (!(["none", "provider_neutral", "required"] as unknown[]).includes(checkpoint.mode)) {
     throw new WorkspaceConfigurationInventoryValidationError(`${path}.runtime.checkpoint_policy.mode is invalid`);
   }
-  if (!(["human", "model", "service", "team"] as unknown[]).includes(runtime.backing_kind)) {
+  if (!(["model", "service", "team"] as unknown[]).includes(runtime.backing_kind)) {
     throw new WorkspaceConfigurationInventoryValidationError(`${path}.runtime.backing_kind is invalid`);
   }
   if (runtime.credential_requirement !== "none" && runtime.credential_requirement !== "required") {

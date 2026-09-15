@@ -370,7 +370,7 @@ describe("canonical Workspace configuration import", () => {
     const reviewer = actor("reviewer", {
       runtime: {
         ...actor("reviewer").runtime,
-        backing_kind: "human",
+        backing_kind: "service",
         configuration: {},
         credential_requirement: "none",
         required_configuration_keys: [],

@@ -6,7 +6,7 @@ import type { AgentConfig, ProjectLoadResult } from "./project.js";
 export type WorkspaceRuntimeObservation = Readonly<{
   agent_id: string;
   adapter_id: string;
-  backing_kind?: "human" | "model" | "service" | "team";
+  backing_kind?: "model" | "service" | "team";
   provider?: string | null;
   model?: string | null;
   thinking_level?: string | null;
@@ -75,7 +75,7 @@ export type WorkspaceConfigurationActorInventory = Readonly<{
   }>;
   runtime: Readonly<{
     label: string;
-    backing_kind: "human" | "model" | "service" | "team";
+    backing_kind: "model" | "service" | "team";
     adapter_id: string;
     configuration: Readonly<Record<string, unknown>>;
     required_capability_ids: readonly string[];
@@ -189,8 +189,7 @@ function actorInventory(
     required_capability_ids: normalizeTextSet(runtime.required_capability_ids ?? []),
     checkpoint_policy: checkpointPolicy,
     resource_policy: runtime.resource_policy ?? {},
-    credential_requirement: runtime.credential_requirement
-      ?? (runtime.backing_kind === "human" ? "none" : "required"),
+    credential_requirement: runtime.credential_requirement ?? "required",
     required_configuration_keys: normalizeTextSet(
       runtime.required_configuration_keys
         ?? ((runtime.backing_kind ?? "model") === "model" ? ["model"] : []),

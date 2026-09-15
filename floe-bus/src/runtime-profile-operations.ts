@@ -91,7 +91,7 @@ export const RUNTIME_PROFILE_CONTENT_SCHEMA: JsonSchema = {
   ],
   properties: {
     label: nonEmptyString,
-    backing_kind: { enum: ["human", "model", "service", "team"] },
+    backing_kind: { enum: ["model", "service", "team"] },
     adapter_id: nonEmptyString,
     configuration: { type: "object" },
     secret_ref_ids: stringArray,

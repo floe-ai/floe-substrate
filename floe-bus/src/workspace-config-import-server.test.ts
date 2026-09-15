@@ -323,7 +323,7 @@ describe("authenticated canonical Workspace configuration import", () => {
     const { handle, bridge_headers, binding_id } = await fixture({ workspace_configuration_policy: localProductWorkspacePolicy });
     const payload = inventory(binding_id(CREATED_WORKSPACE));
     // Backing is deliberately different from the shipped model default.
-    payload.actors[0]!.runtime.backing_kind = "human";
+    payload.actors[0]!.runtime.backing_kind = "service";
     payload.actors.push({ ...structuredClone(payload.actors[0]!), source_actor_id: "another-actor" });
     const response = await handle.app.inject({ method: "POST", url: `/v1/workspaces/${encodeURIComponent(CREATED_WORKSPACE)}/import-config`, headers: bridge_headers, payload });
     expect(response.statusCode, response.body).toBe(200);
