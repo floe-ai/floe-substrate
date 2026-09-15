@@ -13,6 +13,8 @@ type ServiceRecord = {
   command: string;
   args: string[];
   log_file: string;
+  /** Identity of this exact process, echoed by the bus at /health (bus only). */
+  instance_id?: string;
 };
 
 type ServiceRecords = Partial<Record<ServiceName, ServiceRecord>>;
@@ -70,7 +72,7 @@ function quoteCmdArg(value: string): string {
   return `"${value.replace(/"/g, '\\"')}"`;
 }
 
-export async function startService(configPath: string, config: LocalConfig, service: ServiceName, extraEnv: Readonly<Record<string, string>> = {}): Promise<ServiceRecord> {
+export async function startService(configPath: string, config: LocalConfig, service: ServiceName, extraEnv: Readonly<Record<string, string>> = {}, instanceId?: string): Promise<ServiceRecord> {
   const records = readRecords(configPath, config);
   const existing = records[service];
   if (existing && isPidRunning(existing.pid)) return existing;
@@ -92,6 +94,7 @@ export async function startService(configPath: string, config: LocalConfig, serv
       FLOE_CONFIG: configPath,
       FLOE_BUS_HTTP_URL: config.bus.http_base_url,
       FLOE_BUS_WS_URL: config.bus.ws_base_url,
+      ...(service === "bus" && instanceId ? { FLOE_BUS_INSTANCE_ID: instanceId } : {}),
       ...(service === "bridge" && config.bridge.runtime_adapter
         ? { FLOE_RUNTIME_ADAPTER: config.bridge.runtime_adapter }
         : {}),
@@ -106,7 +109,8 @@ export async function startService(configPath: string, config: LocalConfig, serv
     started_at: new Date().toISOString(),
     command: commandLine.command,
     args: commandLine.args,
-    log_file: logFile
+    log_file: logFile,
+    ...(service === "bus" && instanceId ? { instance_id: instanceId } : {})
   };
   records[service] = record;
   writeRecords(configPath, config, records);

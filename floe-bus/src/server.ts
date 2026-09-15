@@ -800,6 +800,11 @@ export async function createBusServer(
   app.get("/health", async () => ({
     ok: true,
     service: "floe-bus",
+    // The instance id is minted by whoever started this process (the CLI sets
+    // FLOE_BUS_INSTANCE_ID) and recorded alongside the pid. It lets the starter
+    // prove that a bus answering on a URL is the exact process it launched — not
+    // a stale predecessor or a different install that happens to hold the port.
+    instance_id: process.env.FLOE_BUS_INSTANCE_ID ?? null,
     time: new Date().toISOString()
   }));
 

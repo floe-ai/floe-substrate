@@ -25,7 +25,7 @@ const SEED_LOSS_WARNING =
 export type IdentityCommandDependencies = Readonly<{
   output?: (message: string) => void;
   resolve_config?: () => { config: LocalConfig };
-  fetch_host_control_token?: () => Promise<string>;
+  fetch_host_control_token?: (busHttpBase?: string) => Promise<string>;
   fetch?: typeof fetch;
 }>;
 
@@ -74,7 +74,7 @@ export function registerIdentityCommand(
     .requiredOption("--workspace <workspace_id>", "the workspace this identity may act in (repeat `add` to admit to more)")
     .action(async (options: { name: string; pubkey: string; workspace: string }) => {
       const { config } = resolveConfig();
-      const token = await hostControlToken();
+      const token = await hostControlToken(busBase(config));
       const response = await httpFetch(`${busBase(config)}/v1/identities`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
@@ -100,7 +100,7 @@ export function registerIdentityCommand(
     .option("--json", "print the raw Bus response")
     .action(async (options: { json?: boolean }) => {
       const { config } = resolveConfig();
-      const token = await hostControlToken();
+      const token = await hostControlToken(busBase(config));
       const response = await httpFetch(`${busBase(config)}/v1/clients`, {
         headers: { authorization: `Bearer ${token}` },
       });
@@ -139,7 +139,7 @@ export function registerIdentityCommand(
     .argument("<identity_id>", "the identity_id to revoke (from `floe identity list`)")
     .action(async (identityId: string) => {
       const { config } = resolveConfig();
-      const token = await hostControlToken();
+      const token = await hostControlToken(busBase(config));
       const response = await httpFetch(`${busBase(config)}/v1/clients/${encodeURIComponent(identityId)}`, {
         method: "DELETE",
         headers: { authorization: `Bearer ${token}` },

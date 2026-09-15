@@ -227,12 +227,12 @@ async function registerCurrentWorkspace(config: LocalConfig, locator: string, in
   // Registration and selection are host-control bootstrap routes. The broker
   // owns the host-control credential, so the CLI registers through it rather
   // than an unauthenticated HTTP call.
-  const { workspace_id: workspaceId } = await registerLocalWorkspaceViaBroker(locator, initAuthorized);
+  const { workspace_id: workspaceId } = await registerLocalWorkspaceViaBroker(locator, initAuthorized, config.bus.http_base_url);
   // Seed a default human operator actor if none exists yet. Seeding a
   // self-owned actor is a native-host-owner capability, so authorize it with
   // the broker-owned host-control credential — the same trust path registration
   // uses. Stored bus-DB-only (no workspace file written) so git status stays clean.
-  const hostControlToken = await fetchHostControlToken();
+  const hostControlToken = await fetchHostControlToken(config.bus.http_base_url);
   const seedResult = await seedDefaultActor(config.bus.http_base_url, workspaceId, hostControlToken);
   if (seedResult.seeded) {
     console.log(`Seeded default actor: ${seedResult.endpoint_id}`);

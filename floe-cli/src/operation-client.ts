@@ -259,7 +259,10 @@ export class CliOperationClient {
   }
 }
 
-async function runNativeAuthorityCommand(command: Readonly<Record<string, unknown>>): Promise<unknown> {
+async function runNativeAuthorityCommand(
+  command: Readonly<Record<string, unknown>>,
+  busHttpBase?: string,
+): Promise<unknown> {
   const helper = resolveNativeAuthorityBrokerPath();
   if (!helper) throw new CliAuthorityBrokerUnavailableError();
   const payload = JSON.stringify(command);
@@ -268,6 +271,12 @@ async function runNativeAuthorityCommand(command: Readonly<Record<string, unknow
       shell: false,
       windowsHide: true,
       stdio: ["pipe", "pipe", "ignore"],
+      // The Bus location has one source of truth: config.bus.http_base_url.
+      // The broker must talk to that same Bus, so we derive its FLOE_BUS_HTTP_BASE
+      // here instead of relying on a value a human would have to know to export.
+      env: busHttpBase
+        ? { ...process.env, FLOE_BUS_HTTP_BASE: busHttpBase }
+        : process.env,
     });
     const chunks: Buffer[] = [];
     let bytes = 0;
@@ -329,8 +338,8 @@ async function runNativeAuthorityCommand(command: Readonly<Record<string, unknow
  * returned value must be injected into the Bus process environment only and
  * must never be logged, echoed into an error, or written to disk.
  */
-export async function fetchHostControlToken(): Promise<string> {
-  const result = await runNativeAuthorityCommand({ command: "provide_host_control_token" });
+export async function fetchHostControlToken(busHttpBase?: string): Promise<string> {
+  const result = await runNativeAuthorityCommand({ command: "provide_host_control_token" }, busHttpBase);
   if (!isRecord(result) || typeof result.token !== "string" || !result.token) {
     throw new Error("Floe's native authority broker did not provide a host-control credential.");
   }
@@ -347,11 +356,11 @@ export async function fetchHostControlToken(): Promise<string> {
  * injected into the Bridge process environment only and never logged or
  * persisted.
  */
-export async function fetchBridgeServiceToken(bridgeId = "bridge:local"): Promise<string> {
+export async function fetchBridgeServiceToken(bridgeId = "bridge:local", busHttpBase?: string): Promise<string> {
   const result = await runNativeAuthorityCommand({
     command: "provide_bridge_service_token",
     bridge_id: bridgeId,
-  });
+  }, busHttpBase);
   if (!isRecord(result) || typeof result.token !== "string" || !result.token) {
     throw new Error("Floe's native authority broker did not provide a Bridge service credential.");
   }
@@ -366,12 +375,13 @@ export async function fetchBridgeServiceToken(bridgeId = "bridge:local"): Promis
 export async function registerLocalWorkspaceViaBroker(
   locator: string,
   initAuthorized: boolean,
+  busHttpBase?: string,
 ): Promise<{ workspace_id: string; name: string }> {
   const result = await runNativeAuthorityCommand({
     command: "register_workspace",
     locator,
     init_authorized: initAuthorized,
-  });
+  }, busHttpBase);
   if (
     !isRecord(result)
     || !isRecord(result.workspace)
