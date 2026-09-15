@@ -15,9 +15,14 @@ The decision and rationale are ADR-0015. The authority model is in
 - A human holds a keypair. The **public key is the identity**; the Bus stores
   the public key and a display name and **never** a private key or seed.
 - **Admission** is a one-time `host_control` action run by the operator through
-  the `floe` CLI. It puts a public key on the Bus roster.
+  the `floe` CLI. It puts a public key on the Bus roster **and binds it to a
+  workspace it may act in**. Re-running admission for the same key with a
+  different workspace adds a membership; an identity may be admitted to several.
 - **Authentication** is unprivileged: the client signs a Bus-issued challenge
-  and receives a `workspace_operation` bearer. No `host_control`, no broker.
+  and receives a `workspace_operation` bearer. No `host_control`, no broker. The
+  authenticate response **tells the client which workspaces it may act in**, so
+  the workspace a bearer is scoped to comes from the substrate, not from a
+  workspace id the human typed.
 - The bearer is scoped, expiring, and revocable, identical to what the local
   desktop path already issues.
 
@@ -67,10 +72,24 @@ that is re-admission, not recovery, and prior history stays under the old key.
 
 ## Discovering where to connect
 
-A client is **told** its Bus base URL and its `workspace_id` out of band (its
-own configuration or CLI arguments), the same way the desktop client is
-configured. There is no unauthenticated workspace-enumeration endpoint; a
-`workspace_id` is required to request a challenge.
+**Bus URL — told out of band.** The Bus is loopback-only. A client is told its
+Bus base URL the same way the desktop client is: it reads `bus.http_base_url`
+from the local `~/.floe/config.yaml` (non-secret local config written by
+`floe register`), or falls back to the default `http://127.0.0.1:5377`. There is
+no remote discovery, because there is no remote Bus.
+
+**Workspace — learned from the substrate, not supplied.** A client does **not**
+need to be told a `workspace_id`. Workspace enumeration (`/v1/workspaces`) is
+`host_control`-gated and an unprivileged client cannot call it. Instead,
+admission binds the identity to the workspaces it may act in, and the
+**authenticate response returns exactly those workspaces** (see step 4). The
+client picks one from that list. This is deliberate: the client learns only the
+workspaces its own key was admitted to — proven by its signature — and never
+enumerates workspaces it has no claim on.
+
+The challenge request no longer takes a `workspace_id`; a challenge is
+workspace-independent proof of key possession, and the workspace is chosen at
+the authenticate step.
 
 To avoid URL-normalization ambiguity in the signed `relay` tag, the challenge
 response returns the **exact `relay` string** the client must echo in the signed
@@ -91,9 +110,14 @@ Content-Type: application/json
 
 {
   "display_name": "Jamie",
-  "pubkey": "npub1zutzeysacnf9rru6zqwmxd54mud0k44tst6l70ja5mhv8jjumytsd2x7nu"
+  "pubkey": "npub1zutzeysacnf9rru6zqwmxd54mud0k44tst6l70ja5mhv8jjumytsd2x7nu",
+  "workspace_id": "workspace_123"
 }
 ```
+
+`workspace_id` is required and must be an existing workspace; it binds this key
+to that workspace. To admit the same key to another workspace, repeat the call
+with a different `workspace_id`.
 
 ```json
 {
@@ -104,17 +128,20 @@ Content-Type: application/json
     "npub": "npub1zutzeysacnf9rru6zqwmxd54mud0k44tst6l70ja5mhv8jjumytsd2x7nu",
     "admitted_at": "<ISO timestamp>",
     "revoked_at": null
-  }
+  },
+  "workspaces": [
+    { "workspace_id": "workspace_123", "name": "My workspace" }
+  ]
 }
 ```
 
-Normally run as `floe identity add`; the raw route is documented for
-completeness.
+Normally run as `floe identity add --workspace <workspace_id>`; the raw route is
+documented for completeness.
 
 ### 2. Request a challenge (client, unauthenticated)
 
 ```http
-GET /v1/identity/challenge?workspace_id=workspace_123
+GET /v1/identity/challenge
 ```
 
 ```json
@@ -125,8 +152,8 @@ GET /v1/identity/challenge?workspace_id=workspace_123
 }
 ```
 
-The challenge is single-use and short-lived. `relay` is the exact string to
-place in the signed event's `relay` tag.
+The challenge is single-use, short-lived and **workspace-independent**. `relay`
+is the exact string to place in the signed event's `relay` tag.
 
 ### 3. Build and sign the authentication event (client)
 
@@ -156,32 +183,67 @@ POST /v1/identity/authenticate
 Content-Type: application/json
 
 {
-  "workspace_id": "workspace_123",
-  "auth_event": { …the signed kind:22242 event… }
+  "auth_event": { …the signed kind:22242 event… },
+  "workspace_id": "workspace_123"
 }
 ```
 
+`workspace_id` is **optional** and selects which admitted workspace to scope the
+bearer to. Omit it to discover memberships first (below).
+
 The Bus verifies: `kind === 22242`; `created_at` within ~10 minutes of now; the
-`challenge` tag matches a live, unconsumed challenge for this `workspace_id`; the
-`relay` tag matches the issued `relay`; the Schnorr signature is valid; and the
-`pubkey` is admitted and not revoked. On success:
+`challenge` tag matches a live, unconsumed challenge; the `relay` tag matches the
+issued `relay`; the Schnorr signature is valid; and the `pubkey` is admitted and
+not revoked. It then resolves the workspaces this key is admitted to.
+
+**One membership, or an explicit valid `workspace_id`** — the Bus mints a bearer
+scoped to it:
 
 ```json
 {
   "bearer_token": "<workspace_operation bearer>",
   "workspace_id": "workspace_123",
   "expires_at": "<ISO timestamp>",
+  "workspace_selection_required": false,
   "identity": {
     "identity_id": "identity_…",
     "display_name": "Jamie",
     "pubkey_hex": "17162c921dc4d2518f9a101db33695df1afb56ab82f5ff3e5da6eec3ca5cd917"
-  }
+  },
+  "workspaces": [
+    { "workspace_id": "workspace_123", "name": "My workspace" }
+  ]
 }
 ```
 
-Failures return `401` with `{ "error": "identity_auth_failed" }` for a bad
-signature, expired/unknown challenge, wrong relay, stale `created_at`, or an
+**More than one membership and no `workspace_id`** — no bearer is minted; the Bus
+reports the choices and the client re-authenticates (a fresh challenge) naming
+one:
+
+```json
+{
+  "bearer_token": null,
+  "workspace_id": null,
+  "workspace_selection_required": true,
+  "identity": { "…": "…" },
+  "workspaces": [
+    { "workspace_id": "workspace_123", "name": "My workspace" },
+    { "workspace_id": "workspace_456", "name": "Other workspace" }
+  ]
+}
+```
+
+A `workspace_id` the key is **not** admitted to returns `403`
+`{ "error": "identity_not_admitted_to_workspace" }`. Verification failures return
+`401` with `{ "error": "identity_auth_failed" }` for a bad signature,
+expired/unknown challenge, wrong relay, stale `created_at`, or an
 unadmitted/revoked key. A revoked key can never re-authenticate.
+
+**What a client does with more than one workspace:** authenticate once with no
+`workspace_id` to read `workspaces`, present them to the human (or pick the only
+sensible one), then authenticate again with a fresh challenge and the chosen
+`workspace_id`. Each bearer is scoped to a single workspace; to act in another
+admitted workspace, obtain a separate bearer the same way.
 
 ### 5. Use the bearer
 
@@ -198,8 +260,9 @@ GET /v1/clients                         Authorization: ****** control>
 DELETE /v1/clients/:identity_id         Authorization: ****** control>
 ```
 
-`GET /v1/clients` lists admitted identities and their live sessions, so the
-operator sees exactly who holds a bearer. `DELETE` revokes: it marks the
+`GET /v1/clients` lists admitted identities, **the workspaces each is admitted
+to**, and their live sessions, so the operator sees exactly who holds a bearer
+and where they may act. `DELETE` revokes: it marks the
 identity revoked **and** revokes its live `workspace_operation` session, so the
 bearer stops working immediately and the key can no longer authenticate.
 
