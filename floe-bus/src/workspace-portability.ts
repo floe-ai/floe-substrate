@@ -323,6 +323,9 @@ export const PORTABLE_WORKSPACE_TABLES = new Set([
 /** Host credentials, host attachment, ephemeral sessions and rebuildable push indexes never travel. */
 export const NON_PORTABLE_HOST_TABLES = new Set([
   "bridges",
+  "client_identities",
+  "client_identity_challenges",
+  "client_identity_sessions",
   "command_worker_bindings",
   "host_capability_policy_revisions",
   "local_host_identity",

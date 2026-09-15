@@ -4941,8 +4941,16 @@ export class BusStore {
   }
 
   listEndpoints(workspaceId?: string): unknown[] {
-    if (workspaceId) return this.db.prepare("SELECT * FROM endpoints WHERE workspace_id = ? ORDER BY name").all(workspaceId);
-    return this.db.prepare("SELECT * FROM endpoints ORDER BY workspace_id, name").all();
+    const rows = workspaceId
+      ? this.db.prepare("SELECT * FROM endpoints WHERE workspace_id = ? ORDER BY name").all(workspaceId)
+      : this.db.prepare("SELECT * FROM endpoints ORDER BY workspace_id, name").all();
+    // Parse metadata_json into a self-describing `metadata` object so a generic
+    // client can, e.g., discover the operator endpoint by `metadata.role`
+    // without knowing the column is a JSON string (ADR-0015 D4).
+    return (rows as Array<Record<string, unknown>>).map((row) => ({
+      ...row,
+      metadata: parseJson<Record<string, unknown>>((row.metadata_json as string) ?? "{}"),
+    }));
   }
 
   /** Host attachment is a projection of current canonical bindings, never an import receipt. */
@@ -6408,22 +6416,39 @@ export class BusStore {
     return new Map(rows.map(({ context_id, ...summary }) => [context_id, summary]));
   }
 
-  listPendingResponses(filters: { workspace_id?: string; waiting_endpoint_id?: string; limit?: number }): unknown[] {
+  /**
+   * List pending responses. `destination_endpoint_id` selects the questions a
+   * given endpoint must answer — i.e. requests whose source event was addressed
+   * to that endpoint (the actor that asked is `waiting_endpoint_id`). This is
+   * how a client discovers what is waiting on the operator endpoint without
+   * host control (ADR-0015). The source event's destination is joined in and
+   * returned as `destination_endpoint_id` so the result is self-describing.
+   */
+  listPendingResponses(
+    filters: { workspace_id?: string; destination_endpoint_id?: string; waiting_endpoint_id?: string; limit?: number },
+  ): unknown[] {
     const limit = Math.min(Math.max(filters.limit ?? 100, 1), 500);
     const clauses: string[] = [];
     const args: (string | number)[] = [];
     if (filters.workspace_id) {
-      clauses.push("workspace_id = ?");
+      clauses.push("pr.workspace_id = ?");
       args.push(filters.workspace_id);
     }
+    if (filters.destination_endpoint_id) {
+      clauses.push("json_extract(e.destination_json, '$.endpoint_id') = ?");
+      args.push(filters.destination_endpoint_id);
+    }
     if (filters.waiting_endpoint_id) {
-      clauses.push("waiting_endpoint_id = ?");
+      clauses.push("pr.waiting_endpoint_id = ?");
       args.push(filters.waiting_endpoint_id);
     }
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
     args.push(limit);
     return this.db.prepare(
-      `SELECT * FROM pending_responses ${where} ORDER BY created_at ASC LIMIT ?`,
+      `SELECT pr.*, json_extract(e.destination_json, '$.endpoint_id') AS destination_endpoint_id
+       FROM pending_responses pr
+       JOIN events e ON e.event_id = pr.source_event_id
+       ${where} ORDER BY pr.created_at ASC LIMIT ?`,
     ).all(...args);
   }
 

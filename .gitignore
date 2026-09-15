@@ -26,3 +26,4 @@ floe-native-authority/target/
 # Native authority broker installed by floe-cli's build (compiled artifact)
 floe-cli/native/
 livegate-bus.mts
+livegate-identity.mts

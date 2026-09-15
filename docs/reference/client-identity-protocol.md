@@ -213,8 +213,15 @@ question an actor addressed to the operator:
    `GET /v1/workspaces/:workspace_id/endpoints` and select the one with
    `metadata.role === "operator"` (bridgeless, `bridge_id: null`).
 2. Find what is waiting on it:
-   `GET /v1/pending-responses?workspace_id=…&waiting_endpoint_id=<operator endpoint id>`.
+   `GET /v1/pending-responses?workspace_id=…&destination_endpoint_id=<operator endpoint id>`.
+   This returns the pending requests whose source event was addressed to the
+   operator Endpoint. Each row carries `destination_endpoint_id` (the operator),
+   `waiting_endpoint_id` (the actor that asked and is awaiting the reply) and the
+   `correlation_id` to reply against. (`waiting_endpoint_id` is also accepted as a
+   filter, but it selects rows where that endpoint is the one *waiting*, which is
+   the opposite of answering as the operator.)
 3. Emit a correlated reply as the operator Endpoint via
-   `POST /v1/events/emit`, matching the pending `correlation_id`. A
-   `workspace_operation` bearer is permitted to emit as the operator Endpoint;
-   Endpoint ownership is enforced only for `bridge_service` callers.
+   `POST /v1/events/emit`, matching the pending `correlation_id` and addressing
+   the reply to the `waiting_endpoint_id` (the actor). A `workspace_operation`
+   bearer is permitted to emit as the operator Endpoint; Endpoint ownership is
+   enforced only for `bridge_service` callers.

@@ -3817,6 +3817,7 @@ export async function createBusServer(
   app.get("/v1/pending-responses", async (request) => {
     const query = z.object({
       workspace_id: z.string().optional(),
+      destination_endpoint_id: z.string().optional(),
       waiting_endpoint_id: z.string().optional(),
       limit: z.coerce.number().int().positive().max(500).optional()
     }).parse(request.query);
