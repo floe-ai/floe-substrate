@@ -272,6 +272,32 @@ export async function createBusServer(
     const methods = Array.isArray(route.method) ? route.method : [route.method];
     for (const method of methods) registeredRoutes.push({ method, url: route.url });
   });
+  // Single error boundary for the whole transport surface. Without it, any
+  // uncaught throw reaches Fastify's default handler, which returns the raw
+  // Error.message to the caller — leaking internal detail (SQLite driver text
+  // and schema/table names, filesystem paths, stack fragments) across the trust
+  // boundary to an unprivileged client, and giving that client nothing it can
+  // act on. Internal failures are logged where an operator can see them and
+  // answered with a generic, correlatable error; request-level failures (4xx,
+  // schema validation) describe the caller's own request and are safe to return.
+  app.setErrorHandler((error, request, reply) => {
+    const rawStatus = (error as { statusCode?: unknown }).statusCode;
+    const statusCode = typeof rawStatus === "number" ? rawStatus : 500;
+    if (statusCode >= 500) {
+      request.log.error({ err: error, request_id: request.id }, "Unhandled bus error");
+      return reply.code(500).send({
+        error: "internal_error",
+        message: "The bus encountered an internal error. An operator can find the detail in the bus logs.",
+        request_id: request.id,
+      });
+    }
+    const isValidation = Boolean((error as { validation?: unknown }).validation);
+    return reply.code(statusCode).send({
+      error: isValidation ? "request_invalid" : "request_error",
+      message: (error as Error).message,
+      request_id: request.id,
+    });
+  });
   const store = new BusStore(configPath, config, { workspace_configuration_policy: options.workspace_configuration_policy });
   const unsafeInProcessTestAuthBypass = options.unsafe_in_process_test_auth_bypass ?? false;
   const localControlToken = options.host_control_token
@@ -2435,7 +2461,10 @@ export async function createBusServer(
       return { error: "file_not_found", message: err instanceof Error ? err.message : "Not found" };
     }
     reply.code(500);
-    return { error: "fs_error", message: err instanceof Error ? err.message : String(err) };
+    // Do not surface the raw filesystem error (it can carry absolute paths and
+    // OS detail) to the caller. Log it for the operator; return a generic error.
+    console.error("floe-bus: filesystem operation failed:", err instanceof Error ? err.stack ?? err.message : String(err));
+    return { error: "fs_error", message: "The bus could not complete the filesystem operation." };
   }
 
   /** GET /v1/fs/capability — cheap probe so floe-app can decide whether to show file-editing UI. */
