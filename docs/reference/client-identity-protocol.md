@@ -271,92 +271,123 @@ and where they may act. `DELETE` revokes: it marks the
 identity revoked **and** revokes its live `workspace_operation` session, so the
 bearer stops working immediately and the key can no longer authenticate.
 
-## Answering the operator Actor
+## Answering as a client-executed Actor
 
-The operator is an ordinary Actor. Workspace registration provisions it through
-the same path any Actor is created by, so it appears in the ordinary endpoint
-listing and `request` can address it like any other Actor. It carries **no role
-marker** — a client discovers it by listing Actors, not by matching a special
-field. What distinguishes it is only its runtime adapter (`client`): no Bridge
-provides that adapter, so a model Bridge never executes its turns; whatever
-client is attached executes them instead.
+**Answering is not a special emit. It is the Actor's turn ending — exactly as a
+model's turn ends.** A client does not assemble an event with a type, a source
+endpoint, a destination, a correlation id and a content shape in order to say a
+sentence. It reports a turn result by delivery id, and the substrate resumes the
+asking Actor in its original context, because the substrate already knows which
+turn asked. That is the whole meaning of correlation. **A client never supplies a
+context and never touches a correlation id.**
 
-An admitted client resolves to the operator principal today (ADR-0015: named at
-the identity layer, indistinguishable at the authority layer). To answer a
-request another Actor addressed to the operator Actor:
+The operator is an ordinary Actor. What makes its turns yours to execute is only
+its runtime adapter, `client`: no Bridge provides that adapter, so a model Bridge
+never executes its turns; whichever client is attached executes them instead. An
+admitted client resolves to the operator principal today (ADR-0015: named at the
+identity layer, indistinguishable at the authority layer).
 
-1. Identify the operator Endpoint. It follows the substrate id convention
-   `actor:<workspace_id>:operator`, where `<workspace_id>` is the workspace the
-   bearer is scoped to (from the authenticate response). List Actors to confirm
-   it — `GET /v1/workspaces/:workspace_id/endpoints` returns it as an ordinary
-   entry (its `agent_id` is `operator`); there is no `role` field to match on.
-2. Find what is waiting on it:
-   `GET /v1/pending-responses?workspace_id=…&destination_endpoint_id=<operator endpoint id>`.
-   This returns the pending requests whose source event was addressed to the
-   operator Endpoint. Each row carries `destination_endpoint_id` (the operator),
-   `waiting_endpoint_id` (the actor that asked and is awaiting the reply) and the
-   `correlation_id` to reply against. (`waiting_endpoint_id` is also accepted as a
-   filter, but it selects rows where that endpoint is the one *waiting*, which is
-   the opposite of answering as the operator.) The question the actor asked is
-   the source Event's `content.text`; read the source Event
-   (`GET /v1/events?workspace_id=…&context_id=…`, or the row's referenced event)
-   to show the human what they are answering.
-3. Emit a correlated reply as the operator Endpoint via `POST /v1/events/emit`,
-   matching the pending `correlation_id` and addressing the reply to the
-   `waiting_endpoint_id` (the actor). A `workspace_operation` bearer is permitted
-   to emit as the operator Endpoint; Endpoint ownership is enforced only for
-   `bridge_service` callers.
+The loop is: **discover → learn by push → claim → end the turn.** There is no
+polling anywhere in it, and no deadline on any of it.
 
-There is no deadline on any of this. A request addressed to the operator Actor
-stays pending until a client answers it — an unanswered request is not an error
-and there is no timeout to observe or reset.
-   `GET /v1/pending-responses?workspace_id=…&destination_endpoint_id=<operator endpoint id>`.
-   This returns the pending requests whose source event was addressed to the
-   operator Endpoint. Each row carries `destination_endpoint_id` (the operator),
-   `waiting_endpoint_id` (the actor that asked and is awaiting the reply) and the
-   `correlation_id` to reply against. (`waiting_endpoint_id` is also accepted as a
-   filter, but it selects rows where that endpoint is the one *waiting*, which is
-   the opposite of answering as the operator.) The question the actor asked is
-   the source Event's `content.text`; read the source Event
-   (`GET /v1/events?workspace_id=…&context_id=…`, or the row's referenced event)
-   to show the human what they are answering.
-3. Emit a correlated reply as the operator Endpoint via `POST /v1/events/emit`,
-   matching the pending `correlation_id` and addressing the reply to the
-   `waiting_endpoint_id` (the actor). A `workspace_operation` bearer is permitted
-   to emit as the operator Endpoint; Endpoint ownership is enforced only for
-   `bridge_service` callers.
-
-### The `POST /v1/events/emit` body (authoritative for a product client)
-
-This is the request body — there is no separate operation to discover for this
-reply. `content` is a free-form object; **the answer text goes in
-`content.text`**, the same field the pending question arrived in. The reply
-`type` is `response`:
+### 1. Discover the Actor you execute (ordinary listing)
 
 ```http
-POST /v1/events/emit
-Authorization: ****** workspace_operation bearer>
-Content-Type: application/json
+GET /v1/workspaces/:workspace_id/endpoints
+Authorization: Bearer <workspace_operation bearer>
+```
 
+Every Actor is returned as an ordinary entry. A **client-executed** Actor is one
+whose resolved runtime adapter is `client`:
+
+```json
+{ "endpoint_id": "actor:workspace_123:operator", "name": "Operator", "adapter_id": "client", "…": "…" }
+```
+
+Filter on `adapter_id === "client"`. **Do not construct an id from a naming
+convention and do not match a role field — there is none.** The endpoint id is
+opaque; take it from this listing (or from the push in step 2, which carries it).
+
+### 2. Learn of work by push (never poll)
+
+Open the authenticated stream you already hold and authenticate it with your
+bearer:
+
+```
+WebSocket GET /v1/events/stream
+→ send    { "type": "authenticate", "bearer_token": "<bearer>", "workspace_id": "<workspace_id>" }
+← receive { "type": "authenticated", … }
+```
+
+When a delivery is waiting for a client-executed Endpoint you may act for, the
+stream pushes:
+
+```json
 {
-  "type": "response",
-  "workspace_id": "<the workspace the bearer is scoped to>",
-  "source_endpoint_id": "<the operator endpoint id from step 1>",
-  "destination": { "kind": "endpoint", "endpoint_id": "<waiting_endpoint_id from step 2>" },
-  "correlation_id": "<correlation_id from step 2>",
-  "content": { "text": "Approved by the console operator." }
+  "type": "delivery_bundle_available",
+  "payload": { "delivery": { "delivery_id": "del_…", "endpoint_id": "actor:workspace_123:operator", "…": "…" } }
 }
 ```
 
-Success is `202` with `{ "ok": true, "event_id": "…", "deliveries_created": 1 }`.
-A body that does not match the schema is refused with `400`
-`{ "ok": false, "error": { "code": "invalid_event_command", … } }` — the fields
-above (`type`, `workspace_id`, `source_endpoint_id`, `destination`, `content`)
-are all required; `correlation_id` is required to resolve the pending request.
-The `destination.kind` for a direct reply is `"endpoint"`; do not guess other
-shapes. After a successful emit the pending row from step 2 reads
-`status: "resolved"`.
+The frame carries the `endpoint_id` the work is for and the `delivery_id` to
+claim. **This is the only signal you wait on. Do not poll for work** — the
+substrate is push-only.
 
-This raw `emit` route — not a discovered semantic operation — is the supported
-path for an unprivileged client answering a correlated request. See
-[Bus API → Direct communication ingress](../guide/terminal/bus-api.md#direct-communication-ingress-emit).
+### 3. Claim the delivery
+
+```http
+GET /v1/delivery/claim?endpoint_id=<client-executed endpoint id>
+Authorization: Bearer <workspace_operation bearer>
+```
+
+```json
+{
+  "deliveries": [
+    { "delivery_id": "del_…", "endpoint_id": "actor:workspace_123:operator", "events": [ { "type": "request", "content": { "text": "Operator, approve the deploy?" }, "…": "…" } ] }
+  ]
+}
+```
+
+You may claim only a client-executed Endpoint in your own admitted workspace;
+any other `endpoint_id` returns `403`. The question the asking Actor put is the
+delivered event's `content.text`. **You do not read the source event for context
+and you do not handle a context id** — everything you need to answer is in the
+bundle.
+
+### 4. End the turn (the single act)
+
+```http
+POST /v1/runtime/turn-result
+Authorization: Bearer <workspace_operation bearer>
+Content-Type: application/json
+
+{
+  "delivery_id": "del_…",
+  "text": "Approved by the console operator."
+}
+```
+
+That is the whole answer. `delivery_id` and `text` are required; `outcome`
+(`"completed"` | `"failed"`, default `"completed"`) and a free-form `metadata`
+object are optional. **There is no `type`, no `source_endpoint_id`, no
+`destination`, no `correlation_id`, and no context field** — the same shape a
+model runtime reports a turn with. Success is `202` with `{ "ok": true, … }`.
+
+The substrate resumes the asking Actor **in the context it asked from**,
+correlated by the delivery alone, and settles the delivery and reopens your
+Endpoint. A reply cannot land in a fresh context, because the client never names
+one.
+
+### No deadline
+
+A request addressed to a client-executed Actor stays waiting until a client ends
+the turn. An unanswered request is not an error; there is no timeout to observe
+or reset, and the wait is never modelled as a problem.
+
+### Known hole: several Actors in one context
+
+Fan-out — three or more Actors live in one shared context at once — is coherent
+in this model but **has not been exercised end to end**. Correlation resumes the
+turn that asked, so a single asker and a single answering Actor are proven; a
+context with several simultaneously-live Actors answering is not yet proven and
+should not be relied on as if it were.
