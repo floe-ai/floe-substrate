@@ -1,12 +1,12 @@
 # Floe
 
-Floe is a local daemon-driven substrate with three independent services:
+Floe is a local daemon-driven substrate with two services and one native helper:
 
 - `floe-bus`: canonical identity, authority, semantic operation, Scope
   design/execution, Context, Artefact, Event, and Delivery daemon
 - `floe-bridge`: runtime boundary and project `.floe/` loader
-- `floe-app`: chat-first operator surface with a trusted native transport
-  broker
+- `floe-native-authority`: the native authority broker binary the CLI uses to
+  hold the host-control credential and boot the Bus as the trusted host owner
 
 The local development and CI runtime adapter is deterministic fake runtime, so
 the core substrate can be tested without spending Copilot premium requests. It
@@ -17,21 +17,24 @@ owns model authentication.
 
 ## Local Start
 
+Floe runs from source. You need Node.js, and — for the one native component, the
+authority broker — Rust and `cargo` (install from <https://rustup.rs/>).
+
 ```bash
 npm install
-npm run floe -- setup -- --no-autostart --no-open
+npm run build --workspace floe-cli          # compiles the native authority broker (needs cargo)
+npm run floe -- setup -- --yes --no-autostart
 ```
 
-Open the trusted desktop client:
+Step 2 is required before first run: the register, seed, and `identity` commands
+reach the Bus through the native authority broker, and `npm run floe` runs the
+CLI from source without building it. If you skip step 2, `setup` stops with an
+error naming this exact build command.
 
-```bash
-npm run floe -- desktop
-```
-
-The React development server may still run at `http://127.0.0.1:5379`, but
-loopback access does not grant Bus authority. A standalone browser needs an
-authenticated session adapter; normal product use goes through the Tauri native
-broker.
+`setup` writes `~/.floe/config.yaml` if missing, starts the Bus and Bridge,
+verifies health, and — when the current directory contains a `.floe/` folder —
+registers it as a Workspace and seeds the operator Actor. It prints the
+registered Workspace id.
 
 Useful commands:
 
@@ -44,8 +47,25 @@ npm run floe -- autostart off
 ```
 
 When passing CLI flags through `npm run floe`, put `--` before the flags, as in
-`npm run floe -- setup -- --no-autostart --no-open`. A packaged `floe` binary
-does not need the extra separator.
+`npm run floe -- setup -- --yes --no-autostart`. A packaged `floe` binary does
+not need the extra separator.
+
+### Admitting a terminal client identity
+
+An unprivileged client (for example a terminal console) authenticates as a
+client-held keypair. Admit its public key to the Workspace it may act in — the
+`workspace_id` `setup` printed:
+
+```bash
+npm run floe -- identity generate --name "Console"    # optional: mint a keypair
+npm run floe -- identity add --name "Console" --workspace <workspace_id> --pubkey <npub>
+npm run floe -- identity list
+```
+
+The client then requests a challenge, signs it, and receives a scoped bearer. The
+full on-the-wire protocol — including the request body for emitting a reply as
+the operator — is in
+[Client identity protocol](docs/reference/client-identity-protocol.md).
 
 ## Local repair and breaking changes
 

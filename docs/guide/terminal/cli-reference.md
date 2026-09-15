@@ -4,7 +4,7 @@
 
 | Command | What it does | Key flags |
 |---|---|---|
-| `floe setup` | Create config, optionally enable autostart, start services, verify health, open web | `--yes`, `--no-autostart`, `--no-open`, `--repair` |
+| `floe setup` | Create config, optionally enable autostart, start services, verify health | `--yes`, `--no-autostart`, `--repair` |
 | `floe status` | Show service health and configured URLs | — |
 | `floe open` | Open the web UI | — |
 | `floe start` | Start local services (bus, bridge, frontend) | — |
