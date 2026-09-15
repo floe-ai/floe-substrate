@@ -857,7 +857,7 @@ export class ScopeCompositionStore {
     const current = this.getPublishedRevision(target.workspace_id, target.scope_id);
     const changes = compareScopeCompositionRevisions(current, target);
     const activeStatuses = [
-      "queued", "active", "waiting_external", "waiting_human", "paused", "blocked",
+      "queued", "active", "waiting_external", "paused", "blocked",
     ];
     const placeholders = activeStatuses.map(() => "?").join(", ");
     const executionSchemaExists = Boolean(this.db.prepare(`

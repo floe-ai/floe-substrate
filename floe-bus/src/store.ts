@@ -2561,7 +2561,7 @@ export class BusStore {
         `ScopeExecution '${input.execution_id}' is unavailable in Workspace '${input.workspace_id}'`,
       );
     }
-    if (!["queued", "active", "waiting_external", "waiting_human", "paused", "blocked"].includes(execution.status)) {
+    if (!["queued", "active", "waiting_external", "paused", "blocked"].includes(execution.status)) {
       throw new ScopeExecutionInvalidError(`ScopeExecution '${input.execution_id}' is already ${execution.status}`);
     }
 
@@ -2623,7 +2623,7 @@ export class BusStore {
     `).all(input.workspace_id, input.execution_id) as Array<{ pending_id: string }>;
     const nodes = this.scopeExecutionStore.listNodeExecutions(input.execution_id);
     const stoppableNodes = nodes.filter((node) => [
-      "collecting", "ready", "active", "waiting_external", "waiting_human", "paused", "retrying", "blocked",
+      "collecting", "ready", "active", "waiting_external", "paused", "retrying", "blocked",
     ].includes(node.status));
     const revision = this.scopeCompositionStore.getRevision(execution.revision_id);
     const connectorNodeIds = new Set(
@@ -6930,9 +6930,9 @@ export class BusStore {
         `decision_binding.node_execution_id must identify a NodeExecution in Workspace '${input.workspace_id}'`,
       );
     }
-    if (nodeExecution.status !== "waiting_human") {
+    if (nodeExecution.status !== "waiting_external" || nodeExecution.failure.code !== "approval_decision_pending") {
       throw new ApprovalValidationError(
-        `NodeExecution '${nodeExecution.node_execution_id}' is '${nodeExecution.status}', not waiting_human`,
+        `NodeExecution '${nodeExecution.node_execution_id}' is not awaiting an approval decision`,
       );
     }
     if (nodeExecution.state_revision !== binding.node_execution_state_revision) {
@@ -8534,7 +8534,7 @@ export class BusStore {
 
   private settleCanonicalNodeAfterAttempt(node: NodeExecutionRecord): void {
     const current = this.scopeExecutionStore.getNodeExecution(node.node_execution_id);
-    if (!current || ["completed", "failed", "cancelled", "waiting_external", "waiting_human"].includes(current.status)) return;
+    if (!current || ["completed", "failed", "cancelled", "waiting_external"].includes(current.status)) return;
     const revision = this.scopeCompositionStore.getRevision(current.revision_id);
     if (!revision) {
       this.scopeExecutionStore.setNodeExecutionStatus(current.node_execution_id, "failed", {
@@ -8569,10 +8569,6 @@ export class BusStore {
     }
     if (nodes.some((node) => node.status === "blocked")) {
       this.scopeExecutionStore.setExecutionStatus(executionId, "blocked");
-      return;
-    }
-    if (nodes.some((node) => node.status === "waiting_human")) {
-      this.scopeExecutionStore.setExecutionStatus(executionId, "waiting_human");
       return;
     }
     if (nodes.some((node) => ["collecting", "waiting_external"].includes(node.status))) {

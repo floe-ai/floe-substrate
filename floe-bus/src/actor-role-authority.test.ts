@@ -130,7 +130,7 @@ describe("canonical Actor role authority", () => {
         context_id, state_revision, status, assigned_actor_ids_json,
         failure_json, created_at
       ) VALUES ('node-execution:review', 'execution:release', ?, 'review', 'one', ?, 1,
-        'waiting_human', ?, '{}', ?)
+        'waiting_external', ?, '{"code":"approval_decision_pending"}', ?)
     `).run(revision.revision_id, contextId, JSON.stringify([ACTOR]), now);
 
     now = "2026-09-04T01:01:00.000Z";

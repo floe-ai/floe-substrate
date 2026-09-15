@@ -338,7 +338,6 @@ const stoppableScopeExecutionStatuses = new Set<ScopeExecutionRecord["status"]>(
   "queued",
   "active",
   "waiting_external",
-  "waiting_human",
   "paused",
   "blocked",
 ]);
@@ -656,7 +655,7 @@ const scopeExecutionSchema: JsonSchema = {
     state_revision: { type: "integer", minimum: 1 },
     status: {
       enum: [
-        "queued", "active", "waiting_external", "waiting_human", "paused",
+        "queued", "active", "waiting_external", "paused",
         "blocked", "completed", "failed", "cancelled", "superseded",
       ],
     },
@@ -696,8 +695,7 @@ const nodeExecutionSchema: JsonSchema = {
     state_revision: { type: "integer", minimum: 1 },
     status: {
       enum: [
-        "collecting", "ready", "active", "waiting_external", "waiting_human",
-        "paused", "retrying", "blocked", "completed", "failed", "cancelled", "superseded",
+        "collecting", "ready", "active", "waiting_external", "paused", "retrying", "blocked", "completed", "failed", "cancelled", "superseded",
       ],
     },
     assigned_actor_ids: stringArray,
@@ -2066,7 +2064,7 @@ export function pauseScopeExecutionOperation(
       const available = executionAvailability(backend, context);
       if (!available.available) return available;
       const execution = backend.getExecution(context.target!.ref.id);
-      return execution && ["queued", "active", "waiting_external", "waiting_human", "blocked"].includes(execution.status)
+      return execution && ["queued", "active", "waiting_external", "blocked"].includes(execution.status)
         ? { available: true as const }
         : {
             available: false as const,

@@ -744,7 +744,7 @@ export class ScopeExecutionStore {
       }
       return this.pauseResult(execution, active.pause_id);
     }
-    if (!["queued", "active", "waiting_external", "waiting_human", "blocked"].includes(execution.status)) {
+    if (!["queued", "active", "waiting_external", "blocked"].includes(execution.status)) {
       throw new ScopeExecutionTransitionError(
         `ScopeExecution '${execution.execution_id}' cannot pause while '${execution.status}'`,
       );
@@ -946,7 +946,7 @@ export class ScopeExecutionStore {
       );
     }
     const execution = this.getExecution(node.execution_id) as ScopeExecutionRecord;
-    if (!["active", "waiting_external", "waiting_human", "blocked", "failed"].includes(execution.status)) {
+    if (!["active", "waiting_external", "blocked", "failed"].includes(execution.status)) {
       throw new ScopeExecutionTransitionError(
         `ScopeExecution '${execution.execution_id}' cannot accept a retry while '${execution.status}'`,
       );
@@ -1080,7 +1080,7 @@ export class ScopeExecutionStore {
       status,
       json(assignedActorIds),
       timestamp,
-      ["ready", "active", "waiting_external", "waiting_human", "paused", "retrying", "completed"].includes(status)
+      ["ready", "active", "waiting_external", "paused", "retrying", "completed"].includes(status)
         ? timestamp
         : null,
     );
@@ -1118,7 +1118,7 @@ export class ScopeExecutionStore {
     this.db.prepare(`
       UPDATE node_executions
       SET status = ?, failure_json = ?, state_revision = state_revision + 1,
-          activated_at = CASE WHEN ? IN ('ready', 'active', 'waiting_external', 'waiting_human', 'paused', 'retrying', 'completed') THEN COALESCE(activated_at, ?) ELSE activated_at END,
+          activated_at = CASE WHEN ? IN ('ready', 'active', 'waiting_external', 'paused', 'retrying', 'completed') THEN COALESCE(activated_at, ?) ELSE activated_at END,
           completed_at = CASE WHEN ? IN ('completed', 'failed', 'superseded') THEN ? ELSE completed_at END,
           cancelled_at = CASE WHEN ? = 'cancelled' THEN ? ELSE cancelled_at END
       WHERE node_execution_id = ?
@@ -1427,7 +1427,7 @@ export class ScopeExecutionStore {
     if (!nodeExecution) {
       throw new ScopeExecutionReferenceError(`NodeExecution '${input.node_execution_id}' does not exist`);
     }
-    if (!["ready", "retrying", "waiting_external", "waiting_human"].includes(nodeExecution.status)) {
+    if (!["ready", "retrying", "waiting_external"].includes(nodeExecution.status)) {
       throw new ScopeExecutionTransitionError(
         `NodeExecution '${nodeExecution.node_execution_id}' cannot create an attempt while '${nodeExecution.status}'`,
       );
@@ -2171,11 +2171,10 @@ function hasAllCommandPins(value: Pick<NodeExecutionRecord,
 
 const SCOPE_STATUS_TRANSITIONS: Readonly<Record<ScopeExecutionStatus, readonly ScopeExecutionStatus[]>> = {
   queued: ["active", "paused", "blocked", "failed", "cancelled", "superseded"],
-  active: ["waiting_external", "waiting_human", "paused", "blocked", "completed", "failed", "cancelled", "superseded"],
-  waiting_external: ["active", "waiting_human", "paused", "blocked", "completed", "failed", "cancelled", "superseded"],
-  waiting_human: ["active", "waiting_external", "paused", "blocked", "completed", "failed", "cancelled", "superseded"],
-  paused: ["active", "waiting_external", "waiting_human", "blocked", "failed", "cancelled", "superseded"],
-  blocked: ["active", "waiting_external", "waiting_human", "paused", "failed", "cancelled", "superseded"],
+  active: ["waiting_external", "paused", "blocked", "completed", "failed", "cancelled", "superseded"],
+  waiting_external: ["active", "paused", "blocked", "completed", "failed", "cancelled", "superseded"],
+  paused: ["active", "waiting_external", "blocked", "failed", "cancelled", "superseded"],
+  blocked: ["active", "waiting_external", "paused", "failed", "cancelled", "superseded"],
   completed: [],
   failed: [],
   cancelled: [],
@@ -2184,12 +2183,11 @@ const SCOPE_STATUS_TRANSITIONS: Readonly<Record<ScopeExecutionStatus, readonly S
 
 const NODE_STATUS_TRANSITIONS: Readonly<Record<NodeExecutionStatus, readonly NodeExecutionStatus[]>> = {
   collecting: ["ready", "paused", "blocked", "failed", "cancelled", "superseded"],
-  ready: ["active", "waiting_external", "waiting_human", "paused", "retrying", "blocked", "completed", "failed", "cancelled", "superseded"],
-  active: ["waiting_external", "waiting_human", "paused", "retrying", "blocked", "completed", "failed", "cancelled", "superseded"],
-  waiting_external: ["ready", "active", "waiting_human", "paused", "retrying", "blocked", "completed", "failed", "cancelled", "superseded"],
-  waiting_human: ["ready", "active", "waiting_external", "paused", "retrying", "blocked", "completed", "failed", "cancelled", "superseded"],
-  paused: ["collecting", "ready", "active", "waiting_external", "waiting_human", "retrying", "blocked", "failed", "cancelled", "superseded"],
-  retrying: ["ready", "active", "waiting_external", "waiting_human", "paused", "blocked", "completed", "failed", "cancelled", "superseded"],
+  ready: ["active", "waiting_external", "paused", "retrying", "blocked", "completed", "failed", "cancelled", "superseded"],
+  active: ["waiting_external", "paused", "retrying", "blocked", "completed", "failed", "cancelled", "superseded"],
+  waiting_external: ["ready", "active", "paused", "retrying", "blocked", "completed", "failed", "cancelled", "superseded"],
+  paused: ["collecting", "ready", "active", "waiting_external", "retrying", "blocked", "failed", "cancelled", "superseded"],
+  retrying: ["ready", "active", "waiting_external", "paused", "blocked", "completed", "failed", "cancelled", "superseded"],
   blocked: ["collecting", "ready", "paused", "failed", "cancelled", "superseded"],
   completed: [],
   failed: [],

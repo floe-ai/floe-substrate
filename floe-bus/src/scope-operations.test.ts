@@ -342,7 +342,6 @@ function backend(handle: ServerHandle): ScopeOperationBackend {
           "ready",
           "active",
           "waiting_external",
-          "waiting_human",
           "paused",
           "retrying",
           "blocked",

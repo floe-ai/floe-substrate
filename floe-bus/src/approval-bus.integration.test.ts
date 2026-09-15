@@ -281,9 +281,10 @@ describe("Approval canonical Bus integration", () => {
       .node_executions.find((node) => node.node_id === "release-gate")!;
     const waiting = store.scopeExecutionStore.setNodeExecutionStatus(
       gateExecution.node_execution_id,
-      "waiting_human",
+      "waiting_external",
+      { code: "approval_decision_pending" },
     );
-    store.scopeExecutionStore.setExecutionStatus(started.execution.execution_id, "waiting_human");
+    store.scopeExecutionStore.setExecutionStatus(started.execution.execution_id, "waiting_external");
     const binding: ApprovalDecisionBinding = {
       scope_execution_id: started.execution.execution_id,
       composition_revision_id: revision.revision_id,
@@ -758,7 +759,7 @@ describe("Approval canonical Bus integration", () => {
     expect((first.result as any).receipt).toBeNull();
     expect(store.db.prepare("SELECT count(*) AS n FROM event_queue WHERE destination_endpoint_id = ?").get(responseRecipient)).toMatchObject({n:0});
     expect(store.scopeExecutionStore.getNodeExecution(prepared.binding.node_execution_id)?.status)
-      .toBe("waiting_human");
+      .toBe("waiting_external");
     expect(store.scopeExecutionStore.getPublicationByIdempotencyKey(
       `approval-decision-publication:${request.approval_request_id}`,
     )).toBeNull();
@@ -875,7 +876,7 @@ describe("Approval canonical Bus integration", () => {
       idempotency_key: "request:gate:changed-after-request",
     });
     store.scopeExecutionStore.setNodeExecutionStatus(prepared.binding.node_execution_id, "active");
-    store.scopeExecutionStore.setNodeExecutionStatus(prepared.binding.node_execution_id, "waiting_human");
+    store.scopeExecutionStore.setNodeExecutionStatus(prepared.binding.node_execution_id, "waiting_external", { code: "approval_decision_pending" });
 
     expect(() => store.decideApprovalRequest({
       workspace_id: workspaceId,

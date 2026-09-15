@@ -1,10 +1,10 @@
 /** Transport-safe execution lifecycle and revision contract, shared by clients. */
 export type ScopeExecutionStatus =
-  | "queued" | "active" | "waiting_external" | "waiting_human" | "paused"
+  | "queued" | "active" | "waiting_external" | "paused"
   | "blocked" | "completed" | "failed" | "cancelled" | "superseded";
 
 export type NodeExecutionStatus =
-  | "collecting" | "ready" | "active" | "waiting_external" | "waiting_human"
+  | "collecting" | "ready" | "active" | "waiting_external"
   | "paused" | "retrying" | "blocked" | "completed" | "failed" | "cancelled" | "superseded";
 
 type ExecutionState = {
