@@ -11,9 +11,9 @@ Floe is a local daemon-driven substrate with two services and one native helper:
 The local development and CI runtime adapter is deterministic fake runtime, so
 the core substrate can be tested without spending Copilot premium requests. It
 is development-only; real profile-backed execution runs through the
-`floe-runtime` bridge adapter, which spawns the official vendor CLI (for
-example `copilot --acp`). Floe never sees the model credential — the vendor CLI
-owns model authentication.
+`floe-runtime` bridge adapter, which starts the official Copilot SDK lifecycle
+and registers Bridge-owned tools directly. Floe never sees the model credential
+— the vendor-managed runtime owns model authentication.
 
 ## Local Start
 
@@ -105,8 +105,7 @@ The fake adapter is the no-login fallback for local development and CI. Real
 execution runs through the `floe-runtime` adapter, backed by the official
 Copilot SDK. Floe passes its first-session instructions as an appended system
 message and exposes Bridge-owned tools directly; it does not broker model
-credentials. The ACP path and its local MCP transport are rollback-only
-internals, not a user-facing runtime selection. Select it explicitly:
+credentials. Select it explicitly:
 
 ```bash
 FLOE_RUNTIME_ADAPTER=floe-runtime

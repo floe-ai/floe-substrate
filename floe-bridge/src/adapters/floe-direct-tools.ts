@@ -1,27 +1,22 @@
-import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import type { z } from "zod";
 import type { HostTool } from "floe-runtime/adapters/copilot";
 import {
   executeEmit, executeRequest, executeDiscoverCapabilities, executeUseCapability,
   executeCreatePulse, executeListPulses, executePausePulse, executeResumePulse,
   executeCancelPulse, executeReadArtefact,
 } from "../runtime-core/index.js";
-import type { SubstrateToolIdentity } from "../runtime-core/index.js";
-import type { SubstrateSessionHandle } from "./floe-mcp-server.js";
 import {
-  EMIT_INPUT_SCHEMA, REQUEST_INPUT_SCHEMA, DISCOVER_CAPABILITIES_INPUT_SCHEMA,
-  USE_CAPABILITY_INPUT_SCHEMA, CREATE_PULSE_INPUT_SCHEMA, LIST_PULSES_INPUT_SCHEMA,
-  PULSE_ID_INPUT_SCHEMA, READ_ARTEFACT_INPUT_SCHEMA, EMIT_DESCRIPTION,
-  REQUEST_DESCRIPTION, DISCOVER_CAPABILITIES_DESCRIPTION, USE_CAPABILITY_DESCRIPTION,
-  CREATE_PULSE_DESCRIPTION, LIST_PULSES_DESCRIPTION, PAUSE_PULSE_DESCRIPTION,
-  RESUME_PULSE_DESCRIPTION, CANCEL_PULSE_DESCRIPTION, READ_ARTEFACT_DESCRIPTION,
-} from "./floe-mcp-server.js";
+  FLOE_RUNTIME_TOOL_IDENTITY,
+  SUBSTRATE_TOOL_DEFINITIONS,
+  type SubstrateSessionHandle,
+} from "../runtime-core/substrate-tool-definitions.js";
 
-const IDENTITY: SubstrateToolIdentity = {
-  runtimeName: "floe-runtime",
-  emitOrigin: "floe_emit_tool",
-  requestOrigin: "floe_request_tool",
-};
+/**
+ * @invariant Direct SDK tools consume the canonical, transport-neutral Bridge
+ * tool definitions. Every call resolves its Bus and live turn at invocation
+ * time, preserving Bridge authority and active-turn state across SDK calls.
+ */
 
 function result(value: { content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; details: Record<string, unknown> }) {
   return {
@@ -36,16 +31,16 @@ function result(value: { content: Array<{ type: string; text?: string; data?: st
 function directTool(
   name: string,
   description: string,
-  schema: z.ZodRawShape,
+  schema: z.ZodTypeAny,
   handle: SubstrateSessionHandle,
   execute: (params: Record<string, unknown>, handle: SubstrateSessionHandle) => Promise<{ content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; details: Record<string, unknown> }>,
 ): HostTool {
   return {
     name,
     description,
-    parameters: zodToJsonSchema(z.object(schema), { $refStrategy: "none" }) as Record<string, unknown>,
+    parameters: zodToJsonSchema(schema, { $refStrategy: "none" }) as Record<string, unknown>,
     async handler(args: unknown, _invocation) {
-      return result(await execute(z.object(schema).parse(args), handle));
+      return result(await execute(schema.parse(args) as Record<string, unknown>, handle));
     },
   };
 }
@@ -57,39 +52,39 @@ export function createDirectSubstrateTools(handle: SubstrateSessionHandle): Host
     return turn;
   };
   const tools = [
-    directTool("emit", EMIT_DESCRIPTION, EMIT_INPUT_SCHEMA, handle, async (params, h) => {
+    directTool(SUBSTRATE_TOOL_DEFINITIONS.emit.name, SUBSTRATE_TOOL_DEFINITIONS.emit.description, SUBSTRATE_TOOL_DEFINITIONS.emit.inputSchema, handle, async (params, h) => {
       const anchor = h.getAnchor();
       if (!anchor) throw new Error("emit: no active Floe turn is running for this session.");
-      const outcome = await executeEmit(h.getBus(), anchor, params, IDENTITY);
+      const outcome = await executeEmit(h.getBus(), anchor, params, FLOE_RUNTIME_TOOL_IDENTITY);
       if (outcome.emitted) h.recordEmitted(outcome.emitted);
       return outcome.result;
     }),
-    directTool("request", REQUEST_DESCRIPTION, REQUEST_INPUT_SCHEMA, handle, async (params, h) => {
+    directTool(SUBSTRATE_TOOL_DEFINITIONS.request.name, SUBSTRATE_TOOL_DEFINITIONS.request.description, SUBSTRATE_TOOL_DEFINITIONS.request.inputSchema, handle, async (params, h) => {
       const anchor = h.getAnchor();
       if (!anchor) throw new Error("request: no active Floe turn is running for this session.");
-      const outcome = await executeRequest(h.getBus(), anchor, params, IDENTITY, h.isDependencyRequested());
+      const outcome = await executeRequest(h.getBus(), anchor, params, FLOE_RUNTIME_TOOL_IDENTITY, h.isDependencyRequested());
       if (outcome.dependencyRequested) h.markDependencyRequested();
       if (outcome.emitted) h.recordEmitted(outcome.emitted);
       return outcome.result;
     }),
-    directTool("discover_capabilities", DISCOVER_CAPABILITIES_DESCRIPTION, DISCOVER_CAPABILITIES_INPUT_SCHEMA, handle, async (params, h) =>
+    directTool(SUBSTRATE_TOOL_DEFINITIONS.discoverCapabilities.name, SUBSTRATE_TOOL_DEFINITIONS.discoverCapabilities.description, SUBSTRATE_TOOL_DEFINITIONS.discoverCapabilities.inputSchema, handle, async (params, h) =>
       executeDiscoverCapabilities(h.getBus(), active("discover_capabilities").workspace_id, active("discover_capabilities"), params)),
-    directTool("use_capability", USE_CAPABILITY_DESCRIPTION, USE_CAPABILITY_INPUT_SCHEMA, handle, async (params, h) =>
+    directTool(SUBSTRATE_TOOL_DEFINITIONS.useCapability.name, SUBSTRATE_TOOL_DEFINITIONS.useCapability.description, SUBSTRATE_TOOL_DEFINITIONS.useCapability.inputSchema, handle, async (params, h) =>
       executeUseCapability(h.getBus(), active("use_capability").workspace_id, active("use_capability"), params)),
-    directTool("create_pulse", CREATE_PULSE_DESCRIPTION, CREATE_PULSE_INPUT_SCHEMA, handle, async (params, h) =>
+    directTool(SUBSTRATE_TOOL_DEFINITIONS.createPulse.name, SUBSTRATE_TOOL_DEFINITIONS.createPulse.description, SUBSTRATE_TOOL_DEFINITIONS.createPulse.inputSchema, handle, async (params, h) =>
       executeCreatePulse(h.getBus(), active("create_pulse"), params)),
-    directTool("list_pulses", LIST_PULSES_DESCRIPTION, LIST_PULSES_INPUT_SCHEMA, handle, async (params, h) =>
+    directTool(SUBSTRATE_TOOL_DEFINITIONS.listPulses.name, SUBSTRATE_TOOL_DEFINITIONS.listPulses.description, SUBSTRATE_TOOL_DEFINITIONS.listPulses.inputSchema, handle, async (params, h) =>
       executeListPulses(h.getBus(), active("list_pulses"), params)),
-    directTool("pause_pulse", PAUSE_PULSE_DESCRIPTION, PULSE_ID_INPUT_SCHEMA, handle, async (params, h) => {
+    directTool(SUBSTRATE_TOOL_DEFINITIONS.pausePulse.name, SUBSTRATE_TOOL_DEFINITIONS.pausePulse.description, SUBSTRATE_TOOL_DEFINITIONS.pausePulse.inputSchema, handle, async (params, h) => {
       active("pause_pulse"); return executePausePulse(h.getBus(), params);
     }),
-    directTool("resume_pulse", RESUME_PULSE_DESCRIPTION, PULSE_ID_INPUT_SCHEMA, handle, async (params, h) => {
+    directTool(SUBSTRATE_TOOL_DEFINITIONS.resumePulse.name, SUBSTRATE_TOOL_DEFINITIONS.resumePulse.description, SUBSTRATE_TOOL_DEFINITIONS.resumePulse.inputSchema, handle, async (params, h) => {
       active("resume_pulse"); return executeResumePulse(h.getBus(), params);
     }),
-    directTool("cancel_pulse", CANCEL_PULSE_DESCRIPTION, PULSE_ID_INPUT_SCHEMA, handle, async (params, h) => {
+    directTool(SUBSTRATE_TOOL_DEFINITIONS.cancelPulse.name, SUBSTRATE_TOOL_DEFINITIONS.cancelPulse.description, SUBSTRATE_TOOL_DEFINITIONS.cancelPulse.inputSchema, handle, async (params, h) => {
       active("cancel_pulse"); return executeCancelPulse(h.getBus(), params);
     }),
-    directTool("read_artefact", READ_ARTEFACT_DESCRIPTION, READ_ARTEFACT_INPUT_SCHEMA, handle, async (params, h) =>
+    directTool(SUBSTRATE_TOOL_DEFINITIONS.readArtefact.name, SUBSTRATE_TOOL_DEFINITIONS.readArtefact.description, SUBSTRATE_TOOL_DEFINITIONS.readArtefact.inputSchema, handle, async (params, h) =>
       executeReadArtefact(h.getBus(), active("read_artefact"), params)),
   ];
   return tools;

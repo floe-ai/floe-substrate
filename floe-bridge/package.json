@@ -8,14 +8,16 @@
   },
   "scripts": {
     "dev": "tsx src/index.ts daemon",
-    "build": "tsc -p tsconfig.json",
+    "clean": "node scripts/clean.mjs",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "check:pack": "npm run build && node scripts/check-pack.mjs",
+    "prepack": "npm run build",
     "start": "node dist/index.js daemon",
     "test": "vitest run"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
     "diff": "^9.0.0",
-    "floe-runtime": "file:../../floe-runtime",
+    "floe-runtime": "github:floe-ai/floe-runtime#f9aa08a47898209c7a4270e2f73aee1bd3e17013",
     "sharp": "0.35.4",
     "vite": "8.0.10",
     "yaml": "^2.6.0",

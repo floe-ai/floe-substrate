@@ -40,20 +40,36 @@ function context() {
 describe("FloeRuntimeAdapter SDK route", () => {
   it("separates first-session system instructions, forwards model selection, and reuses the SDK session", async () => {
     const runtime = new FakeRuntime();
+    const ctx = context();
+    const record = vi.fn(async () => ({ request_resolved: false, result_event: { event_id: "result-1" } }));
+    ctx.bus.recordRuntimeTurnResult = record;
     const adapter = new FloeRuntimeAdapter({ runtimeFactory: () => runtime as any });
-    await adapter.handleBundle(context(), bundle(), { model: "dynamic-model", instructions: "Floe instructions" } as any);
-    await adapter.handleBundle(context(), bundle("delivery-2"), { model: "dynamic-model", instructions: "Floe instructions" } as any);
-    await adapter.handleBundle(context(), bundle("delivery-3"), { model: "newly-listed-model", instructions: "Floe instructions" } as any);
+    await adapter.handleBundle(ctx, bundle(), { model: "dynamic-model", instructions: "Floe instructions" } as any);
+    await adapter.handleBundle(ctx, bundle("delivery-2"), { model: "dynamic-model", instructions: "Floe instructions" } as any);
+    await adapter.handleBundle(ctx, bundle("delivery-3"), { model: "newly-listed-model", instructions: "Floe instructions" } as any);
 
     const [first, second, third] = runtime.runs;
     expect(first[1].prompt).not.toContain("Floe instructions");
     expect(first[4]).toMatchObject({ model: "dynamic-model", systemMessage: { mode: "append", content: expect.stringContaining("Floe instructions") } });
-    expect(first[4].mcpServers).toBeUndefined();
     expect(first[4].tools.map((tool: any) => tool.name)).toContain("use_capability");
     expect(second[4].systemMessage).toBeUndefined();
     expect(second[5]).toMatchObject({ sessionId: "sdk-session", scope: "context:test" });
     expect(runtime.setModel).toHaveBeenCalledWith("sdk-session", "newly-listed-model");
     expect(third[4].model).toBe("newly-listed-model");
+    expect(record).toHaveBeenCalledWith({
+      delivery_id: "delivery-1",
+      outcome: "completed",
+      text: "done",
+      metadata: {
+        runtime: "floe-runtime",
+        runtime_turn_id: expect.stringMatching(/^rt_/),
+        execution_attempt_id: null,
+        node_execution_id: null,
+        composition_revision_id: null,
+        stop_reason: "idle",
+        session_id: "sdk-session",
+      },
+    });
   });
 
   it("keeps coded SDK faults visible instead of recording a successful result", async () => {
@@ -129,7 +145,7 @@ describe("direct substrate tools", () => {
     read_artefact: { required: ["artefact_version_id"], properties: ["artefact_version_id", "offset", "limit"] },
   };
 
-  it("advertises every shared MCP schema to SDK tools without loosening it", () => {
+  it("advertises every shared tool schema to SDK tools without loosening it", () => {
     const tools = createDirectSubstrateTools({
       getBus: () => ({}) as any, getAnchor: () => null, getActiveTurn: () => null,
       isDependencyRequested: () => false, markDependencyRequested: () => {}, recordEmitted: () => {},
