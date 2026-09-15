@@ -754,6 +754,7 @@ export async function createBusServer(
           && requirement.workspace_id !== null
           && !bridgeMayUseWorkspace(store, authenticated.authority, requirement.workspace_id))
         || (requirement.kind === "bridge_or_workspace"
+          && requirement.workspace_id !== null
           && !bridgeMayUseWorkspace(store, authenticated.authority, requirement.workspace_id))
         || (requirement.kind === "bridge_workspace_or_host"
           && !bridgeMayUseWorkspace(store, authenticated.authority, requirement.workspace_id))
@@ -3766,6 +3767,28 @@ export async function createBusServer(
 
   // ---------------------------------------------------------------------------
   app.get("/v1/delivery/claim", async (request, reply) => {
+    // A client executes its Actor's turns out-of-process. It claims by naming
+    // its own client-executed Endpoint; it can never claim a Bridge-owned one.
+    const clientAuthority = requestAuthorities.get(request);
+    if (clientAuthority?.audience === "workspace_operation") {
+      const query = z.object({
+        endpoint_id: z.string().min(1),
+        limit: z.coerce.number().int().positive().max(100).optional()
+      }).parse(request.query);
+      const endpoint = store.getEndpoint(query.endpoint_id) as { workspace_id?: string } | null;
+      if (!endpoint || endpoint.workspace_id !== clientAuthority.workspace_id
+        || !store.isClientExecutedEndpoint(query.endpoint_id)) {
+        return sendTransportForbidden(reply);
+      }
+      return {
+        deliveries: store.claimClientDeliveries(
+          clientAuthority.workspace_id,
+          query.endpoint_id,
+          query.limit ?? 10,
+          broadcast,
+        ),
+      };
+    }
     const bridgeAuthority = requireBridgeService(request, reply);
     if (!bridgeAuthority) return reply;
     const query = z.object({
@@ -3827,6 +3850,29 @@ export async function createBusServer(
   });
 
   app.post("/v1/runtime/turn-result", async (request, reply) => {
+    // A client-executed turn ends the same way a model's does: report the
+    // result by delivery_id. No context, no assembled event, no correlation id.
+    const clientAuthority = requestAuthorities.get(request);
+    if (clientAuthority?.audience === "workspace_operation") {
+      const body = z.object({
+        delivery_id: z.string().min(1),
+        outcome: z.enum(["completed", "failed"]).optional(),
+        text: z.string().min(1),
+        metadata: z.record(z.unknown()).optional()
+      }).parse(request.body);
+      try {
+        const result = store.recordClientTurnResult({
+          workspace_id: clientAuthority.workspace_id,
+          delivery_id: body.delivery_id,
+          outcome: body.outcome ?? "completed",
+          text: body.text,
+          metadata: body.metadata
+        }, broadcast);
+        return reply.code(202).send({ ok: true, ...result });
+      } catch {
+        return sendTransportForbidden(reply);
+      }
+    }
     const bridgeAuthority = requireBridgeService(request, reply);
     if (!bridgeAuthority) return reply;
     const body = z.object({
@@ -4174,7 +4220,8 @@ export async function createBusServer(
 export type TransportRequirement =
   | Readonly<{ kind: "public" | "websocket" | "credential_ingress" | "attachment_ingress" | "host_control" | "bridge_or_host" }>
   | Readonly<{ kind: "bridge_service"; workspace_id: string | null }>
-  | Readonly<{ kind: "workspace_operation" | "bridge_or_workspace"; workspace_id: string }>
+  | Readonly<{ kind: "workspace_operation"; workspace_id: string }>
+  | Readonly<{ kind: "bridge_or_workspace"; workspace_id: string | null }>
   | Readonly<{ kind: "bridge_workspace_or_host"; workspace_id: string }>
   | Readonly<{ kind: "workspace_conflict"; workspace_ids: readonly string[] }>;
 
@@ -4218,17 +4265,26 @@ export function resolveTransportRequirement(request: any, store: BusStore): Tran
     return { kind: "bridge_or_host" };
   }
 
+  // Claim and turn-result are the two acts a delivery's executor performs. An
+  // in-process Bridge and an out-of-process client both perform them; the
+  // handler scopes the client to its own client-executed Endpoint. Either
+  // authority is accepted here; neither can reach the other's Endpoints.
+  if (
+    route === "/v1/delivery/claim"
+    || route === "/v1/runtime/turn-result"
+  ) {
+    return { kind: "bridge_or_workspace", workspace_id: workspace.workspace_id };
+  }
+
   if (
     route.startsWith("/v1/bridge/")
     || route === "/v1/bridges/register"
     || route === "/v1/bridges/liveness"
     || route === "/v1/bridges/:bridge_id/liveness"
-    || route === "/v1/delivery/claim"
     || route === "/v1/delivery/:delivery_id/status"
     || route === "/v1/delivery/:delivery_id/runtime-prepare"
     || route === "/v1/delivery/:delivery_id/runtime-credentials/:secret_ref_id"
     || (route === "/v1/runtime/telemetry" && method === "POST")
-    || route === "/v1/runtime/turn-result"
     || (route === "/v1/endpoints/:endpoint_id/status" && method === "POST")
     || route === "/v1/endpoints/:endpoint_id/turn-end"
     || route === "/v1/workspaces/:workspace_id/attachment-result"
@@ -4301,12 +4357,15 @@ export function resolveTransportRequirement(request: any, store: BusStore): Tran
 function authenticateBridgeOrWorkspace(
   authenticator: BusTransportAuthenticator,
   bearer: string,
-  workspaceId: string,
+  workspaceId: string | null,
 ) {
   const bridge = authenticator.authenticateBridgeService(bearer);
-  return bridge.verified
-    ? bridge
-    : authenticator.authenticateWorkspaceOperation(bearer, workspaceId);
+  if (bridge.verified) return bridge;
+  // A client authenticates as workspace_operation, which requires a resolved
+  // workspace. If none resolved (e.g. no endpoint_id/delivery_id named the
+  // workspace), it cannot be a client act; keep the bridge's failed result.
+  if (!workspaceId) return bridge;
+  return authenticator.authenticateWorkspaceOperation(bearer, workspaceId);
 }
 
 function authenticateBridgeOrHost(

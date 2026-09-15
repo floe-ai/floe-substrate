@@ -10,15 +10,23 @@ import { fetchHostControlToken } from "../../floe-cli/src/operation-client.js";
  *
  * The whole premise, proven end to end with nothing hand-made:
  *   an Actor, during a REAL turn, asks another Actor whose turns a client
- *   executes; the client discovers that Actor through the same listing every
- *   Actor appears in, answers through real routes with a real minted
- *   credential, and the asking Actor resumes.
+ *   executes; the client LEARNS OF THE WORK BY PUSH on the stream it already
+ *   holds, CLAIMS the delivery, and ENDS ITS TURN by reporting a result with no
+ *   context and no assembled event — exactly as a model's turn ends. The asking
+ *   Actor resumes IN ITS ORIGINAL CONTEXT.
+ *
+ * This gate is context-checking, not context-blind. The prior gate passed only
+ * because the fake adapter recorded any delivered text regardless of context,
+ * so a reply landing in a fresh context still looked like success. Here the
+ * asker's resumed output is asserted to carry the request's own
+ * request_return_context_id, so a reply that misroutes to a new context fails.
  *
  * The operator Actor is created by `register` (the same act that creates any
  * Actor) — the test never seeds it. The asking Actor's request is issued by the
  * fake runtime executing the shared `request` substrate tool during its turn —
  * the pending dependency is produced by the substrate, not planted. The client
- * holds only an admitted-keypair workspace_operation bearer.
+ * holds only an admitted-keypair workspace_operation bearer, and answers through
+ * the same claim + turn-result routes a model runtime uses.
  */
 const FAKE_TIER: SliceTier = { id: "fake", adapter: "fake", provider: "fake", model: "fake", live: false };
 
@@ -109,7 +117,6 @@ describe("identity-actor gate [fake]", () => {
     //    operator. The ask is data on a delivered event; the fake runtime runs
     //    the shared substrate request tool — the pending row is the substrate's.
     const question = "Operator, approve the deploy?";
-    const answerText = "Approved by the console operator.";
     await h.post("/v1/events/emit", {
       type: "message",
       workspace_id: workspaceId,
@@ -122,43 +129,84 @@ describe("identity-actor gate [fake]", () => {
       metadata: {},
     });
 
-    // 5. The client discovers the operator's pending question through the real
-    //    route and answers it exactly as the protocol document specifies.
-    const pendingRow = await waitFor(async () => {
-      const res = await fetch(`${busUrl}/v1/pending-responses?workspace_id=${encodeURIComponent(workspaceId)}&destination_endpoint_id=${encodeURIComponent(operatorEndpoint)}`, { headers: authz(clientBearer) });
-      const rows = (await asJson(res)).pending ?? [];
-      return rows.find((r: any) => r.waiting_endpoint_id === askerEndpoint) ?? false;
-    }, "operator's pending question discoverable by the client", 20_000);
-    expect(pendingRow.correlation_id).toBeTruthy();
+    // 5. The client opens the authenticated stream it already holds and LEARNS
+    //    OF THE WORK BY PUSH — a delivery_bundle_available frame for the operator
+    //    Actor's own Endpoint. It never polls and never constructs an id: the
+    //    push carries the Endpoint the work is for.
+    const clientStream = new (globalThis as any).WebSocket(`${h.wsUrl}/v1/events/stream`);
+    const clientFrames: any[] = [];
+    clientStream.addEventListener("open", () => {
+      clientStream.send(JSON.stringify({ type: "authenticate", bearer_token: clientBearer, workspace_id: workspaceId }));
+    });
+    clientStream.addEventListener("message", (event: any) => clientFrames.push(JSON.parse(String(event.data))));
+    await waitFor(() => clientFrames.some((f) => f.type === "authenticated"), "client stream authenticated");
 
-    const reply = await fetch(`${busUrl}/v1/events/emit`, {
+    const pushed = await waitFor(() => {
+      const frame = clientFrames.find((f) => f.type === "delivery_bundle_available"
+        && f.payload?.delivery?.endpoint_id === operatorEndpoint);
+      return frame ? frame.payload.delivery : false;
+    }, "delivery-available pushed to the client for the operator Actor", 20_000);
+    expect(pushed.delivery_id).toBeTruthy();
+
+    // Capture the asking turn's return context from its own request event, so
+    // the resume can be checked to land there rather than in a fresh context.
+    const askContextId = await waitFor(async () => {
+      const { events } = await h.get<{ events: any[] }>(`/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&limit=200`);
+      const request = events.find((e) => e.type === "request"
+        && e.destination_json?.endpoint_id === operatorEndpoint
+        && typeof e.metadata?.request_return_context_id === "string");
+      return request ? String(request.metadata.request_return_context_id) : false;
+    }, "asking Actor's request stamped a return context", 20_000);
+
+    // 6. The client CLAIMS the delivery for its own client-executed Endpoint and
+    //    reads the question straight from the bundle — no context handling.
+    const claimed = await asJson(await fetch(
+      `${busUrl}/v1/delivery/claim?endpoint_id=${encodeURIComponent(operatorEndpoint)}`,
+      { headers: authz(clientBearer) },
+    ));
+    const delivery = (claimed.deliveries ?? []).find((d: any) => d.delivery_id === pushed.delivery_id);
+    expect(delivery).toBeTruthy();
+    expect(JSON.stringify(delivery.events)).toContain(question);
+
+    // 7. The client ENDS ITS TURN: it reports a result by delivery_id alone.
+    //    No context, no correlation id, no assembled event — the same shape a
+    //    model's turn end takes.
+    const answerText = "Approved by the console operator.";
+    const ended = await fetch(`${busUrl}/v1/runtime/turn-result`, {
       method: "POST",
       headers: jsonAuth(clientBearer),
-      body: JSON.stringify({
-        type: "response",
-        workspace_id: workspaceId,
-        source_endpoint_id: operatorEndpoint,
-        destination: { kind: "endpoint", endpoint_id: pendingRow.waiting_endpoint_id },
-        correlation_id: pendingRow.correlation_id,
-        content: { text: answerText },
-      }),
+      body: JSON.stringify({ delivery_id: delivery.delivery_id, text: answerText }),
     });
-    expect(reply.status).toBe(202);
+    expect(ended.status).toBe(202);
 
-    // 6. The asking Actor resumes: its second turn records the operator's answer.
+    // 8. The asking Actor resumes IN ITS ORIGINAL CONTEXT. The resumed output
+    //    must carry the answer AND the request's own return context — a reply
+    //    that landed in a fresh context would fail this, which is exactly the
+    //    blindness the prior gate could not catch.
     await waitFor(async () => {
       const results = await h.runtimeResults(workspaceId, askerEndpoint);
-      return results.some((e) => typeof e.content?.text === "string" && e.content.text.includes(answerText));
-    }, "asking Actor resumes with the operator's answer", 20_000);
+      return results.some((e) => typeof e.content?.text === "string"
+        && e.content.text.includes(answerText)
+        && e.context_id === askContextId);
+    }, "asking Actor resumes with the answer, in its original context", 20_000);
+
+    // The substrate's correlated return landed in the asking turn's context too,
+    // not a new one — correlation alone resumed the turn.
+    const { events: afterEvents } = await h.get<{ events: any[] }>(`/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&limit=200`);
+    const returned = afterEvents.find((e) => e.type === "request.result"
+      && e.destination_json?.endpoint_id === askerEndpoint);
+    expect(returned).toBeTruthy();
+    expect(returned.context_id).toBe(askContextId);
 
     // The pending question is now resolved — the loop closed through real routes.
     await waitFor(async () => {
       const res = await fetch(`${busUrl}/v1/pending-responses?workspace_id=${encodeURIComponent(workspaceId)}&destination_endpoint_id=${encodeURIComponent(operatorEndpoint)}`, { headers: authz(clientBearer) });
       const rows = (await asJson(res)).pending ?? [];
-      const row = rows.find((r: any) => r.correlation_id === pendingRow.correlation_id);
-      return !row || row.status === "resolved";
+      const open = rows.filter((r: any) => r.waiting_endpoint_id === askerEndpoint && r.status === "pending");
+      return open.length === 0;
     }, "pending question resolved");
 
+    clientStream.close();
     await h.post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/delete`, { delete_locator: true });
   }, 90_000);
 });

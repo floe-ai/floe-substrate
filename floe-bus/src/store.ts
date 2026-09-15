@@ -110,7 +110,7 @@ import {
   registerActorRoleOperations,
   resolveActorRoleAuthorityResource,
 } from "./actor-role-operations.js";
-import { RuntimeProfileStore, applyRuntimeProfileSchema } from "./runtime-profiles.js";
+import { RuntimeProfileStore, applyRuntimeProfileSchema, CLIENT_ADAPTER_ID } from "./runtime-profiles.js";
 import { ConnectorStore, applyConnectorSchema } from "./connectors.js";
 import {
   ApprovalConflictError,
@@ -5008,6 +5008,33 @@ export class BusStore {
     return this.db.prepare("SELECT * FROM endpoints WHERE endpoint_id = ?").get(endpointId) as any;
   }
 
+  /**
+   * Resolve the runtime adapter that executes an Endpoint's turns, or null when
+   * no active, resolved binding names one. Follows the same actor -> binding ->
+   * published-profile path as listRuntimeEndpoints, so it reflects exactly what
+   * a Bridge (or a client) would see as the Endpoint's executor.
+   */
+  resolveEndpointAdapterId(endpointId: string): string | null {
+    const endpoint = this.getEndpoint(endpointId) as { workspace_id?: string } | null;
+    if (!endpoint?.workspace_id) return null;
+    const binding = this.runtimeProfileStore.getCurrentActorBindingForEndpoint(endpoint.workspace_id, endpointId)
+      ?? this.runtimeProfileStore.getCurrentActorBinding(endpointId);
+    if (!binding || binding.status !== "resolved") return null;
+    const profile = this.runtimeProfileStore.getRevision(binding.runtime_profile_revision_id);
+    if (!profile?.published_at || profile.withdrawn_at) return null;
+    return profile.content.adapter_id ?? null;
+  }
+
+  /**
+   * True when an Endpoint's turns are executed out-of-process by an attached
+   * client (the `client` adapter) rather than in-process by a Bridge. This is
+   * the only distinction O3 draws: in-process (Bridge/model) vs out-of-process
+   * (client). It never names who or what backs the Actor.
+   */
+  isClientExecutedEndpoint(endpointId: string): boolean {
+    return this.resolveEndpointAdapterId(endpointId) === CLIENT_ADAPTER_ID;
+  }
+
   deleteEndpoint(endpointId: string, broadcast: Broadcast): { ok: true; endpoint_id: string } {
     const endpoint = this.getEndpoint(endpointId);
     if (!endpoint) throw new Error(`Endpoint not found: ${endpointId}`);
@@ -5737,7 +5764,7 @@ export class BusStore {
           LIMIT 1
         `).get(trigger.event_id) as any;
         if (directPending && trigger.type !== "request") {
-          // Human/client sends may ask for a response. A local result satisfies
+          // A send may ask for a response. A local result satisfies
           // that wait without routing a reply or waking another actor.
           this.db.prepare("UPDATE pending_responses SET status = 'resolved', resolved_at = ? WHERE pending_id = ?")
             .run(now(), directPending.pending_id);
@@ -5851,6 +5878,89 @@ export class BusStore {
       broadcast("delivery_delivered_to_bridge", { delivery_id: row.delivery_id, bridge_id: bridgeId });
     }
     return rows.map((row) => this.rowToDelivery(row));
+  }
+
+  /**
+   * Claim the reserved deliveries waiting for one client-executed Endpoint, on
+   * behalf of an attached identity. This is the out-of-process twin of
+   * claimDeliveries: it never touches a Bridge-owned Endpoint, and the caller
+   * may only name an Endpoint whose turns the `client` adapter executes in a
+   * Workspace the identity is admitted to. The identity learned the work exists
+   * from the delivery_bundle_available push it already receives on its stream;
+   * this is the pull half of that push, not a poll.
+   */
+  claimClientDeliveries(
+    workspaceId: string,
+    endpointId: string,
+    limit: number,
+    broadcast: Broadcast,
+  ): DeliveryBundle[] {
+    if (!this.isClientExecutedEndpoint(endpointId)) return [];
+    const endpoint = this.getEndpoint(endpointId) as { workspace_id?: string; bridge_id?: string | null } | null;
+    if (!endpoint || endpoint.workspace_id !== workspaceId || endpoint.bridge_id) return [];
+    const rows = this.db.prepare(`
+      SELECT db.*
+      FROM delivery_bundles db
+      WHERE db.state = 'reserved' AND db.endpoint_id = ? AND db.workspace_id = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM workspace_restore_holds hold
+          WHERE hold.workspace_id = db.workspace_id AND hold.state = 'held'
+        )
+      ORDER BY db.created_at ASC
+      LIMIT ?
+    `).all(endpointId, workspaceId, limit) as any[];
+    const claimedAt = now();
+    for (const row of rows) {
+      this.db.prepare("UPDATE delivery_bundles SET state = 'delivered_to_bridge', claimed_at = ? WHERE delivery_id = ?")
+        .run(claimedAt, row.delivery_id);
+      this.db.prepare("UPDATE event_queue SET state = 'delivered_to_bridge' WHERE delivery_id = ? AND state = 'reserved'")
+        .run(row.delivery_id);
+      broadcast("delivery_reserved", { delivery_id: row.delivery_id, endpoint_id: row.endpoint_id });
+      broadcast("delivery_claimed_by_client", { delivery_id: row.delivery_id, endpoint_id: row.endpoint_id });
+    }
+    return rows.map((row) => this.rowToDelivery(row));
+  }
+
+  /**
+   * A client-executed Actor's turn ends. This is the single act a client
+   * performs to answer: no context, no assembled event, no correlation id. The
+   * substrate records the public conclusion and resumes the asking turn exactly
+   * as it does for a model (recordRuntimeTurnResult, keyed by delivery_id), then
+   * settles the delivery and reopens the Endpoint. One path serves both.
+   */
+  recordClientTurnResult(input: {
+    workspace_id: string;
+    delivery_id: string;
+    outcome: "completed" | "failed";
+    text: string;
+    metadata?: Record<string, unknown>;
+  }, broadcast: Broadcast): RuntimeTurnResult {
+    const delivery = this.db.prepare("SELECT * FROM delivery_bundles WHERE delivery_id = ?")
+      .get(input.delivery_id) as any;
+    if (!delivery) throw new Error(`Unknown delivery_id: ${input.delivery_id}`);
+    if (delivery.workspace_id !== input.workspace_id) {
+      throw new Error(`Delivery '${input.delivery_id}' is not in workspace '${input.workspace_id}'.`);
+    }
+    const endpointId = String(delivery.endpoint_id);
+    if (!this.isClientExecutedEndpoint(endpointId)) {
+      throw new Error(`Endpoint '${endpointId}' is not client-executed.`);
+    }
+    const result = this.recordRuntimeTurnResult({
+      delivery_id: input.delivery_id,
+      outcome: input.outcome,
+      text: input.text,
+      metadata: input.metadata,
+    }, broadcast);
+    this.transaction(() => {
+      this.db.prepare("UPDATE delivery_bundles SET state = 'acknowledged', lease_expires_at = NULL, last_error = NULL WHERE delivery_id = ?")
+        .run(input.delivery_id);
+      this.db.prepare("UPDATE event_queue SET state = 'acknowledged', lease_expires_at = NULL, delivered_at = ?, last_error = NULL WHERE delivery_id = ?")
+        .run(now(), input.delivery_id);
+      this.finishCanonicalAttempt(delivery, input.outcome === "completed" ? "completed" : "failed", null);
+    });
+    broadcast("delivery_acknowledged", { delivery_id: input.delivery_id, endpoint_id: endpointId });
+    this.reportTurnEnd(endpointId, broadcast);
+    return result;
   }
 
   prepareRuntimeDelivery(input: {
@@ -7443,7 +7553,12 @@ export class BusStore {
   private tryCreateDeliveryForEndpoint(endpointId: string, broadcast: Broadcast): DeliveryBundle | null {
     const endpoint = this.getEndpoint(endpointId);
     const commandWorker = this.commandWorkerBindingStore.getByEndpoint(endpointId);
-    if (!endpoint || (!endpoint.bridge_id && !commandWorker)) return null;
+    // An out-of-process client Actor has no Bridge and no command worker. Its
+    // turns are executed by whoever is attached through an admitted identity, so
+    // it is a legitimate delivery target even though nothing in-process runs it.
+    const clientExecuted = !endpoint?.bridge_id && !commandWorker && !!endpoint
+      && this.isClientExecutedEndpoint(endpointId);
+    if (!endpoint || (!endpoint.bridge_id && !commandWorker && !clientExecuted)) return null;
     if (commandWorker && (commandWorker.status !== "available"
       || commandWorker.workspace_id !== endpoint.workspace_id)) return null;
     const restoreHold = this.db.prepare(`
@@ -7478,7 +7593,11 @@ export class BusStore {
 
     const deliveredAt = now();
     const deliveryId = `del_${randomUUID()}`;
-    const leaseExpiresAt = this.deliveryLeaseExpiresAt();
+    // No lease for a client-executed Actor. A Bridge lease is a crash-liveness
+    // timer for an in-process runtime; an attached person may take minutes or
+    // days and that is not a fault. A null lease is excluded from
+    // requeueExpiredDeliveryLeases, so the work simply waits — no timeout.
+    const leaseExpiresAt = clientExecuted ? null : this.deliveryLeaseExpiresAt();
     const deliveryAttempt = Math.max(...queuedRows.map((row) => Number(row.attempt_count ?? 0) + 1));
     const runtimePins = this.resolveDeliveryRuntimePins(firstQueued, endpointId, endpoint.workspace_id);
     for (const row of queuedRows) {
