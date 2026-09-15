@@ -6,7 +6,6 @@ import { spawn } from "node:child_process";
 import { Command } from "commander";
 import { ensureConfig, resolveLocalPath, saveConfig, type LocalConfig } from "./config.js";
 import { buildResetPlan, executeReset } from "./reset.js";
-import { seedDefaultActor } from "./actor-seed.js";
 import {
   clearRecords,
   isPidRunning,
@@ -17,7 +16,7 @@ import {
 } from "./process-manager.js";
 import { registerOperationsCommand } from "./operations-command.js";
 import { registerIdentityCommand } from "./identity-command.js";
-import { registerLocalWorkspaceViaBroker, fetchHostControlToken } from "./operation-client.js";
+import { registerLocalWorkspaceViaBroker } from "./operation-client.js";
 import { startAll, waitForHealth, isHealthy } from "./startup.js";
 
 const program = new Command();
@@ -226,17 +225,10 @@ async function printStatus(configPath: string, config: LocalConfig): Promise<voi
 async function registerCurrentWorkspace(config: LocalConfig, locator: string, initAuthorized: boolean): Promise<void> {
   // Registration and selection are host-control bootstrap routes. The broker
   // owns the host-control credential, so the CLI registers through it rather
-  // than an unauthenticated HTTP call.
-  const { workspace_id: workspaceId } = await registerLocalWorkspaceViaBroker(locator, initAuthorized, config.bus.http_base_url);
-  // Seed a default human operator actor if none exists yet. Seeding a
-  // self-owned actor is a native-host-owner capability, so authorize it with
-  // the broker-owned host-control credential — the same trust path registration
-  // uses. Stored bus-DB-only (no workspace file written) so git status stays clean.
-  const hostControlToken = await fetchHostControlToken(config.bus.http_base_url);
-  const seedResult = await seedDefaultActor(config.bus.http_base_url, workspaceId, hostControlToken);
-  if (seedResult.seeded) {
-    console.log(`Seeded default actor: ${seedResult.endpoint_id}`);
-  }
+  // than an unauthenticated HTTP call. The Bus provisions the workspace's
+  // operator Actor as part of registration (see local-operator-actor), so the
+  // CLI does not seed anything itself.
+  await registerLocalWorkspaceViaBroker(locator, initAuthorized, config.bus.http_base_url);
 }
 
 function findAncestorWithFloe(start: string): string | null {

@@ -1,6 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
+/**
+ * The runtime adapter for an Actor whose turns are executed by an attached
+ * client rather than by a Bridge. No Bridge provides this adapter, so the
+ * existing adapter-match filter skips such Actors with no special-casing. The
+ * name describes only what executes the turn (a client); it never names who.
+ */
+export const CLIENT_ADAPTER_ID = "client";
+
 export type RuntimeProfileOwner = Readonly<{
   kind: "workspace" | "host" | "deployment";
   id: string;

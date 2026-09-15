@@ -244,6 +244,7 @@ import {
 } from "./isolated-extension-runtime.js";
 import { BusWorkspaceOperationBackend } from "./workspace-operation-backend.js";
 import { registerWorkspaceOperations } from "./workspace-operations.js";
+import { ensureOperatorActor } from "./local-operator-actor.js";
 import {
   WorkspacePortabilityError,
   WorkspacePortabilityService,
@@ -1637,10 +1638,25 @@ export class BusStore {
       });
     }
     const workspace = this.requireLocalWorkspace(identity.workspace_id);
+    this.ensureLocalOperatorActor(identity.workspace_id, broadcast);
     const remoteWorkspace = this.workspaceIdentityStore.getRemoteProjection(identity.workspace_id, this.localHostId);
     broadcast("workspace_registered", { workspace: remoteWorkspace });
     broadcast("workspace_attachment_requested", { workspace_id: identity.workspace_id });
     return workspace;
+  }
+
+  private ensureLocalOperatorActor(workspaceId: string, broadcast: Broadcast): void {
+    ensureOperatorActor(
+      {
+        actors: this.actorDefinitionStore,
+        runtimes: this.runtimeProfileStore,
+        principalId: this.localOperatorPrincipalId,
+        getEndpoint: (endpointId: string) => this.getEndpoint(endpointId),
+        registerEndpoint: (input, cast) => this.registerEndpoint(input, cast),
+      },
+      workspaceId,
+      broadcast,
+    );
   }
 
   selectWorkspace(workspaceId: string, broadcast: Broadcast): LocalWorkspaceRecord {
