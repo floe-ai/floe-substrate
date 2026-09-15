@@ -20,6 +20,7 @@ export interface EmitViaRouteResult {
 export async function emitViaRoute(
   handle: BusServerHandle,
   command: EventCommand,
+  options?: { headers?: Record<string, string> },
 ): Promise<EmitViaRouteResult> {
   // The direct store path accepted an empty `thread_id` to mean "unthreaded".
   // The real route requires the field absent instead, so normalise that idiom
@@ -33,6 +34,7 @@ export async function emitViaRoute(
   const res = await handle.app.inject({
     method: "POST",
     url: "/v1/events/emit",
+    headers: options?.headers,
     payload,
   });
   const body = res.statusCode === 204 ? null : res.json();
