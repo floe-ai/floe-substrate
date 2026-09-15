@@ -251,7 +251,7 @@ Current semantic operation IDs are:
 - `context.create`, `context.archive`, and `context.restore`;
 - `context.participant.set_access` and `context.participant.remove`;
 - `context.communication.emit` (the discoverable wrapper over Event submission;
-  for a direct or correlated reply a client may also use the raw
+  for a direct Event a client may also use the raw
   [direct communication ingress](#direct-communication-ingress-emit)); and
 - `context.destroy_permanently`.
 
@@ -317,37 +317,39 @@ Events and Deliveries remain canonical transport/history records:
 
 ```text
 GET /v1/events?workspace_id=&context_id=&scope_id=&type=&since=&before=&direction=&limit=
+GET /v1/events/:event_id
 GET /v1/events/:event_id/trace
 GET /v1/delivery?workspace_id=&limit=
 GET /v1/pending-responses?workspace_id=&limit=
 ```
 
 Forward Event reads return `next_cursor`. Backward reads return
-`previous_cursor` for earlier history. A Delivery transports an Event and exact
-ArtefactVersion references; it does not replace NodeExecution.
+`previous_cursor` for earlier history. Reading one Event by id
+(`GET /v1/events/:event_id`) returns exactly that Event or `404` — it never
+silently substitutes a different record; do not pass an `event_id` as a filter
+on the list route. A Delivery transports an Event and exact ArtefactVersion
+references; it does not replace NodeExecution.
 
 ### Direct communication ingress (emit)
 
 `POST /v1/events/emit` is a **supported, first-class communication ingress**,
 not a legacy compatibility route. It is how an Actor, the operator, or an
-unprivileged client emits a direct (non-graph) Event — including a correlated
-reply to a request addressed to the operator. It is accepted for
-`workspace_operation` and `bridge_service` bearers (`bridge_service` may only
-emit as an Endpoint its Bridge owns). A natural runtime completion is recorded
-in the origin Context and does not advance a ScopeExecution.
+unprivileged client emits a direct (non-graph) Event — to say something in a
+Context, to start a new Context, or to reach outside the one it is in. It is
+accepted for `workspace_operation` and `bridge_service` bearers (`bridge_service`
+may only emit as an Endpoint its Bridge owns). A natural runtime completion is
+recorded in the origin Context and does not advance a ScopeExecution.
 
 The request body is the canonical Event command. `content` is a free-form
-object and the message text lives in `content.text`. A correlated reply names
-the pending `correlation_id` and targets the waiting Endpoint:
+object and the message text lives in `content.text`:
 
 ```json
 {
-  "type": "response",
+  "type": "message",
   "workspace_id": "workspace_123",
   "source_endpoint_id": "actor:workspace_123:operator",
-  "destination": { "kind": "endpoint", "endpoint_id": "<waiting_endpoint_id>" },
-  "correlation_id": "<correlation_id>",
-  "content": { "text": "Approved by the console operator." }
+  "destination": { "kind": "endpoint", "endpoint_id": "<endpoint_id>" },
+  "content": { "text": "Deploy started." }
 }
 ```
 
@@ -355,9 +357,14 @@ Success is `202`; a body that fails the schema is `400 invalid_event_command`.
 The **`context.communication.emit` semantic operation** (in *Canonical Context
 operations* above) is the discoverable wrapper used where an operation receipt,
 confirmation, or richer Context routing is wanted; it delegates to the same
-Event submission. For an unprivileged client answering a correlated question,
-raw `emit` is authoritative and sufficient — the full field-by-field body is in
-[Client identity protocol → Answering the operator Actor](../../reference/client-identity-protocol.md#answering-the-operator-actor).
+Event submission.
+
+**Emit is not how a client answers a request addressed to the Actor it executes.**
+Answering is that Actor's turn ending, reported with
+`POST /v1/runtime/turn-result` by delivery id alone — no assembled event, no
+correlation id, no context. The substrate resumes the asking Actor in its own
+context, correlated by the delivery. See
+[Client identity protocol → Answering as a client-executed Actor](../../reference/client-identity-protocol.md#answering-as-a-client-executed-actor).
 
 ## Resumable WebSocket stream
 
