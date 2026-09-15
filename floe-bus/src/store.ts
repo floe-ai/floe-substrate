@@ -4945,8 +4945,8 @@ export class BusStore {
       ? this.db.prepare("SELECT * FROM endpoints WHERE workspace_id = ? ORDER BY name").all(workspaceId)
       : this.db.prepare("SELECT * FROM endpoints ORDER BY workspace_id, name").all();
     // Parse metadata_json into a self-describing `metadata` object so a generic
-    // client can, e.g., discover the operator endpoint by `metadata.role`
-    // without knowing the column is a JSON string (ADR-0015 D4).
+    // client can read endpoint metadata without knowing the column is a JSON
+    // string.
     return (rows as Array<Record<string, unknown>>).map((row) => ({
       ...row,
       metadata: parseJson<Record<string, unknown>>((row.metadata_json as string) ?? "{}"),

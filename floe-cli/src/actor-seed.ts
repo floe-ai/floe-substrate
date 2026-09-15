@@ -60,7 +60,6 @@ export async function seedDefaultActor(
         agent_id: DEFAULT_ACTOR_SLUG,
         bridge_id: null,
         status: "idle",
-        metadata: { role: "operator" },
       }),
     });
   } catch {
