@@ -357,7 +357,7 @@ operations* above) is the discoverable wrapper used where an operation receipt,
 confirmation, or richer Context routing is wanted; it delegates to the same
 Event submission. For an unprivileged client answering a correlated question,
 raw `emit` is authoritative and sufficient — the full field-by-field body is in
-[Client identity protocol → Acting as the operator](../../reference/client-identity-protocol.md#acting-as-the-operator-client-only-human).
+[Client identity protocol → Answering the operator Actor](../../reference/client-identity-protocol.md#answering-the-operator-actor).
 
 ## Resumable WebSocket stream
 

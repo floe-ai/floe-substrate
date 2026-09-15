@@ -271,16 +271,45 @@ and where they may act. `DELETE` revokes: it marks the
 identity revoked **and** revokes its live `workspace_operation` session, so the
 bearer stops working immediately and the key can no longer authenticate.
 
-## Acting as the operator (client-only human)
+## Answering the operator Actor
+
+The operator is an ordinary Actor. Workspace registration provisions it through
+the same path any Actor is created by, so it appears in the ordinary endpoint
+listing and `request` can address it like any other Actor. It carries **no role
+marker** — a client discovers it by listing Actors, not by matching a special
+field. What distinguishes it is only its runtime adapter (`client`): no Bridge
+provides that adapter, so a model Bridge never executes its turns; whatever
+client is attached executes them instead.
 
 An admitted client resolves to the operator principal today (ADR-0015: named at
 the identity layer, indistinguishable at the authority layer). To answer a
-question an actor addressed to the operator:
+request another Actor addressed to the operator Actor:
 
-1. Find the operator Endpoint:
-   `GET /v1/workspaces/:workspace_id/endpoints` and select the one with
-   `metadata.role === "operator"` (bridgeless, `bridge_id: null`).
+1. Identify the operator Endpoint. It follows the substrate id convention
+   `actor:<workspace_id>:operator`, where `<workspace_id>` is the workspace the
+   bearer is scoped to (from the authenticate response). List Actors to confirm
+   it — `GET /v1/workspaces/:workspace_id/endpoints` returns it as an ordinary
+   entry (its `agent_id` is `operator`); there is no `role` field to match on.
 2. Find what is waiting on it:
+   `GET /v1/pending-responses?workspace_id=…&destination_endpoint_id=<operator endpoint id>`.
+   This returns the pending requests whose source event was addressed to the
+   operator Endpoint. Each row carries `destination_endpoint_id` (the operator),
+   `waiting_endpoint_id` (the actor that asked and is awaiting the reply) and the
+   `correlation_id` to reply against. (`waiting_endpoint_id` is also accepted as a
+   filter, but it selects rows where that endpoint is the one *waiting*, which is
+   the opposite of answering as the operator.) The question the actor asked is
+   the source Event's `content.text`; read the source Event
+   (`GET /v1/events?workspace_id=…&context_id=…`, or the row's referenced event)
+   to show the human what they are answering.
+3. Emit a correlated reply as the operator Endpoint via `POST /v1/events/emit`,
+   matching the pending `correlation_id` and addressing the reply to the
+   `waiting_endpoint_id` (the actor). A `workspace_operation` bearer is permitted
+   to emit as the operator Endpoint; Endpoint ownership is enforced only for
+   `bridge_service` callers.
+
+There is no deadline on any of this. A request addressed to the operator Actor
+stays pending until a client answers it — an unanswered request is not an error
+and there is no timeout to observe or reset.
    `GET /v1/pending-responses?workspace_id=…&destination_endpoint_id=<operator endpoint id>`.
    This returns the pending requests whose source event was addressed to the
    operator Endpoint. Each row carries `destination_endpoint_id` (the operator),
