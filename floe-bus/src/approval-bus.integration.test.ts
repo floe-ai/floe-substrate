@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import YAML from "yaml";
 
+import { CURRENT_BUS_SCHEMA_VERSION } from "./database-upgrade.js";
 import {
   DECIDE_APPROVAL_OPERATION_ID,
   CONFIGURE_APPROVAL_RESPONSE_OPERATION_ID,
@@ -419,9 +420,9 @@ describe("Approval canonical Bus integration", () => {
     const original = await responseRequest(); const config = store.config;
     store.db.exec("ALTER TABLE approval_requests DROP COLUMN response_participant_id; PRAGMA user_version = 13; DELETE FROM schema_migrations WHERE schema_version = 14;");
     store.close(); store = new BusStore(join(temp,"config.yaml"),config);
-    expect(store.db.prepare("PRAGMA user_version").get()).toMatchObject({user_version:14});
+    expect(store.db.prepare("PRAGMA user_version").get()).toMatchObject({user_version:CURRENT_BUS_SCHEMA_VERSION});
     expect(store.approvalStore.requireRequest(original.approval_request_id)).toEqual(original);
-    const migration = store.db.prepare("SELECT previous_version,backup_path FROM schema_migrations WHERE schema_version=14").get() as {previous_version:number;backup_path:string};
+    const migration = store.db.prepare("SELECT previous_version,backup_path FROM schema_migrations WHERE schema_version=?").get(CURRENT_BUS_SCHEMA_VERSION) as {previous_version:number;backup_path:string};
     expect(migration.previous_version).toBe(13);
     const backup = new DatabaseSync(migration.backup_path,{readOnly:true});
     try {
