@@ -61,6 +61,7 @@ const EXPECTED_AUTHORITY: Record<string, TransportRequirement["kind"]> = {
   ["GET /v1/contexts/:id/subscriptions"]: "bridge_or_workspace",
   ["GET /v1/contexts/:id/tree"]: "bridge_or_workspace",
   ["GET /v1/events"]: "bridge_or_workspace",
+  ["GET /v1/events/:event_id"]: "bridge_or_workspace",
   ["GET /v1/events/:event_id/trace"]: "bridge_or_workspace",
   ["GET /v1/pending-responses"]: "bridge_or_workspace",
   ["GET /v1/pulses"]: "bridge_or_workspace",

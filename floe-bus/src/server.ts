@@ -3914,6 +3914,19 @@ export async function createBusServer(
     return trace;
   });
 
+  // Read one Event by its id. A read by id returns exactly that Event or 404 —
+  // it never silently substitutes a different record. Authority resolves the
+  // workspace from the Event itself, so a caller only ever reads an Event in a
+  // workspace it is admitted to.
+  app.get("/v1/events/:event_id", async (request, reply) => {
+    const params = z.object({ event_id: z.string().min(1) }).parse(request.params);
+    const event = store.getEvent(params.event_id);
+    if (!event) {
+      return reply.code(404).send({ error: "event_not_found", event_id: params.event_id });
+    }
+    return { event };
+  });
+
   app.post("/v1/endpoints/:endpoint_id/turn-end", async (request, reply) => {
     const bridgeAuthority = requireBridgeService(request, reply);
     if (!bridgeAuthority) return reply;
@@ -4341,6 +4354,7 @@ export function resolveTransportRequirement(request: any, store: BusStore): Tran
     route.startsWith("/v1/contexts")
     || route === "/v1/events"
     || route === "/v1/events/emit"
+    || route === "/v1/events/:event_id"
     || route === "/v1/events/:event_id/trace"
     || route.startsWith("/v1/pulses")
     || route === "/v1/pending-responses"
