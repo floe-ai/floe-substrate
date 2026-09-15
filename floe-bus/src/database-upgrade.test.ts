@@ -92,17 +92,70 @@ describe("database upgrade boundary", () => {
     db.close();
   });
 
-  it("does not rerun a completed schema version", () => {
+  it("re-runs the idempotent schema ensure at a completed version without a backup or version change", () => {
     const { db, path } = fixture();
     db.exec("PRAGMA user_version = 2");
+    let ran = 0;
     const result = runDatabaseUpgrade({
       db,
       database_path: path,
       target_version: 2,
-      migrate: () => { throw new Error("must not run"); },
+      // migrate() is an idempotent ensure step; it must run every boot, even at
+      // the current version, so forgotten additive schema cannot strand.
+      migrate: () => { ran += 1; db.exec("CREATE TABLE IF NOT EXISTS ensured (id TEXT PRIMARY KEY);"); },
     });
+    expect(ran).toBe(1);
     expect(result).toEqual({ previous_version: 2, current_version: 2, changed: false, backup_path: null });
+    expect(db.prepare("SELECT name FROM sqlite_schema WHERE name = 'ensured'").get()).toBeTruthy();
     db.close();
+  });
+
+  it("repairs and loudly reports schema stranded at the current version without a bump", () => {
+    const { db, path } = fixture();
+    // Simulate the defect: a database stamped at the current version but missing
+    // a table that migrate() should have created (a forgotten version bump).
+    db.exec(`CREATE TABLE existing (id TEXT PRIMARY KEY); PRAGMA user_version = ${CURRENT_BUS_SCHEMA_VERSION};`);
+    const warnings: string[] = [];
+    const result = runDatabaseUpgrade({
+      db,
+      database_path: path,
+      migrate: () => db.exec("CREATE TABLE IF NOT EXISTS stranded_table (id TEXT PRIMARY KEY);"),
+      warn: (message) => warnings.push(message),
+    });
+    expect(result.changed).toBe(false);
+    expect(db.prepare("SELECT name FROM sqlite_schema WHERE name = 'stranded_table'").get()).toBeTruthy();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("stranded_table");
+    db.close();
+  });
+
+  it("makes a fresh database and a same-version incomplete database converge to identical schema", () => {
+    // The class-killing invariant: whatever migrate() produces on a fresh
+    // database must also be produced on an existing database already stamped at
+    // the current version. This is what stops a fresh-only test from passing
+    // while every existing install lacks new tables.
+    const ensure = (target: DatabaseSync) => {
+      target.exec("CREATE TABLE IF NOT EXISTS alpha (id TEXT PRIMARY KEY);");
+      target.exec("CREATE TABLE IF NOT EXISTS beta (id TEXT PRIMARY KEY);");
+    };
+
+    const fresh = fixture();
+    runDatabaseUpgrade({ db: fresh.db, database_path: fresh.path, migrate: () => ensure(fresh.db) });
+    const freshTables = (fresh.db.prepare(
+      "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name <> 'schema_migrations' ORDER BY name",
+    ).all() as Array<{ name: string }>).map((row) => row.name);
+    fresh.db.close();
+
+    const existing = fixture();
+    // An old install that only ever received "alpha" and was stamped current.
+    existing.db.exec(`CREATE TABLE alpha (id TEXT PRIMARY KEY); PRAGMA user_version = ${CURRENT_BUS_SCHEMA_VERSION};`);
+    runDatabaseUpgrade({ db: existing.db, database_path: existing.path, migrate: () => ensure(existing.db), warn: () => undefined });
+    const existingTables = (existing.db.prepare(
+      "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name <> 'schema_migrations' ORDER BY name",
+    ).all() as Array<{ name: string }>).map((row) => row.name);
+    existing.db.close();
+
+    expect(existingTables).toEqual(freshTables);
   });
 
   it("upgrades retained Context rows from schema 7 to the canonical lifecycle schema", () => {
