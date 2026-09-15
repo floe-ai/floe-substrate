@@ -60,7 +60,9 @@ checks are exactly NIP-42.
     and derived `npub` **once**, storing nothing. Intended for the operator to
     hand a seed to a client out of band. Optional; a client may generate its own.
   - `floe identity add --name "<display name>" --pubkey <npub|hex>` — admit a
-    public key (the actual trust-anchor action; requires `host_control`).
+    public key (the actual trust-anchor action; requires `host_control`). Run
+    from inside the workspace directory and it resolves the workspace
+    automatically; pass `--workspace <workspace_id>` to override.
   - `floe identity list` / `floe identity revoke <npub|hex>` — inspect and revoke.
 - **A client is expected to implement** its own key generation (or reuse any
   Nostr signer), its own secret storage, event signing, and the two HTTP calls
@@ -137,8 +139,9 @@ with a different `workspace_id`.
 }
 ```
 
-Normally run as `floe identity add --workspace <workspace_id>`; the raw route is
-documented for completeness.
+Normally run as `floe identity add` from inside the workspace directory (the CLI
+resolves `workspace_id` from the current directory, or lists the registered
+workspaces if it cannot); the raw route is documented for completeness.
 
 ### 2. Request a challenge (client, unauthenticated)
 
