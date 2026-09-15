@@ -245,6 +245,7 @@ import {
 import { BusWorkspaceOperationBackend } from "./workspace-operation-backend.js";
 import { registerWorkspaceOperations } from "./workspace-operations.js";
 import { ensureOperatorActor } from "./local-operator-actor.js";
+import { type EventIngressCapability, requireEventIngress } from "./event-ingress.js";
 import {
   WorkspacePortabilityError,
   WorkspacePortabilityService,
@@ -5072,7 +5073,8 @@ export class BusStore {
     return workspace;
   }
 
-  submitEvent(command: EventCommand, broadcast: Broadcast): { event: EventEnvelope; deliveries_created: number } {
+  submitEvent(command: EventCommand, broadcast: Broadcast, capability?: EventIngressCapability): { event: EventEnvelope; deliveries_created: number } {
+    requireEventIngress(capability);
     const response = this.normalizeResponse(command.response);
     const event = this.transaction(() => {
       if (command.idempotency_key) {

@@ -15,6 +15,7 @@ import type { WorkspaceConfigurationPolicyProvider } from "./workspace-config-im
 import { parseListen } from "./config.js";
 import { BROADCAST_TARGETS, BusStore, ContextAnchorError, ContextNotFoundError, ContextParticipantError, ContextScopeAssignmentError, EndpointRetirementBlockedError, PulseNotFoundError, ScopeRequiredError, ScopeRetiredError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
 import { PulseScheduler } from "./pulse-scheduler.js";
+import { EVENT_INGRESS_CAPABILITY } from "./event-ingress.js";
 import {
   isValidRenderer,
   loadScopeProjectionLayout,
@@ -3219,7 +3220,7 @@ export async function createBusServer(
       return sendTransportForbidden(reply);
     }
     try {
-      const result = store.submitEvent(command, broadcast);
+      const result = store.submitEvent(command, broadcast, EVENT_INGRESS_CAPABILITY);
       return reply.code(202).send({
         ok: true,
         event_id: result.event.event_id,
