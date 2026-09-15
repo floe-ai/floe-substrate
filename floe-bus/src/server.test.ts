@@ -758,6 +758,28 @@ describe("Runtime config truth and auth registry routes", () => {
     const observer = new WsCtor(wsUrl);
     const lifecycleMessages: any[] = [];
     observer.on("message", (data: any) => lifecycleMessages.push(JSON.parse(data.toString())));
+    // Broadcasts arrive asynchronously over a real socket, so wait for the
+    // specific lifecycle Event rather than sleeping a fixed interval and hoping
+    // it landed — a fixed sleep loses that race under parallel CPU load. The
+    // ceiling only guards a genuine hang; on a healthy bus the Event resolves
+    // the wait the instant it is delivered.
+    const awaitLifecycle = (predicate: (msg: any) => boolean): Promise<void> => {
+      if (lifecycleMessages.some(predicate)) return Promise.resolve();
+      return new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          observer.off("message", onMsg);
+          reject(new Error("lifecycle Event never arrived"));
+        }, 10_000);
+        function onMsg(data: any): void {
+          if (predicate(JSON.parse(data.toString()))) {
+            clearTimeout(timer);
+            observer.off("message", onMsg);
+            resolve();
+          }
+        }
+        observer.on("message", onMsg);
+      });
+    };
     await new Promise<void>((resolve, reject) => {
       observer.on("open", () => observer.send(JSON.stringify({
         type: "authenticate",
@@ -781,8 +803,9 @@ describe("Runtime config truth and auth registry routes", () => {
       });
       ws.on("error", (err: any) => reject(err));
     });
-    // Give the server a tick to publish the authenticated Bridge connection.
-    await new Promise(resolve => setTimeout(resolve, 50));
+    // Wait until the server has published the authenticated Bridge connection.
+    await awaitLifecycle((msg) =>
+      msg.type === "bridge_connected" && msg.payload?.bridge_id === "bridge:runtime");
 
     const res = await handle.app.inject({ method: "GET", url: "/v1/runtime/status" });
     expect(res.statusCode).toBe(200);
@@ -799,8 +822,10 @@ describe("Runtime config truth and auth registry routes", () => {
     ]));
 
     ws.close();
-    // Give the server a tick to process the socket close (marks bridge offline).
-    await new Promise(resolve => setTimeout(resolve, 50));
+    // Wait until the server has processed the socket close and marked the
+    // Bridge offline (it publishes bridge_disconnected).
+    await awaitLifecycle((msg) =>
+      msg.type === "bridge_disconnected" && msg.payload?.bridge_id === "bridge:runtime");
 
     const res2 = await handle.app.inject({ method: "GET", url: "/v1/runtime/status" });
     expect(res2.json()).toMatchObject({ bridge: { online: false } });
