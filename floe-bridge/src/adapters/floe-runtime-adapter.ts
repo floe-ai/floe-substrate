@@ -1,18 +1,17 @@
 /**
  * @invariant This adapter drives Floe runtime turns through floe-runtime's
- * CopilotRuntime. The default runtime uses the official Copilot SDK; ACP is an
- * explicitly named rollback transport only. floe-runtime holds NO credentials:
+ * CopilotRuntime. The runtime uses the official Copilot SDK. floe-runtime holds NO credentials:
  * the vendor CLI authenticates itself
  * through its own supported flow. This adapter therefore never resolves or
  * brokers a model credential — that is the whole point of replacing pi here.
  *
  * A delivery is rendered to a prompt, run as one SDK turn, and its final
  * message is recorded with telemetry and a work-log entry. Bridge-owned
- * substrate tools are direct SDK tools; HTTP MCP remains rollback-only for ACP.
+ * substrate tools are direct SDK tools.
  */
 import { randomUUID } from "node:crypto";
 import { CopilotRuntime } from "floe-runtime/adapters/copilot";
-import type { ActivityEvent, HostTool, RunResult, McpServer } from "floe-runtime/adapters/copilot";
+import type { ActivityEvent, HostTool, RunResult } from "floe-runtime/adapters/copilot";
 import type { AgentRuntimeConfig } from "../auth.js";
 import type { DeliveryBundle, RuntimeOperationAuthoritySession } from "../bus-client.js";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
@@ -20,9 +19,8 @@ import type { HookPayload } from "../hooks.js";
 import type { WorkLogEntry, WorkLogToolEntry } from "../runtime-core/index.js";
 import { buildSystemPrompt, deliveryToPrompt, appendWorkLog, renderHookInjections } from "../runtime-core/index.js";
 import type { EmittedEventSummary, SubstrateTurnAnchor } from "../runtime-core/index.js";
-import { SubstrateToolBridge } from "./floe-mcp-server.js";
-import type { SubstrateSessionHandle } from "./floe-mcp-server.js";
 import { createDirectSubstrateTools } from "./floe-direct-tools.js";
+import type { SubstrateSessionHandle } from "../runtime-core/substrate-tool-definitions.js";
 import { TurnFailedError } from "./turn-failed-error.js";
 
 type FloeTurn = {
@@ -56,13 +54,11 @@ type FloeTurn = {
 
 type FloeSession = {
   runtime: CopilotRuntime;
-  /** ACP sessionId once run() has started a turn; null until the first turn. */
+  /** SDK sessionId once run() has started a turn; null until the first turn. */
   sessionId: string | null;
   endpointId: string;
   contextId: string;
   workspaceId: string;
-  /** ACP rollback-only HTTP MCP capability token. */
-  mcpSessionToken: string | null;
   directTools: HostTool[];
   model?: string;
   context?: RuntimeContext;
@@ -74,12 +70,8 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
   // floe-runtime holds no credentials; the vendor CLI authenticates itself.
   private readonly sessions = new Map<string, FloeSession>();
   private readonly runtimeFactory: () => CopilotRuntime;
-  /** null when substrate write-back tools are disabled (e.g. in unit tests). */
-  private readonly substrateBridge: SubstrateToolBridge | null;
-
-  constructor(options?: { runtimeFactory?: () => CopilotRuntime; substrateTools?: boolean }) {
+  constructor(options?: { runtimeFactory?: () => CopilotRuntime }) {
     this.runtimeFactory = options?.runtimeFactory ?? (() => new CopilotRuntime());
-    this.substrateBridge = options?.substrateTools === false ? null : new SubstrateToolBridge();
   }
 
   private beginCancellation(session: FloeSession, turn: FloeTurn): void {
@@ -156,21 +148,15 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
 
     // The SDK owns system-message composition. Floe appends its instructions on
     // creation so vendor guardrails remain active and user prompt ordering is
-    // unchanged. ACP rollback retains its legacy first-turn text fallback.
+    // unchanged.
     const parts: string[] = [];
-    const directTools = session.runtime.capabilities().directTools;
-    if (freshSession && !directTools) {
-      const systemPrompt = buildSystemPrompt(runtimeConfig?.instructions?.trim() ?? "");
-      if (systemPrompt) parts.push(systemPrompt);
-    }
     if (injectedContext) parts.push(injectedContext);
     parts.push(deliveryToPrompt(bundle));
     const prompt = parts.join("\n\n");
 
     await this.throwIfCancelled(session, turn);
     const cwd = context.workspace_locator ?? process.cwd();
-    const mcpServers = directTools ? [] : await this.buildMcpServers(session);
-    const systemMessage = freshSession && directTools
+    const systemMessage = freshSession
       ? buildSystemPrompt(runtimeConfig?.instructions?.trim() ?? "")
       : "";
     console.log("[bridge] floe-runtime prompt injected", {
@@ -180,7 +166,6 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       fresh_session: freshSession,
       model: model ?? "(default)",
       prompt_length: prompt.length,
-      mcp_servers: mcpServers.length,
     });
 
     try {
@@ -199,8 +184,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
         },
         {
           ...(model ? { model } : {}),
-          ...(mcpServers.length ? { mcpServers } : {}),
-          ...(directTools && session.directTools.length ? {
+          ...(session.directTools.length ? {
             tools: session.directTools,
             availableTools: session.directTools.map(tool => tool.name),
           } : {}),
@@ -305,24 +289,16 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
     for (const session of sessions) {
-      if (this.substrateBridge && session.mcpSessionToken) this.substrateBridge.unregister(session.mcpSessionToken);
       try {
         await session.runtime.close();
       } catch (err) {
         console.error("[bridge] floe-runtime close failed", { endpoint_id: session.endpointId, error: String(err) });
       }
     }
-    if (this.substrateBridge) {
-      try {
-        await this.substrateBridge.stop();
-      } catch (err) {
-        console.error("[bridge] floe-runtime substrate bridge stop failed", { error: String(err) });
-      }
-    }
   }
 
   private getOrCreateSession(context: RuntimeContext, bundle: DeliveryBundle): FloeSession {
-    // One ACP session per (endpoint, context); a session for context A is never
+    // One SDK session per (endpoint, context); a session for context A is never
     // reused for context B. Session continuity across deliveries is handed to
     // floe-runtime via continuation.sessionId on run().
     const contextId = bundle.context_id ?? bundle.events[0]?.context_id ?? "no-context";
@@ -340,7 +316,6 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       endpointId: bundle.endpoint_id,
       contextId,
       workspaceId: bundle.workspace_id,
-      mcpSessionToken: null,
       directTools: [],
       context,
     };
@@ -367,14 +342,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
         markDependencyRequested: () => { if (session.activeTurn) session.activeTurn.dependency_requested = true; },
         recordEmitted: (summary) => { session.activeTurn?.emitted_events.push(summary); },
     };
-    if (runtime.capabilities().directTools) {
-      session.directTools = createDirectSubstrateTools(toolHandle);
-    } else if (this.substrateBridge) {
-      // ACP rollback only: its protocol cannot receive direct host tools.
-      const mcpSessionToken = randomUUID();
-      session.mcpSessionToken = mcpSessionToken;
-      this.substrateBridge.register(mcpSessionToken, toolHandle);
-    }
+    session.directTools = createDirectSubstrateTools(toolHandle);
     // Normalized activity events feed the work log's tool activity. floe-runtime
     // pushes these (no polling); a started/completed pair shares one toolCallId.
     runtime.on("activity", (event: ActivityEvent) => {
@@ -451,32 +419,6 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       target_node_id: turn.target_node_id,
       invocation_request_event_id: turn.invocation_request_event_id,
     };
-  }
-
-  /**
-   * The ACP `mcpServers` list handed to run(). One HTTP entry points the vendor
-   * CLI at the Bridge's in-process substrate MCP server (SubstrateToolBridge).
-   * copilot --acp advertises `mcpCapabilities.http` and ignores stdio entries
-   * despite the ACP spec's stdio MUST (verified live), so HTTP is the transport
-   * that actually works. The headers carry only this session's capability token
-   * — never a Floe/bus credential.
-   */
-  private async buildMcpServers(session: FloeSession): Promise<McpServer[]> {
-    if (!this.substrateBridge || !session.mcpSessionToken) return [];
-    await this.substrateBridge.ensureStarted();
-    // copilot --acp only connects to MCP servers over HTTP (it ignores stdio
-    // entries despite the ACP spec's stdio MUST — verified live). The Bridge
-    // serves the substrate tools in-process; copilot authenticates each request
-    // with the per-session token header. No subprocess, no credential leaves
-    // the Bridge.
-    return [{
-      type: "http",
-      name: "floe",
-      url: this.substrateBridge.mcpUrl,
-      headers: [
-        { name: this.substrateBridge.sessionTokenHeader, value: session.mcpSessionToken },
-      ],
-    }];
   }
 
   private async finalizeTurn(context: RuntimeContext, turn: FloeTurn, result: RunResult): Promise<void> {

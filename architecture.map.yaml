@@ -105,7 +105,7 @@ system:
                 - floe-bridge/src/*test*
         - id: runtime-adapters
           name: Runtime Adapters
-          intent: "Owns the runtime boundary that spawns vendor CLIs (e.g. copilot --acp); the vendor CLI owns model authentication"
+          intent: "Owns the runtime boundary that runs vendor SDKs; model authentication remains vendor-owned"
           paths:
             - floe-bridge/src/adapters/**
           writeAuthority:

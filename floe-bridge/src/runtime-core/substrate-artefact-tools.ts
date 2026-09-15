@@ -4,7 +4,7 @@
  * Reads one exact immutable ArtefactVersion into the actor's model context:
  * images enter directly for visual inspection, text returns a bounded, resumable
  * page keyed by UTF-16 offset. This is a pure (bus, turn, params) → result body
- * carrying no MCP types.
+ * carrying no transport types.
  *
  * Unlike pulses, artefact content IS operation-authority gated: the Bus content
  * route requires the ephemeral per-Delivery bearer, so this uses
