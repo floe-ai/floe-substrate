@@ -64,7 +64,9 @@ import {
   REBIND_WORKSPACE_OPERATION_ID,
   REGISTER_WORKSPACE_OPERATION_ID,
   RESTORE_WORKSPACE_OPERATION_ID,
+  WorkspaceDirectoryNotFoundError,
 } from "./workspace-operations.js";
+import { WorkspaceLocatorInvalidError } from "./workspace-identities.js";
 import type {
   OperationAuthorityBoundary,
   OperationInvocationProvenance,
@@ -3119,6 +3121,93 @@ export async function createBusServer(
     };
   });
 
+  // Register-and-join: the one unprivileged path from a fresh key into a
+  // Workspace (first run). The signed NIP-42 proof is the authorisation, because
+  // no bearer exists yet — registering a folder is the act of joining it, so the
+  // registrant is admitted to the Workspace it establishes and there is nothing
+  // to approve. No credential is minted here: after a 201 the caller runs the
+  // existing challenge/authenticate path, which — the key now being admitted to
+  // exactly one Workspace — returns a single-membership bearer with no selection
+  // step. That keeps authenticate the only minting route. Admission is committed
+  // synchronously before the 201 so an immediate follow-up authenticate cannot
+  // race the roster.
+  app.post("/v1/identity/register-workspace", async (request, reply) => {
+    const body = z.object({
+      auth_event: z.record(z.unknown()),
+      locator: z.string().min(1),
+      display_name: z.string().min(1).max(200),
+      name: z.string().min(1).optional(),
+      create_directory: z.boolean().optional(),
+    }).strict().safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: "identity_register_request_invalid" });
+
+    // 1. Prove key possession over a live, single-use challenge, exactly as
+    //    authenticate does. A bad, replayed, or forged proof is 401 — never 400.
+    const challenge = challengeTagOf(body.data.auth_event);
+    const consumed = challenge ? store.clientIdentityStore.consumeChallenge(challenge) : null;
+    if (!consumed) return sendIdentityAuthFailed(reply);
+    const verification = verifyAuthEvent(body.data.auth_event, {
+      relay: consumed.relay,
+      challenge,
+      now_ms: Date.now(),
+    });
+    if (!verification.ok) return sendIdentityAuthFailed(reply);
+
+    // 2. The substrate's own host owner performs the register and stands behind
+    //    the admission; the caller supplies no host authority of its own.
+    const host = transportAuthenticator.authenticateHostControl(localControlToken);
+    if (!host.verified || host.authority.audience !== "host_control") {
+      return reply.code(503).send({ error: "identity_admission_unavailable" });
+    }
+
+    // 3. Register or import the folder. A locator problem is a client error
+    //    (400) and must stay distinct from an authentication failure (401).
+    //    Reusing an already-bound locator returns its existing identity, which
+    //    is what makes re-running first run idempotent.
+    let workspace;
+    try {
+      workspace = store.workspaceOperationBackend.register({
+        locator: body.data.locator,
+        name: body.data.name,
+        init_authorized: true,
+        create_directory: body.data.create_directory,
+      });
+    } catch (error) {
+      if (error instanceof WorkspaceLocatorInvalidError) {
+        return reply.code(400).send({ error: "workspace_locator_invalid", message: error.message });
+      }
+      if (error instanceof WorkspaceDirectoryNotFoundError) {
+        return reply.code(400).send({ error: "workspace_directory_not_found", message: error.message });
+      }
+      throw error;
+    }
+
+    // 4. Registering is joining: admit the caller's key to the Workspace it just
+    //    established, under the required display name. Both writes are durable
+    //    and synchronous, so admission is committed before the 201 returns and
+    //    an immediate authenticate cannot race the roster. admitIdentity is
+    //    idempotent per key and addWorkspaceMembership per (identity, workspace),
+    //    so an already-admitted key re-registering an already-bound folder
+    //    succeeds and returns the same workspace_id.
+    const identity = store.clientIdentityStore.admitIdentity({
+      pubkey_hex: verification.pubkey_hex,
+      display_name: body.data.display_name,
+      principal_id: store.localOperatorPrincipalId,
+      admitted_by: host.authority.credential_id,
+    });
+    store.clientIdentityStore.addWorkspaceMembership({
+      identity_id: identity.identity_id,
+      workspace_id: workspace.workspace_id,
+      admitted_by: host.authority.credential_id,
+    });
+
+    reply.header("cache-control", "no-store");
+    return reply.code(201).send({
+      workspace_id: workspace.workspace_id,
+      identity: publicIdentity(identity),
+    });
+  });
+
   // Legibility and revocation are host_control. The operator sees exactly who
   // holds a bearer and can revoke a named identity's live sessions immediately.
   app.get("/v1/clients", async (request, reply) => {
@@ -4251,7 +4340,13 @@ export function resolveTransportRequirement(request: any, store: BusStore): Tran
   if (route === "/v1/events/stream") return { kind: "websocket" };
   // Client identity challenge/authenticate are public: possession of an admitted
   // key is proven by the signature inside the handler, not by a bearer (ADR-0015).
-  if (route === "/v1/identity/challenge" || route === "/v1/identity/authenticate") {
+  // register-workspace is the same class: its NIP-42 proof is the authorisation,
+  // since a first-run key has no bearer to present.
+  if (
+    route === "/v1/identity/challenge"
+    || route === "/v1/identity/authenticate"
+    || route === "/v1/identity/register-workspace"
+  ) {
     return { kind: "public" };
   }
   // This transfer route authenticates its one-time, purpose-bound ingress
