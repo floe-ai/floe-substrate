@@ -15,9 +15,9 @@ unauthenticated shortcut around authority or validation.
   and logout use the packaged native authority broker and logout presents the
   same Bus-authored confirmation as the app
 - `floe config path` and `floe config edit`
-- `floe autostart on|off`
-- `floe doctor`, `floe reset`, `floe uninstall`, `floe open`, and
-  `floe desktop`
+- `floe up`, `floe service install|uninstall|status`, and
+  `floe surface list|register|remove`
+- `floe doctor`, `floe reset`, and `floe uninstall`
 
 Full detail: [[CLI reference]].
 

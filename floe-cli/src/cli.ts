@@ -1,10 +1,10 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { spawn } from "node:child_process";
 import { Command } from "commander";
-import { ensureConfig, resolveLocalPath, saveConfig, type LocalConfig } from "./config.js";
+import { ensureConfig, resolveLocalPath, type LocalConfig } from "./config.js";
 import { buildResetPlan, executeReset } from "./reset.js";
 import {
   clearRecords,
@@ -17,7 +17,7 @@ import {
 import { registerOperationsCommand } from "./operations-command.js";
 import { registerIdentityCommand } from "./identity-command.js";
 import { registerLocalWorkspaceViaBroker } from "./operation-client.js";
-import { startAll, waitForHealth, isHealthy } from "./startup.js";
+import { startAll, waitForHealth, isHealthy, ensureSubstrateForClient } from "./startup.js";
 import {
   listSurfaces,
   registerSurface,
@@ -26,6 +26,12 @@ import {
   type SurfaceEntry,
   type BrokenSurface,
 } from "./surfaces.js";
+import {
+  serviceStatus,
+  installService,
+  uninstallService,
+  type CliInvocation,
+} from "./service.js";
 
 const program = new Command();
 
@@ -36,16 +42,13 @@ program
 
 program
   .command("setup")
-  .description("Create config, optionally enable autostart, start services, and verify health")
-  .option("--yes", "accept setup defaults")
-  .option("--no-autostart", "do not enable user-level autostart")
+  .description("Create config, start services, verify health, and offer to install auto-start")
+  .option("--yes", "accept setup defaults (install auto-start without prompting)")
+  .option("--no-autostart", "do not offer to install auto-start")
   .option("--repair", "reconcile local service records")
   .action(async (options) => {
-    const { configPath, config, created } = ensureConfig(program.opts().config);
+    const { configPath, config } = ensureConfig(program.opts().config);
     if (options.repair) clearRecords(configPath, config);
-    if (created || options.yes || options.autostart === false) {
-      await applyAutostartChoice(configPath, config, options);
-    }
     await startAll(configPath, config);
     await verifyHealth(config);
     const currentWorkspace = findAncestorWithFloe(process.cwd());
@@ -53,6 +56,9 @@ program
       await registerCurrentWorkspace(config, currentWorkspace, true);
     }
     console.log(`Floe services are running: ${config.bus.http_base_url}`);
+    if (options.autostart !== false) {
+      await offerServiceInstall(configPath, { assumeYes: options.yes === true });
+    }
     printSurfacesSummary(configPath, config);
   });
 
@@ -118,26 +124,32 @@ configCommand.command("edit").description("Open config in EDITOR or print path")
   spawn(editor, [configPath], { stdio: "inherit", shell: true });
 });
 
-const autostart = program.command("autostart").description("Manage user-level autostart");
-autostart.command("on").description("Enable user-level autostart").action(() => {
-  const { configPath, config } = ensureConfig(program.opts().config);
-  config.services.autostart = true;
-  saveConfig(configPath, config);
-  installAutostart(configPath);
-  console.log("Autostart enabled.");
+// Auto-start the machine can own: install Floe as a real OS auto-start so a
+// person does not have to type anything. Honest about platform reach — see
+// service.ts. This is distinct from the services.autostart policy (which only
+// governs whether a client may start the substrate on demand).
+const service = program.command("service").description("Install/remove Floe auto-start on this machine");
+service.command("install").description("Install Floe to start automatically on this machine").action(() => {
+  const { configPath } = ensureConfig(program.opts().config);
+  const result = installService(configPath, cliInvocation());
+  console.log(result.message);
+  if (!result.ok) process.exitCode = 1;
 });
-autostart.command("off").description("Disable user-level autostart").action(() => {
-  const { configPath, config } = ensureConfig(program.opts().config);
-  config.services.autostart = false;
-  saveConfig(configPath, config);
-  uninstallAutostart();
-  console.log("Autostart disabled.");
+service.command("uninstall").description("Remove Floe auto-start from this machine").action(() => {
+  const result = uninstallService();
+  console.log(result.message);
+  if (!result.ok) process.exitCode = 1;
+});
+service.command("status").description("Show whether Floe is installed to auto-start").action(() => {
+  const status = serviceStatus();
+  console.log(status.detail);
 });
 
-program.command("uninstall").description("Remove autostart entries and stop services; preserve ~/.floe data").action(async () => {
+program.command("uninstall").description("Remove auto-start and stop services; preserve ~/.floe data").action(async () => {
   const { configPath, config } = ensureConfig(program.opts().config);
   for (const service of ["bridge", "bus"] as ServiceName[]) stopService(configPath, config, service);
-  uninstallAutostart();
+  const removal = uninstallService();
+  console.log(removal.message);
   console.log("Removed Floe service entries. Local data is preserved.");
 });
 
@@ -241,38 +253,60 @@ surfaceCommand
       : `No surface named '${name}' is registered.`);
   });
 
-// The handler for `floe` (no surface) and `floe <surface>`. Both bring the
-// substrate up (reusing startAll — the one start sequence) before handing over
-// to a surface. This is a normal command; routeSurfaceLaunch (below) injects it
-// so an unknown first token is treated as a surface name rather than erroring.
+// `floe up` — the connect-first door for anything that needs the substrate but
+// is not a surface (e.g. a surface's own binary that starts Floe then runs).
+// It shares the exact readiness path the launcher uses, so "ensure Floe is up"
+// is written once.
+program
+  .command("up")
+  .description("Ensure the Floe substrate is reachable (starting it if this machine allows), without launching anything")
+  .action(async () => {
+    await runUp();
+  });
+
+// The handler for `floe` (no surface) and `floe <surface>`. Both make the
+// substrate reachable connect-first (reusing a running one, or starting it only
+// if policy allows) before handing over to a surface. This is a normal command;
+// routeSurfaceLaunch (below) injects it so an unknown first token is treated as
+// a surface name rather than erroring.
 program
   .command("launch [surface]")
-  .description("Start the substrate if needed, then launch a surface (the default action)")
+  .description("Ensure the substrate is reachable, then launch a surface (the default action)")
   .action(async (surface?: string) => {
     await runLauncher(surface);
   });
 
 await program.parseAsync(routeSurfaceLaunch(normalizeLegacyCommandArgs(process.argv)));
 
-/** Bring the substrate up (single reused start logic), then register the cwd workspace if there is one. */
-async function ensureSubstrateRunning(configPath: string, config: LocalConfig): Promise<void> {
-  // startAll is the one start sequence: it starts the bus (if absent) with the
-  // broker-owned host-control credential, waits for it to be genuinely healthy,
-  // proves the healthy bus is the one we started, then starts the bridge. It is
-  // a no-op for services already running.
-  await startAll(configPath, config);
-  const currentWorkspace = findAncestorWithFloe(process.cwd());
-  if (currentWorkspace) {
-    await registerCurrentWorkspace(config, currentWorkspace, true);
+async function runUp(): Promise<void> {
+  const { configPath, config } = ensureConfig(program.opts().config);
+  const plan = await ensureSubstrateForClient(configPath, config);
+  if (plan === "blocked") {
+    printServiceNotRunning(config);
+    await offerServiceInstall(configPath, { assumeYes: false });
+    process.exitCode = 1;
+    return;
   }
+  console.log(`Floe is running: ${config.bus.http_base_url}`);
 }
 
 async function runLauncher(surfaceName?: string): Promise<void> {
   const { configPath, config, created } = ensureConfig(program.opts().config);
-  if (created) {
-    await applyAutostartChoice(configPath, config, { yes: false, autostart: undefined });
+
+  // Connect-first: use a running substrate and spawn nothing; start one only if
+  // this machine's policy allows; otherwise say plainly it is not running.
+  const plan = await ensureSubstrateForClient(configPath, config);
+  if (plan === "blocked") {
+    printServiceNotRunning(config);
+    await offerServiceInstall(configPath, { assumeYes: false });
+    process.exitCode = 1;
+    return;
   }
-  await ensureSubstrateRunning(configPath, config);
+  await registerCwdWorkspaceBestEffort(config);
+  if (created) {
+    // First launch: make sure the person knows the machine can start Floe for them.
+    await offerServiceInstall(configPath, { assumeYes: false });
+  }
 
   const { surfaces, broken } = listSurfaces(configPath, config);
   reportBroken(broken);
@@ -306,6 +340,62 @@ async function runLauncher(surfaceName?: string): Promise<void> {
   }
   const chosen = await promptChooseSurface(surfaces);
   if (chosen) await launchAndPropagate(chosen);
+}
+
+/**
+ * Register the current directory's workspace if there is one. Best-effort:
+ * under connect-first we may be talking to a substrate this install does not
+ * own (e.g. a managed service), where host-control registration is not ours to
+ * do. A failure here must not stop a surface from launching.
+ */
+async function registerCwdWorkspaceBestEffort(config: LocalConfig): Promise<void> {
+  const currentWorkspace = findAncestorWithFloe(process.cwd());
+  if (!currentWorkspace) return;
+  try {
+    await registerCurrentWorkspace(config, currentWorkspace, true);
+  } catch (error) {
+    console.warn(`Note: could not register the current workspace: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function printServiceNotRunning(config: LocalConfig): void {
+  console.error(`The Floe substrate is not running at ${config.bus.http_base_url}.`);
+  console.error("This machine is set not to start it on demand (services.autostart is off),");
+  console.error("so Floe is expected to be running as a managed service here.");
+  console.error("Start it now with `floe start`, or have this machine start it for you:");
+}
+
+/**
+ * Offer to install real OS auto-start. Skips silently when it is already
+ * installed or when there is no terminal to answer; on a platform where
+ * auto-start is not built, it says so once rather than pretending.
+ */
+async function offerServiceInstall(configPath: string, opts: { assumeYes: boolean }): Promise<void> {
+  const status = serviceStatus();
+  if (status.installed) return;
+  if (!status.supported) {
+    console.log(status.detail);
+    return;
+  }
+  let yes = opts.assumeYes;
+  if (!yes) {
+    if (!input.isTTY) return;
+    const rl = createInterface({ input, output });
+    const answer = await rl.question("Install Floe to start automatically on this machine? [Y/n] ");
+    rl.close();
+    yes = !answer.trim().toLowerCase().startsWith("n");
+  }
+  if (!yes) return;
+  const result = installService(configPath, cliInvocation());
+  console.log(result.message);
+}
+
+/** How this CLI re-invokes itself unattended: node + the exec args and entry
+ *  script that reproduce however it was launched (dist entry, or tsx from
+ *  source), run from the entry's directory so module resolution works. */
+function cliInvocation(): CliInvocation {
+  const entry = resolve(process.argv[1]);
+  return { command: process.execPath, prefixArgs: [...process.execArgv, entry], workingDirectory: dirname(entry) };
 }
 
 async function launchAndPropagate(entry: SurfaceEntry): Promise<void> {
@@ -364,20 +454,6 @@ function collectArg(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 
-async function applyAutostartChoice(configPath: string, config: LocalConfig, options: any): Promise<void> {
-  let enable = options.autostart !== false;
-  if (!options.yes && options.autostart !== false) {
-    const rl = createInterface({ input, output });
-    const answer = await rl.question("Start Floe automatically when you log in? (recommended) [Y/n] ");
-    rl.close();
-    enable = !answer.trim().toLowerCase().startsWith("n");
-  }
-  config.services.autostart = enable;
-  saveConfig(configPath, config);
-  if (enable) installAutostart(configPath);
-  else uninstallAutostart();
-}
-
 async function verifyHealth(config: LocalConfig): Promise<void> {
   await waitForHealth(config.bus.http_base_url, "floe-bus");
 }
@@ -409,24 +485,6 @@ function findAncestorWithFloe(start: string): string | null {
     if (parent === current) return null;
     current = parent;
   }
-}
-
-function installAutostart(configPath: string): void {
-  if (process.platform !== "win32") {
-    const marker = join(dirname(configPath), "autostart.json");
-    writeFileSync(marker, JSON.stringify({ enabled: true, note: "Autostart installation is implemented for Windows first." }, null, 2), "utf8");
-    return;
-  }
-  const startupDir = join(process.env.APPDATA ?? "", "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
-  mkdirSync(startupDir, { recursive: true });
-  const script = join(startupDir, "floe.cmd");
-  writeFileSync(script, `@echo off\r\ncd /d "${process.cwd()}"\r\nnpm run floe -- --config "${configPath}" start\r\n`, "utf8");
-}
-
-function uninstallAutostart(): void {
-  if (process.platform !== "win32") return;
-  const script = join(process.env.APPDATA ?? "", "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "floe.cmd");
-  if (existsSync(script)) rmSync(script);
 }
 
 function tail(text: string, lines: number): string {

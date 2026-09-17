@@ -90,6 +90,39 @@ export async function waitForHealth(baseUrl: string, label: string): Promise<voi
   throw new Error(`${label} did not become healthy at ${baseUrl}`);
 }
 
+/**
+ * What a client should do about the substrate before using it. A surface (and
+ * the launcher) depends on a reachable bus endpoint, not on a process being
+ * spawned for it, so the first question is always "is it already serving?".
+ *
+ * - "connect": something is already serving on the bus URL; use it, spawn
+ *    nothing. This is the normal case once Floe has been started once.
+ * - "start":  nothing is serving and this machine's policy allows a client to
+ *    start the substrate itself (a personal machine).
+ * - "blocked": nothing is serving and policy forbids self-start. Floe here is a
+ *    managed service; a client must not start a rogue copy and should say so.
+ */
+export type SubstratePlan = "connect" | "start" | "blocked";
+
+export function planSubstrateStart(reachable: boolean, autostart: boolean): SubstratePlan {
+  if (reachable) return "connect";
+  return autostart ? "start" : "blocked";
+}
+
+/**
+ * Connect-first: if the bus is already serving, do nothing and report
+ * "connect". Otherwise consult the machine's autostart policy — start the
+ * substrate ("start") or refuse and report "blocked". This is the single
+ * client-side readiness path shared by the launcher, `floe up`, and
+ * `floe <surface>`.
+ */
+export async function ensureSubstrateForClient(configPath: string, config: LocalConfig): Promise<SubstratePlan> {
+  const reachable = await isHealthy(config.bus.http_base_url);
+  const plan = planSubstrateStart(reachable, config.services.autostart);
+  if (plan === "start") await startAll(configPath, config);
+  return plan;
+}
+
 export async function startAll(configPath: string, config: LocalConfig): Promise<void> {
   const busUrl = config.bus.http_base_url;
   const before = await classifyRunningBus(configPath, config);

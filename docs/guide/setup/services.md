@@ -44,8 +44,8 @@ Starts services if they are not already running, waits for the 5379 frontend to 
 | `floe logs [service]` | Print logs for `bus`, `bridge`, or `app` (all three if omitted) |
 | `floe doctor` | Diagnose local setup |
 | `floe config path` / `floe config edit` | Print or edit the active config path |
-| `floe autostart on` / `floe autostart off` | Manage user-level autostart |
-| `floe uninstall` | Remove autostart entries and stop services; preserves `~/.floe` data |
+| `floe service install` / `floe service uninstall` / `floe service status` | Install/remove/inspect Floe auto-start on this machine |
+| `floe uninstall` | Remove auto-start and stop services; preserves `~/.floe` data |
 | `floe reset` | Wipe runtime/state data back to first-run, preserving config and credentials |
 
 See [[Glossary]] for term definitions.

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
 import { defaultConfig } from "./config.js";
-import { ForeignBusError, startAll } from "./startup.js";
+import { ForeignBusError, startAll, planSubstrateStart } from "./startup.js";
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -70,5 +70,22 @@ describe("startAll refuses a bus it did not start", () => {
     await expect(startAll(configPath, config)).rejects.toBeInstanceOf(ForeignBusError);
     // The record is left untouched; we refused rather than adopting the foreign bus.
     expect(JSON.parse(readFileSync(servicesPath, "utf8")).bus.instance_id).toBe("our-newer-instance");
+  });
+});
+
+describe("planSubstrateStart (connect-first policy)", () => {
+  it("connects and spawns nothing when the bus is already reachable", () => {
+    // Reachable always means connect, regardless of the autostart policy — a
+    // surface depends on the endpoint, not on a process being spawned for it.
+    expect(planSubstrateStart(true, true)).toBe("connect");
+    expect(planSubstrateStart(true, false)).toBe("connect");
+  });
+
+  it("starts the substrate when unreachable and the policy allows it (personal machine)", () => {
+    expect(planSubstrateStart(false, true)).toBe("start");
+  });
+
+  it("blocks self-start when unreachable and the policy forbids it (managed service)", () => {
+    expect(planSubstrateStart(false, false)).toBe("blocked");
   });
 });

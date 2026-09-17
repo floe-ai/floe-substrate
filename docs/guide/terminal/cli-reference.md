@@ -4,22 +4,23 @@
 
 | Command | What it does | Key flags |
 |---|---|---|
-| `floe setup` | Create config, optionally enable autostart, start services, verify health | `--yes`, `--no-autostart`, `--repair` |
+| `floe setup` | Create config, start services, verify health, offer to install auto-start | `--yes`, `--no-autostart`, `--repair` |
 | `floe status` | Show service health and configured URLs | — |
-| `floe open` | Open the web UI | — |
-| `floe start` | Start local services (bus, bridge, frontend) | — |
-| `floe desktop` | Start services if needed, then open the desktop window attached to the running frontend | — |
+| `floe up` | Ensure the substrate is reachable (start it if this machine's policy allows), without launching a surface | — |
+| `floe start` | Start local services (bus, bridge) | — |
 | `floe stop` | Stop local services | — |
 | `floe restart` | Restart local services | — |
-| `floe logs [service]` | Print service logs (`bus`, `bridge`, or `app`; all three if omitted) | — |
+| `floe logs [service]` | Print service logs (`bus`, `bridge`; both if omitted) | — |
 | `floe doctor` | Diagnose local setup | — |
 | `floe config path` | Print active config path | — |
 | `floe config edit` | Open config in `$EDITOR`, or print the path | — |
-| `floe autostart on` | Enable user-level autostart | — |
-| `floe autostart off` | Disable user-level autostart | — |
-| `floe uninstall` | Remove autostart entries and stop services; preserve `~/.floe` data | — |
+| `floe service install` | Install Floe to start automatically on this machine | — |
+| `floe service uninstall` | Remove Floe auto-start from this machine | — |
+| `floe service status` | Show whether Floe is installed to auto-start | — |
+| `floe surface list` / `register` / `remove` | Manage the registry of surfaces (how you use Floe) | — |
+| `floe uninstall` | Remove auto-start and stop services; preserve `~/.floe` data | — |
 | `floe reset` | Factory reset: wipe workspaces, contexts, boards, agents; preserve provider credentials and service config | `--yes` |
-| `floe` (no args) | Start services, verify health, and (if a workspace is found in the current directory) attach it | — |
+| `floe [surface]` | Ensure the substrate is reachable, then launch a surface (bare `floe` launches the only one, prompts if several, guides if none) | — |
 
 ## `floe setup`
 
@@ -70,12 +71,39 @@ floe config path
 floe config edit
 ```
 
-## `floe autostart on` / `floe autostart off`
+## `floe up`
+
+Connect-first. If the substrate is already serving on the configured bus URL,
+it does nothing and reports it is running. If it is not reachable, it starts it
+only when this machine's policy allows (`services.autostart`); otherwise it says
+plainly that Floe is not running and does not start a rogue copy. This is the
+door a surface's own binary uses to make sure Floe is up before it connects.
 
 ```bash
-floe autostart on
-floe autostart off
+floe up
 ```
+
+## `floe service install` / `floe service uninstall` / `floe service status`
+
+Install Floe as a real OS auto-start so the machine starts it, not a person.
+
+```bash
+floe service install     # from now on, the machine starts Floe for you
+floe service status
+floe service uninstall
+```
+
+Platform reach is honest: **Windows** installs a per-user logon Scheduled Task
+that runs the CLI directly and needs no administrator rights. Linux (systemd)
+and macOS (launchd) are designed but not yet implemented — the command says so
+rather than pretending to have installed a service. A machine-wide service that
+runs before any logon is a separate, elevation-requiring concern and is not
+installed here.
+
+`services.autostart` in the config is a different setting: it is the *policy*
+governing whether a client may start the substrate on demand (on for a personal
+machine, off where Floe runs as a managed service). It does not by itself
+install any OS auto-start.
 
 ## `floe doctor`
 

@@ -40,12 +40,12 @@ floe setup
 Run once per machine. It:
 
 - creates `~/.floe/config.yaml` if it doesn't already exist
-- optionally enables user-level autostart
 - starts the [[Services]] (bus, bridge)
 - verifies they're healthy
+- offers to install auto-start so the machine starts Floe for you (Windows; see [[CLI reference]])
 - if the current directory (or an ancestor) already has a `.floe/` folder, registers it as a [[Workspace]] with the bus and seeds the operator Actor
 
-Flags: `--yes` (accept defaults), `--no-autostart`, `--repair` (reconcile local service records if something's stuck).
+Flags: `--yes` (accept defaults, install auto-start without prompting), `--no-autostart` (skip the auto-start offer), `--repair` (reconcile local service records if something's stuck).
 
 ## Starting services without setup
 

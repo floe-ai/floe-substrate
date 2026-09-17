@@ -47,7 +47,7 @@ node bin/floe.mjs status
 node bin/floe.mjs stop
 node bin/floe.mjs restart
 node bin/floe.mjs logs
-node bin/floe.mjs autostart off
+node bin/floe.mjs service status
 ```
 
 ### Admitting a terminal client identity

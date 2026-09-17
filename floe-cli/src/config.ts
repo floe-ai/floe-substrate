@@ -9,6 +9,11 @@ const LocalConfigSchema = z.object({
   version: z.number().int(),
   home: z.string(),
   services: z.object({
+    // autostart is the client start policy: may Floe start the substrate itself
+    // when it is not already reachable? true on a personal machine (typing
+    // `floe` just works); set false where Floe runs as an externally managed
+    // service, so a client reports "not running" instead of starting a rogue
+    // copy. It does not by itself install any OS auto-start (see `floe service`).
     autostart: z.boolean(),
     manager: z.string()
   }),
