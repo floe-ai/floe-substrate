@@ -299,7 +299,48 @@ import {
 
 type Broadcast = (type: string, payload: Record<string, unknown>) => void;
 
-// One projection for Context response controls and list summaries. Only recorded
+/**
+ * The bridge's report of what happened when it tried to materialise a
+ * Workspace's on-disk `.floe`. `registered` is the pre-materialisation state a
+ * fresh binding starts in; the bridge only ever reports the three terminal
+ * outcomes below. See floe-bridge daemon reportOnce.
+ */
+export type MaterializationReport = Readonly<{
+  status: string;
+  error_code: string | null;
+  validation: unknown;
+}>;
+
+/**
+ * Terminal attachment statuses the bridge reports. Anything else (notably
+ * `registered`) means materialisation has not yet been confirmed. `attached`
+ * is success; the other two are honest failures the operator can act on.
+ */
+const TERMINAL_ATTACHMENT_STATUSES = new Set(["attached", "workspace_inaccessible", "config_invalid"]);
+
+/** How a durable/pushed attachment status maps to a materialisation outcome. */
+export type MaterializationOutcome = "ready" | "failed" | "pending";
+
+export type MaterializationResult = Readonly<{
+  outcome: MaterializationOutcome;
+  status: string | null;
+  error_code: string | null;
+  validation: unknown;
+}>;
+
+function classifyAttachmentStatus(
+  status: string | null,
+  error_code: string | null,
+  validation: unknown,
+): MaterializationResult | null {
+  if (status === "attached") return { outcome: "ready", status, error_code, validation };
+  if (status && TERMINAL_ATTACHMENT_STATUSES.has(status)) {
+    return { outcome: "failed", status, error_code, validation };
+  }
+  return null;
+}
+
+
 // request ancestry relates work; membership and Actor identity do not.
 const CONTEXT_DELIVERIES_CTE = `
   WITH RECURSIVE related(context_id, workspace_id, delivery_id) AS (
@@ -773,6 +814,16 @@ export class BusStore {
   readonly endpointWatermarkStore: EndpointWatermarkStore;
   /** Broadcast function injected by the server after initialisation. */
   private broadcastFn: Broadcast | null = null;
+  /**
+   * In-process listeners waiting for the bridge's attachment result for a
+   * specific (workspace, binding). The bridge runs in a separate process and
+   * reports materialisation over its own authenticated route; this lets the
+   * register-and-join handler await that push instead of polling. Keyed by
+   * `${workspace_id}::${binding_id}` so a stale binding's result can never
+   * satisfy a waiter for the current one. Never a durable store — purely the
+   * in-flight rendezvous for a single HTTP call.
+   */
+  private materializationWaiters = new Map<string, Set<(result: MaterializationReport) => void>>();
   /** Single-shot timer scheduled to fire at the next lease expiry time (D5). */
   private leaseExpiryTimer: ReturnType<typeof setTimeout> | null = null;
   /** Bounded once-per-process recovery; Command workers are push-driven after this scan. */
@@ -5100,7 +5151,97 @@ export class BusStore {
       error_code: input.error_code ?? null,
       validation: input.validation ?? null
     });
+    // Wake any in-process caller awaiting this Workspace's materialisation
+    // (register-and-join). Durable state is already committed above, so a
+    // waiter re-reading after this fires sees the same result.
+    this.notifyMaterialization(input.workspace_id, input.binding_id, {
+      status: input.status,
+      error_code: input.error_code ?? null,
+      validation: input.validation ?? null,
+    });
     return workspace;
+  }
+
+  private materializationKey(workspaceId: string, bindingId: string): string {
+    return `${workspaceId}::${bindingId}`;
+  }
+
+  private notifyMaterialization(workspaceId: string, bindingId: string, report: MaterializationReport): void {
+    const key = this.materializationKey(workspaceId, bindingId);
+    const waiters = this.materializationWaiters.get(key);
+    if (!waiters) return;
+    this.materializationWaiters.delete(key);
+    for (const resolve of waiters) resolve(report);
+  }
+
+  /**
+   * Await confirmation that the bridge has materialised a freshly registered
+   * Workspace's on-disk `.floe`, without polling. Registration fires an
+   * in-process broadcast that the out-of-process bridge consumes over its own
+   * event stream; the bridge then writes the template and reports back through
+   * reportAttachment. This bridges that cross-process gap for one HTTP call:
+   *
+   *   1. Read durable state once. An idempotent re-run lands on an
+   *      already-terminal binding (the bridge dedupes and will not re-report an
+   *      unchanged status), so this returns immediately without waiting for a
+   *      push that will never come.
+   *   2. Otherwise register a waiter, then re-read durable state to close the
+   *      gap between step 1 and registration (a report that lands in between
+   *      would otherwise be missed). This is a one-shot rendezvous, not a poll.
+   *   3. On timeout, return `pending`: registration and admission are durably
+   *      committed, but the bridge has not confirmed materialisation — almost
+   *      always because it is not running. The attachment request waits
+   *      unconsumed and completes when the bridge next starts, so this is
+   *      "materialisation pending", not a failed registration.
+   */
+  async awaitWorkspaceMaterialization(
+    workspaceId: string,
+    options: { timeout_ms: number },
+  ): Promise<MaterializationResult> {
+    const binding = this.workspaceIdentityStore.getCurrentBinding(workspaceId, this.localHostId);
+    if (!binding) return { outcome: "pending", status: null, error_code: null, validation: null };
+    const bindingId = binding.binding_id;
+
+    const settled = classifyAttachmentStatus(binding.status, null, null);
+    if (settled) return settled;
+
+    const key = this.materializationKey(workspaceId, bindingId);
+    return await new Promise<MaterializationResult>((resolve) => {
+      let done = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const waiter = (report: MaterializationReport): void => {
+        finish(classifyAttachmentStatus(report.status, report.error_code, report.validation)
+          ?? { outcome: "pending", status: report.status, error_code: report.error_code, validation: report.validation });
+      };
+      const finish = (result: MaterializationResult): void => {
+        if (done) return;
+        done = true;
+        if (timer) clearTimeout(timer);
+        const waiters = this.materializationWaiters.get(key);
+        if (waiters) {
+          waiters.delete(waiter);
+          if (waiters.size === 0) this.materializationWaiters.delete(key);
+        }
+        resolve(result);
+      };
+
+      const waiters = this.materializationWaiters.get(key) ?? new Set();
+      waiters.add(waiter);
+      this.materializationWaiters.set(key, waiters);
+
+      // Close the check-then-wait gap: a report may have committed durable
+      // state between the first read and registering the waiter above.
+      const recheck = this.workspaceIdentityStore.getCurrentBinding(workspaceId, this.localHostId);
+      const recheckSettled = recheck && recheck.binding_id === bindingId
+        ? classifyAttachmentStatus(recheck.status, null, null)
+        : null;
+      if (recheckSettled) {
+        finish(recheckSettled);
+        return;
+      }
+
+      timer = setTimeout(() => finish({ outcome: "pending", status: binding.status, error_code: null, validation: null }), options.timeout_ms);
+    });
   }
 
   submitEvent(command: EventCommand, broadcast: Broadcast, capability?: EventIngressCapability): { event: EventEnvelope; deliveries_created: number } {

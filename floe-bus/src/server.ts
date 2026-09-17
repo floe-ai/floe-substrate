@@ -233,7 +233,18 @@ export type BusServerOptions = Readonly<{
    * Do not add new callers — prefer minting real credentials.
    */
   unsafe_in_process_test_auth_bypass?: boolean;
+  /**
+   * How long the register-and-join route waits for the bridge to confirm a
+   * fresh Workspace's on-disk materialisation before returning the honest
+   * "pending" signal. In the normal path the bridge reports in well under this;
+   * the bound only elapses when the bridge is not running. Overridable so tests
+   * can drive the pending branch quickly.
+   */
+  workspace_materialization_timeout_ms?: number;
 }>;
+
+/** Bridge materialisation is sub-second when it is running; this bound only elapses when it is not. */
+const DEFAULT_MATERIALIZATION_TIMEOUT_MS = 8_000;
 
 export async function createBusServer(
   configPath: string,
@@ -303,6 +314,7 @@ export async function createBusServer(
   });
   const store = new BusStore(configPath, config, { workspace_configuration_policy: options.workspace_configuration_policy });
   const unsafeInProcessTestAuthBypass = options.unsafe_in_process_test_auth_bypass ?? false;
+  const materializationTimeoutMs = options.workspace_materialization_timeout_ms ?? DEFAULT_MATERIALIZATION_TIMEOUT_MS;
   const localControlToken = options.host_control_token
     ?? (unsafeInProcessTestAuthBypass
       ? `floe_test_host_${createHash("sha256").update(configPath).digest("base64url")}`
@@ -3201,11 +3213,36 @@ export async function createBusServer(
       admitted_by: host.authority.credential_id,
     });
 
-    reply.header("cache-control", "no-store");
-    return reply.code(201).send({
+    // 5. Registration and admission are now durable. But choosing a folder is
+    //    the first thing a person does at first run, so the on-disk `.floe` has
+    //    to actually exist when we answer — and that materialisation is done by
+    //    the bridge in a separate process, reacting to the broadcast register
+    //    fired. Await the bridge's report rather than trusting the broadcast
+    //    was emitted. Three honest outcomes, never a 201 that claims a folder
+    //    is ready when it is not:
+    //      - ready   → 201, the folder exists with its template/config applied;
+    //      - failed  → 422, the bridge processed it and it cannot be used
+    //                  (unreadable folder / invalid config) — a distinct reason
+    //                  the operator can act on, not "try again later";
+    //      - pending → 202, registration succeeded but the bridge has not
+    //                  confirmed (almost always: it is not running). The
+    //                  attachment request waits unconsumed and completes when
+    //                  the substrate is up. Bringing the bridge up is the host
+    //                  owner's job (the launcher / floe start), not a bus route.
+    const materialization = await store.awaitWorkspaceMaterialization(workspace.workspace_id, {
+      timeout_ms: materializationTimeoutMs,
+    });
+    const responseBody = {
       workspace_id: workspace.workspace_id,
       identity: publicIdentity(identity),
-    });
+      materialization: materialization.outcome === "failed"
+        ? { status: "failed", reason: materialization.status }
+        : { status: materialization.outcome },
+    };
+    reply.header("cache-control", "no-store");
+    if (materialization.outcome === "ready") return reply.code(201).send(responseBody);
+    if (materialization.outcome === "failed") return reply.code(422).send(responseBody);
+    return reply.code(202).send(responseBody);
   });
 
   // Legibility and revocation are host_control. The operator sees exactly who
