@@ -1,12 +1,13 @@
 /**
  * service — installing Floe so the machine starts it, not a person.
  *
- * Floe's start policy (services.autostart) decides whether a client may start
- * the substrate on demand. That is a desktop convenience and is deliberately
- * wrong for a managed deployment, where the substrate is owned by the machine
- * and a client quietly starting its own copy is a correctness problem. So the
- * honest answer, when a person keeps hitting "not running", is to have the
- * machine start Floe for them — a real platform auto-start mechanism.
+ * Floe's start-on-demand policy (services.start_on_demand) decides whether a
+ * client may start the substrate on demand. That is a desktop convenience and
+ * is deliberately wrong for a managed deployment, where the substrate is owned
+ * by the machine and a client quietly starting its own copy is a correctness
+ * problem. So the honest answer, when a person keeps hitting "not running", is
+ * to have the machine start Floe for them — a real platform auto-start
+ * mechanism.
  *
  * This module owns that install. It is honest about reach: only Windows is
  * built and proven here. Linux (systemd) and macOS (launchd) are designed —

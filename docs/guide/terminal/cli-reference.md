@@ -75,9 +75,9 @@ floe config edit
 
 Connect-first. If the substrate is already serving on the configured bus URL,
 it does nothing and reports it is running. If it is not reachable, it starts it
-only when this machine's policy allows (`services.autostart`); otherwise it says
-plainly that Floe is not running and does not start a rogue copy. This is the
-door a surface's own binary uses to make sure Floe is up before it connects.
+only when this machine's policy allows (`services.start_on_demand`); otherwise it
+says plainly that Floe is not running and does not start a rogue copy. This is
+the door a surface's own binary uses to make sure Floe is up before it connects.
 
 ```bash
 floe up
@@ -100,10 +100,12 @@ rather than pretending to have installed a service. A machine-wide service that
 runs before any logon is a separate, elevation-requiring concern and is not
 installed here.
 
-`services.autostart` in the config is a different setting: it is the *policy*
-governing whether a client may start the substrate on demand (on for a personal
-machine, off where Floe runs as a managed service). It does not by itself
-install any OS auto-start.
+`services.start_on_demand` in the config is a different setting: it is the
+*policy* governing whether a client may start the substrate on demand (on for a
+personal machine, off where Floe runs as a managed service). It is start-on-demand
+only, and does not by itself install any OS auto-start. Start-at-login is not a
+config key — it is the OS auto-start above, read from the OS by `floe service
+status`.
 
 ## `floe doctor`
 
