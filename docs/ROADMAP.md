@@ -25,7 +25,9 @@ Wayfinder maps, old issue trees, PRDs, and prior architecture plans are historic
 
 Before broad feature development resumes, the operator surface must stop biasing the experiment toward substrate management.
 
-The existing floe-app Scope/Actor/Activity/Substrate-Settings experience should be treated as a developer observatory rather than the default product model.
+The abandoned floe-app experiment treated Scope, Actor, Activity, and
+Substrate Settings as a developer observatory. It is historical evidence, not
+a current product surface.
 
 The operator should be able to open a workspace and give Floe a real outcome without manually designing the system Floe should create.
 

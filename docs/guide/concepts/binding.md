@@ -29,7 +29,7 @@ changes to the Actor or Command itself.
 A runtime binding refers to SecretRef metadata where credentials are needed.
 Reusable credential values stay behind the native or deployment credential
 broker and never enter the binding, Context, Event, operation input, export, or
-webview.
+surface.
 
 ## Operations
 

@@ -31,17 +31,11 @@ semantics come from `CONTEXT.md` and accepted ADRs.
 
 ### 1.0 System Domains & Seams
 
-The four domains and the mechanisms connecting them. Read this first — the sections
-below zoom in on each domain independently.
+The three runtime domains and the external-extension mechanisms connecting
+them. Read this first — the sections below zoom in on each domain independently.
 
 ```mermaid
 graph LR
-    subgraph APP["floe-app"]
-        UI["React webview\n(presentation only)"]
-        NATIVE["Tauri native broker\nhost vault · Workspace sessions"]
-        CREG["COMPONENT_REGISTRY\n(maps extension component IDs\nto React components at build time)"]
-    end
-
     subgraph BUS["floe-bus · port 5377"]
         BHTTP["Fastify HTTP + WebSocket"]
         BSTORE["BusStore (SQLite)\nidentity · authority · semantic operations\nScope design/execution · Context · Artefact\nEvent · Delivery · Connector · Extension"]
@@ -58,15 +52,8 @@ graph LR
     subgraph EXTS["external extensions"]
         ENTRY["entry factory\n(tools + hook handlers)"]
         EHTTP["HTTP handlers"]
-        EVIEW["declared view"]
         EFILES[".floe/extensions/name/\n(definition files)"]
     end
-
-    UI -->|"typed IPC; no bearer material"| NATIVE
-    NATIVE -->|"authenticated projections\nand semantic operations"| BHTTP
-    NATIVE -->|"authenticated cursor stream"| BHTTP
-    BHTTP -->|"GET /v1/extensions\n→ registered views"| UI
-    CREG -.->|"unavailable components render a placeholder"| EVIEW
 
     DAEMON -->|"authenticated Delivery/runtime transport"| BHTTP
     DAEMON -->|"POST /v1/extensions/report\n(relay_url)"| BHTTP
@@ -78,12 +65,6 @@ graph LR
 
     EFILES -->|"read/written by\nextension tools & handlers"| DAEMON
 ```
-
-**Desktop trust boundary:** the Tauri shell owns the `host_control` credential in
-the operating-system vault, obtains short-lived Workspace operation sessions,
-and brokers HTTP, media, provider authentication, and resumable push events.
-The webview receives typed results, never bearer or provider credentials
-(ADR-0012).
 
 ---
 
@@ -282,58 +263,6 @@ Handlers run sequentially in registration order; failures are caught and logged,
 
 ---
 
-### 1.3 UI Surface (`floe-app`)
-
-The React app is presentation. The packaged Tauri shell is the trusted desktop
-adapter: it owns host authority, obtains Workspace sessions, and brokers
-authenticated Bus requests, media, provider setup, filesystem access, and push
-events (ADR-0012). A standalone browser requires a separate trusted session
-adapter; loopback reachability is not authority.
-
-```mermaid
-graph TD
-    subgraph APP["floe-app (port 5379)"]
-        APPX["App.tsx\n(workspace selector)"]
-        SD["ScopeDetail.tsx\n(scope main view)"]
-        CTX_LIST["Contexts tab\n(listContextsForScope)"]
-        OPS["Ops tab\n(Ops.tsx — pulse / endpoint ops)"]
-        EXT_TABS["Extension tabs\n(dynamic from GET /v1/extensions)"]
-        SS["SubstrateSettingsView\n(auth profiles / runtime config)"]
-    end
-
-    subgraph EXT["external extensions"]
-        EV["Declared views\n(discovered at runtime)"]
-    end
-
-    subgraph BUS["floe-bus (port 5377)"]
-        BAPI["HTTP + WebSocket API"]
-    end
-
-    subgraph DESKTOP["Tauri desktop shell (optional)"]
-        TAURI["Tauri native broker\nhost vault · Workspace sessions\nHTTP · media · push relay"]
-    end
-
-    APPX -->|"scope selected"| SD
-    SD --> CTX_LIST
-    SD --> OPS
-    SD --> EXT_TABS
-    EXT_TABS -->|"unavailable component"| EV
-    APPX --> SS
-    APPX -->|"typed IPC"| TAURI
-    SD -->|"typed IPC"| TAURI
-    SS -->|"typed IPC"| TAURI
-    TAURI -->|"authenticated projections\n+ semantic operations"| BAPI
-    TAURI -->|"cursor-resumable stream"| BAPI
-```
-
-**Extension view registration** (`ScopeDetail.tsx`):
-- `GET /v1/extensions?workspace_id=X` returns extension manifests with declared views.
-- Views with `slot: "scope-detail-tab"` are added as dynamic tabs alongside built-in Contexts/Ops tabs.
-- A declared component without an in-repo implementation renders `PlaceholderExtensionView`; runtime loading of external view components is not implemented.
-- `contextLabel` prefers `title` over `first_message_preview`.
-
----
-
 ## Part 2 — Extension implementation notes
 
 > This section records extension boundaries that are not fully implemented.
@@ -353,12 +282,12 @@ Extensions are independent consumers of the substrate. They define their own pro
 | Pulses (`pulse.fired`) | **Substrate** (`floe-bus`) | ✅ Yes |
 | Hooks (`BeforeTurn`, `Pulse`, `TurnEnd`, …) | **Substrate** (`floe-bridge`) | ✅ Yes — register via `ExtensionContext.hooks.on(...)` |
 | HTTP relay (`GET/POST /v1/extensions/name/*`) | **Substrate** (`floe-bridge` + `floe-bus`) | ✅ Yes — declare handlers via `ctx.registerHttpHandler(...)` |
-| Extension-view discovery | **Substrate** (`floe-bus` + `floe-app`) | ✅ Yes — declare `views` in the manifest; unavailable components render a placeholder |
 | Tool namespacing (auto-prefix) | **Substrate** (`extension-loader`) | ✅ Yes — automatic for all extensions |
 | Agent bundling (in-memory, no disk write) | **Substrate** (`floe-bridge` + `floe-bus`) | ✅ Yes — declare `agents` in the manifest |
 | Product domain, file formats, and business rules | **Extension** | ❌ No |
 
-> **Rule:** deleting an extension must leave the substrate (bus, bridge, and app) unmodified. Extensions call substrate APIs; they do not add product semantics to them.
+> **Rule:** deleting an extension must leave the substrate unmodified.
+> Extensions call substrate APIs; they do not add product semantics to them.
 
 ---
 

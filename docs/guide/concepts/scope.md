@@ -55,7 +55,5 @@ compatibility/internal routes, not a second authoring contract.
 - `floe-bus/src/scope-executions.ts` — canonical execution records
 - `floe-bus/src/scope-operations.ts` — canonical plan and execution operations
 - `floe-bus/src/scope-graphs.ts` — isolated legacy graph compatibility
-- `floe-app/src/features/work/ScopeWorkView.tsx` — operator projection of the
-  published plan and selected execution
 
 See [[Glossary]].

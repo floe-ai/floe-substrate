@@ -1,58 +1,54 @@
 # Services
 
-**Floe runs as four pieces: a substrate daemon, an agent runtime, a UI, and a command-line tool.**
+**Floe runs the substrate as two local services. A surface is a separate client,
+not another substrate service.**
 
-| Piece | What it is | Port |
+| Piece | What it does | Port |
 |---|---|---|
-| bus | The [[What floe is|substrate]]. SQLite + authenticated HTTP/WebSocket. Owns canonical identity, Context, Event, Delivery, Scope design/execution, Artefact, authority, and operation receipts. | 5377 |
-| bridge | Runs [[Actor]]s. Attaches workspaces, claims deliveries, executes [[Delivery and Turn|Turn]]s, loads [[Extension]]s. | — |
-| floe-app | React presentation plus the trusted Tauri desktop broker. A standalone browser needs its own authenticated session adapter. | 5379 |
-| floe-cli | The `floe` command. Setup, services, auth. | — |
+| bus | Owns canonical substrate state and exposes authenticated HTTP and WebSocket transport. | 5377 |
+| bridge | Claims deliveries and runs Actors through runtime adapters. | none |
+| floe-cli | Starts and manages the substrate, and launches registered surfaces. | none |
 
-floe-app is a client of the substrate. Its trusted native shell holds host
-authority in the operating-system vault, obtains short-lived Workspace
-sessions, and brokers authenticated requests, media, and push frames. The
-webview receives results, never bearer or provider credentials. State-changing
-product actions invoke Bus-owned semantic operations; the Bridge runs authorised
-Deliveries.
+## Starting and stopping
 
-## Starting services
-
-```
+```bash
 floe start
+floe status
+floe stop
+floe restart
 ```
 
-Starts the bus, the bridge, and the floe-app frontend on port 5379. No window opens. This is the safe command for autostart — it is service-only, with nothing to attach to a display.
+`floe start` starts the bus and bridge. It does not launch a surface.
 
-```
-floe desktop
-```
+`floe up` is the connect-first entry for clients that need the substrate but do
+not want to launch a surface. It reuses a reachable substrate. If the substrate
+is unavailable, it starts the local services only when
+`services.start_on_demand` permits that.
 
-Starts services if they are not already running, waits for the 5379 frontend to answer a health check, then opens the Tauri desktop window **attached** to that already-running frontend. It never spawns a second frontend — the desktop window is a native shell wrapped around the same UI a browser would load at `http://127.0.0.1:5379`.
-
-`floe desktop` requires the Rust toolchain (`cargo`) to compile the Tauri window. If `cargo` isn't on `PATH`, the command fails fast with a link to `https://rustup.rs/` and re-run instructions — it does not attempt to install Rust for you. The first launch compiles Rust, which takes about 2–5 minutes; the build output streams to your terminal. Later launches are fast.
+Typing `floe` uses the same readiness path and then launches a registered
+surface. See [[Install and first run]].
 
 ## Other commands
 
 | Command | What it does |
 |---|---|
-| `floe setup` | Create config, optionally enable autostart, start services, verify health, open the web UI |
-| `floe status` | Show service health and configured URLs |
-| `floe open` | Open the floe-app web UI in your browser |
-| `floe stop` | Stop all local services |
-| `floe restart` | Stop then start all local services |
-| `floe logs [service]` | Print logs for `bus`, `bridge`, or `app` (all three if omitted) |
-| `floe doctor` | Diagnose local setup |
-| `floe config path` / `floe config edit` | Print or edit the active config path |
-| `floe service install` / `floe service uninstall` / `floe service status` | Install/remove/inspect Floe auto-start on this machine |
-| `floe uninstall` | Remove auto-start and stop services; preserves `~/.floe` data |
-| `floe reset` | Wipe runtime/state data back to first-run, preserving config and credentials |
+| `floe logs [service]` | Print logs for `bus`, `bridge`, or both |
+| `floe doctor` | Show service status, configuration path, and Floe home |
+| `floe config path` / `floe config edit` | Print or edit the active configuration |
+| `floe service install` / `uninstall` / `status` | Manage operating-system auto-start |
+| `floe uninstall` | Remove auto-start and stop services while preserving Floe home data |
+| `floe reset` | Wipe runtime and state data while preserving configuration and provider credentials |
 
-See [[Glossary]] for term definitions.
+Start on demand and start at login are separate:
+
+- `services.start_on_demand` controls whether a client may start an unreachable
+  substrate.
+- Operating-system auto-start is installed state, queried with
+  `floe service status`; it is not a configuration key.
 
 ## Implementation
 
-- `floe-cli/src/cli.ts` — all `floe` subcommands (`start`, `desktop`, `stop`, `restart`, `logs`, `status`, `open`, `doctor`, `config`, `autostart`, `uninstall`, `reset`, `setup`)
-- `floe-cli/src/desktop.ts` — `checkCargoAvailable`, `missingCargoMessage` (cargo preflight)
-- `floe-cli/src/process-manager.ts` — service start/stop, PID records, log paths
-- `floe-app/src-tauri/tauri.attach.conf.json` — Tauri config override with empty `beforeDevCommand`, used by `npm run tauri:attach --workspace floe-app` so `floe desktop` attaches instead of spawning a second vite
+- `floe-cli/src/cli.ts` - service and launcher commands
+- `floe-cli/src/startup.ts` - connect-first readiness and startup
+- `floe-cli/src/process-manager.ts` - local process records, logs, and stopping
+- `floe-cli/src/service.ts` - operating-system auto-start

@@ -8,7 +8,6 @@ HTTP, authenticated WebSocket, and persisted state they own.
 ## Local Ports
 
 - `floe-bus`: `127.0.0.1:5377`
-- `floe-app`: `127.0.0.1:5379`
 - `floe-bridge`: outbound bus connection only
 
 ## Runtime Adapter Boundary

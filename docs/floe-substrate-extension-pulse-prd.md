@@ -28,7 +28,6 @@ The current system can already:
 - use explicit `emit` for communication
 - use local workspace tools for basic project work
 - write auditable work logs
-- show emitted messages in FloeWeb
 - keep runtime/tool activity separate from communication
 
 This release should preserve those behaviours.
@@ -49,9 +48,6 @@ Agent end / turn completion means the endpoint has finished processing delivered
 
 ### Actors work by observing state and using tools
 Agents should not primarily coordinate through chat. They should observe authorised substrate/project state, use tools or extension capabilities, write work logs, and emit only when communication or publication is needed.
-
-### FloeWeb should follow substrate support
-Do not invent FloeWeb product features that lack substrate support. The web surface should expose what the substrate can actually represent.
 
 ## Key Product Capabilities
 
@@ -176,8 +172,6 @@ Expected outcomes:
 
 Do not prioritise:
 
-- broad FloeWeb feature invention without substrate support
-- visual dashboard polish as a substitute for substrate capability
 - marketplace-style extension distribution
 - remote or hosted sandboxing
 - full permissions/trust UI
@@ -198,7 +192,6 @@ The release direction is successful when Floe can demonstrate:
 7. Hooks are defined clearly enough for extensions to attach to substrate lifecycle points.
 8. Agents can discover valid destinations without hard-coded endpoint IDs.
 9. Work logs clearly separate activity from communication.
-10. FloeWeb only exposes product behaviours that the substrate supports.
 
 ## Risks and assumptions
 
@@ -211,10 +204,6 @@ This may need to evolve for hosted, team, or remote environments.
 ### Actor autonomy
 
 Actors are expected to work autonomously within their granted workspace context. The system should not require human approval for every tool call or action. Human review should be introduced at meaningful product boundaries, such as review requests, task completion, publishing, deployment, or destructive operations if those become product concepts.
-
-### Substrate/UI divergence
-
-There is a risk that FloeWeb invents product features before the substrate supports them. FloeWeb should remain a client/view over substrate capabilities, not an independent product model that drifts from the bus, actors, extensions, events, fields, blocks, and work logs.
 
 ### Event and coordination complexity
 
@@ -233,7 +222,6 @@ This release direction is successful when:
 - A user can ask Floe to help define or scaffold an extension, and the resulting extension can attach through recognised substrate mechanisms.
 - Actors can discover the destinations and tools they need without hard-coded endpoint IDs.
 - Actors can complete work cycles without relying on chat as the coordination model.
-- FloeWeb reflects substrate-backed objects and activity rather than inventing unsupported UI-only concepts.
 - Work logs make actor activity understandable without turning tool output into communication.
 - Pulse, extensions, actors, and emitted events can be validated through end-to-end flows.
 
@@ -243,4 +231,4 @@ This release direction is successful when:
 - Actor work must remain auditable through work logs and event records.
 - The product must avoid token/credential leakage for Floe-managed secrets.
 - Extension and pulse behaviour must not create unbounded event spam.
-- Substrate concepts should be testable without requiring full FloeWeb implementation.
+- Substrate concepts should be testable without requiring a particular surface.

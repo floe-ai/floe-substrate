@@ -12,13 +12,12 @@ Read [[What floe is]] for why this exists, or jump straight to [[Install and fir
 
 ## Read this first
 
-New to floe? Read these five in order:
+New to Floe? Read these four in order:
 
 1. [[What floe is]]
 2. [[Install and first run]]
 3. [[Concepts]]
 4. [[Scope]]
-5. [[The scope canvas]]
 
 ## Entry
 
@@ -46,25 +45,15 @@ New to floe? Read these five in order:
 ## Setup
 
 - [[Services]]
-- [[Providers and auth]]
 - [[Models and thinking level]]
-- [[Substrate settings]]
 - [[Workspace config]]
 - [[Portable Workspace transfer]]
 
 ## Terminal
 
-- [[Working without floe-app]]
+- [[Terminal access]]
 - [[CLI reference]]
 - [[Bus API]]
-
-## floe-app
-
-- [[floe-app]]
-- [[Navigating floe-app]]
-- [[The scope canvas]]
-- [[Conversations in floe-app]]
-- [[Settings in floe-app]]
 
 ## Legacy reproduction
 

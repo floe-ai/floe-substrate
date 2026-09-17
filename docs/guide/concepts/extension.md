@@ -56,11 +56,10 @@ network, secret, or action access.
 
 An extension can register HTTP handlers via `ExtensionContext.registerHttpHandler(method, path, handler)`. The bridge runs a relay HTTP server (port 5378 by default, falling back to an OS-assigned port if taken) that dispatches to these handlers, with each extension's handlers namespaced under its own name in the URL path: `http://127.0.0.1:5378/{extName}/{handlerPath}`.
 
-The bridge reports its relay's base URL to the bus. The bus then proxies incoming app requests: `GET|POST /v1/extensions/:name/*` forwards to that extension's `relay_url`. If an extension has registered no HTTP handlers, `relay_url` is `null` and the bus responds `503`.
-
-## Views
-
-A declared view renders as a tab in the scope detail view, alongside the built-in Contexts and Ops tabs. Runtime loading of an external extension's view component is not implemented — a declared view whose component floe-app cannot resolve renders a placeholder instead.
+The bridge reports its relay's base URL to the bus. The bus then proxies client
+requests: `GET|POST /v1/extensions/:name/*` forwards to that extension's
+`relay_url`. If an extension has registered no HTTP handlers, `relay_url` is
+`null` and the bus responds `503`.
 
 ## Implementation
 

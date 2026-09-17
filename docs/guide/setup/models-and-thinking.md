@@ -41,7 +41,7 @@ execution's recorded configuration.
 
 RuntimeProfile creation, draft replacement, publication, rollback, retirement,
 reactivation, and Actor runtime-binding changes use Bus-owned semantic
-operations. The app and Actors consume the same definitions. Legacy
+operations. Authorised clients and Actors consume the same definitions. Legacy
 `/v1/runtime/bindings` routes are compatibility/internal adapters.
 
 See [[Glossary]] for term definitions.
@@ -52,6 +52,5 @@ See [[Glossary]] for term definitions.
   bindings
 - `floe-bus/src/runtime-profile-operations.ts` — canonical lifecycle and
   binding operations
-- `floe-app/src/actors/modelsForProfile.ts` — provider model projection
 - `floe-bridge/src/bus-client.ts` — effective runtime resolution for execution
 - `floe-bus/src/credential-broker.ts` — SecretRef resolution boundary

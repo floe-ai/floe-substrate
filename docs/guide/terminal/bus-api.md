@@ -6,9 +6,12 @@ Raw HTTP routes are transport and compatibility details. They are not a second
 product contract. The Bus-owned operation definitions are authoritative for
 state-changing intent, validation, authority, refusal, execution, and receipts.
 
+<!-- Historical desktop-client sentence below is not current guidance.
+
 The packaged desktop app brokers credentials in its native shell. Bearer and
-provider credentials never enter URLs, logs, local storage, or the webview.
-Direct API use is an authenticated developer or integration path.
+-->
+Reusable provider credentials never belong in URLs, logs, operation inputs, or
+Events. Direct API use is an authenticated client or integration path.
 
 ## Transport authority
 
@@ -307,9 +310,8 @@ For workspace-relative content, the Bus verifies the current bytes against the
 recorded SHA-256 digest and optional size before returning them. Changed bytes
 are refused rather than shown as the retained version. Content-addressed and
 external revisions remain explicitly unresolved until their exact resolver is
-available. The desktop native broker fetches bytes with the Workspace session
-and gives the webview only the verified content. It never returns the host
-locator or puts the bearer in a media URL.
+available. An authorised client receives only verified content. The route does
+not return the host locator or put the bearer in a media URL.
 
 ## Event and Delivery projections
 

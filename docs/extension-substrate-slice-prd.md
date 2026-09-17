@@ -157,7 +157,6 @@ Create temporary directories with real `extension.json` and `index.ts` files. Ca
 - **Extension marketplace/registry** — remote extension discovery
 - **Extension versioning/dependencies** — semver, dependency resolution
 - **Bus extension awareness** — no bus schema changes
-- **UI for extensions** — FloeWeb extension management
 
 ## Further Notes
 

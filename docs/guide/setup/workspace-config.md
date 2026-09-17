@@ -6,8 +6,8 @@ The Workspace's stable identity, authority, Contexts, Scope designs and
 executions, Artefacts, Events, Deliveries, and receipts live in canonical Bus
 records. A host-local directory is a Workspace locator binding, and `.floe/`
 contains portable configuration inside that bound content. Neither the path nor
-the files are the Workspace identity. See [[Substrate settings]] for
-machine-level settings that do not belong here.
+the files are the Workspace identity. Machine-level settings do not belong
+here.
 
 ## `.floe/floe.yaml`
 
