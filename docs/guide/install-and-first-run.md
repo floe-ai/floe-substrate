@@ -31,6 +31,18 @@ Install the source dependencies with:
 npm install
 ```
 
+### Put `floe` on your PATH
+
+```bash
+npm run install:cli
+```
+
+This builds the CLI (native authority broker + TypeScript) and installs `floe`
+globally as a real, independent copy — not a link back to the checkout. Open a
+**new** shell afterwards and `floe` works everywhere. To remove it later: `npm
+rm -g floe-cli`. See `floe-cli/README.md` for details. Until you run this, invoke
+the CLI from source with `node bin/floe.mjs <args>`.
+
 ## `floe setup`
 
 ```bash

@@ -2,9 +2,19 @@
   "name": "floe-cli",
   "version": "0.1.0",
   "private": true,
+  "description": "The Floe command line — the front door to the local Floe substrate.",
+  "license": "UNLICENSED",
   "type": "module",
   "bin": {
     "floe": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "native",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
   },
   "scripts": {
     "dev": "tsx src/index.ts",

@@ -13,7 +13,8 @@
     "test": "npm run test --workspaces --if-present",
     "dev:bus": "npm run dev --workspace floe-bus",
     "dev:bridge": "npm run dev --workspace floe-bridge",
-    "floe": "tsx floe-cli/src/index.ts"
+    "floe": "tsx floe-cli/src/index.ts",
+    "install:cli": "node scripts/install-cli.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
