@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
+import { CopilotSession } from "@github/copilot-sdk";
+import { CopilotRuntime } from "floe-runtime/adapters/copilot";
 import { FloeRuntimeAdapter } from "./floe-runtime-adapter.js";
 import { createDirectSubstrateTools } from "./floe-direct-tools.js";
 
@@ -38,6 +40,39 @@ function context() {
 }
 
 describe("FloeRuntimeAdapter SDK route", () => {
+  it("passes the first requested model through to SDK session creation", async () => {
+    let createdConfig: Record<string, unknown> | undefined;
+    const session = {
+      sessionId: "sdk-session",
+      on(handler: (event: unknown) => void) {
+        queueMicrotask(() => {
+          handler({ type: "assistant.message", data: { content: "done", finishReason: "end_turn" } });
+          handler({ type: "session.idle", data: {} });
+        });
+        return () => {};
+      },
+      async send() {},
+      async disconnect() {},
+      async setModel() {
+        throw new Error("initial model must not be changed after session creation");
+      },
+    };
+    const client = {
+      async start() {},
+      async createSession(config: Record<string, unknown>) {
+        createdConfig = config;
+        return session;
+      },
+      async stop() { return []; },
+    };
+    const runtime = new CopilotRuntime({ client: client as any });
+    const adapter = new FloeRuntimeAdapter({ runtimeFactory: () => runtime });
+
+    await adapter.handleBundle(context(), bundle(), { model: "creation-model" } as any);
+
+    expect(createdConfig).toMatchObject({ model: "creation-model" });
+  });
+
   it("separates first-session system instructions, forwards model selection, and reuses the SDK session", async () => {
     const runtime = new FakeRuntime();
     const ctx = context();
@@ -129,6 +164,39 @@ describe("FloeRuntimeAdapter SDK route", () => {
     expect(ctx.bus.appendRuntimeTelemetry).toHaveBeenCalledTimes(1);
     expect(ctx.bus.appendRuntimeTelemetry.mock.calls[0][0].kind).toBe("runtime_error");
   });
+
+  it("deduplicates SDK activity and direct callback records by tool call ID", async () => {
+    const runtime = new FakeRuntime();
+    const activity: any[] = [];
+    runtime.run = vi.fn(async (...args: any[]) => {
+      await args[3]?.("sdk-session");
+      const emit = args[4].tools.find((tool: any) => tool.name === "emit");
+      runtime.emit("activity", { id: "tool-call-1", kind: "tool", status: "started", title: "emit" });
+      await emit.handler(
+        { type: "message", destination: "operator", text: "once" },
+        { sessionId: "sdk-session", toolCallId: "tool-call-1", toolName: "emit" },
+      );
+      runtime.emit("activity", { id: "tool-call-1", kind: "tool", status: "completed", title: "emit" });
+      return { text: "done", sessionId: "sdk-session", stopReason: "idle", usage: null, elapsedMs: 1 };
+    }) as any;
+    const ctx = context();
+    ctx.bus.emit = vi.fn(async () => ({ event_id: "event-1", accepted_at: "now", event: { artefact_version_ids: [] } }));
+    ctx.bus.listEndpoints = vi.fn(async () => [{ endpoint_id: "actor:workspace:test:operator", name: "operator" }]);
+    ctx.hooks = {
+      hasHandlers: (name: string) => name === "TurnEnd",
+      fire: async (_name: string, payload: any) => { activity.push(...payload.tool_activity); return []; },
+    };
+    const adapter = new FloeRuntimeAdapter({ runtimeFactory: () => runtime as any });
+
+    await adapter.handleBundle(ctx, bundle(), undefined);
+
+    expect(activity).toEqual([{
+      name: "emit",
+      call_id: "tool-call-1",
+      arguments: { type: "message", destination: "operator", text: "once" },
+      is_error: false,
+    }]);
+  });
 });
 
 describe("direct substrate tools", () => {
@@ -148,7 +216,7 @@ describe("direct substrate tools", () => {
   it("advertises every shared tool schema to SDK tools without loosening it", () => {
     const tools = createDirectSubstrateTools({
       getBus: () => ({}) as any, getAnchor: () => null, getActiveTurn: () => null,
-      isDependencyRequested: () => false, markDependencyRequested: () => {}, recordEmitted: () => {},
+      isDependencyRequested: () => false, markDependencyRequested: () => {}, recordEmitted: () => {}, recordToolActivity: () => {},
     });
     expect(Object.fromEntries(tools.map(tool => [tool.name, tool.parameters]))).toEqual(expect.objectContaining(
       Object.fromEntries(Object.keys(schemaExpectations).map(name => [name, expect.any(Object)])),
@@ -160,6 +228,7 @@ describe("direct substrate tools", () => {
       expect(schema.additionalProperties).toBe(false);
       expect(schema.required ?? []).toEqual(expected.required ?? []);
       expect(Object.keys(schema.properties).sort()).toEqual(expected.properties.sort());
+      expect(tool.skipPermission).toBe(true);
     }
     const schemas = Object.fromEntries(tools.map(tool => [tool.name, tool.parameters])) as Record<string, any>;
     expect(schemas.emit.properties.destination.description).toEqual(expect.any(String));
@@ -186,12 +255,125 @@ describe("direct substrate tools", () => {
       }) as any,
       getAnchor: () => ({ workspace_id: "workspace:test", endpoint_id: "actor:workspace:test:worker", thread_id: "context:test", context_id: "context:test", runtime_turn_id: "turn-1", delivery_id: "delivery-1", execution_attempt_id: null, scope_execution_id: null, composition_revision_id: null, node_execution_id: null, target_node_id: null, invocation_request_event_id: null }),
       getActiveTurn: () => null,
-      isDependencyRequested: () => false, markDependencyRequested: () => {}, recordEmitted: () => {},
+      isDependencyRequested: () => false, markDependencyRequested: () => {}, recordEmitted: () => {}, recordToolActivity: () => {},
     });
     const emit = tools.find(tool => tool.name === "emit")!;
     await emit.handler({ type: "message", destination: "operator", text: "approved" }, { sessionId: "s", toolCallId: "t", toolName: "emit" });
     expect(emitted).toHaveLength(1);
     const capability = tools.find(tool => tool.name === "use_capability")!;
     await expect(capability.handler({ operation_id: "x", operation_version: "1", input_schema_version: "1", input: {} }, { sessionId: "s", toolCallId: "t", toolName: "use_capability" })).rejects.toThrow("no active Floe turn");
+  });
+
+  it("preserves a Bus governance refusal as a failed direct-tool result", async () => {
+    const invokeOperation = vi.fn(async () => ({
+      kind: "rejected",
+      refusal: {
+        code: "operation_not_granted",
+        message: "This operation is not granted to the runtime delivery.",
+        retryable: false,
+        required_action: "request_grant",
+        details: {},
+      },
+    }));
+    const recordToolActivity = vi.fn();
+    const tools = createDirectSubstrateTools({
+      getBus: () => ({
+        async prepareRuntimeDelivery() {
+          return {
+            processing_contract: { processing_contract_id: "contract-1" },
+            operation_authority_session: {
+              bearer_token: "test-authority",
+              expires_at: "2099-01-01T00:00:00.000Z",
+            },
+          };
+        },
+        invokeOperation,
+      }) as any,
+      getAnchor: () => null,
+      getActiveTurn: () => ({
+        workspace_id: "workspace:test",
+        context_id: "context:test",
+        workspace_locator: null,
+        delivery_id: "delivery-1",
+        processing_contract_id: null,
+        operation_authority_session: null,
+      }),
+      isDependencyRequested: () => false, markDependencyRequested: () => {}, recordEmitted: () => {}, recordToolActivity,
+    });
+    const capability = tools.find(tool => tool.name === "use_capability")!;
+
+    await expect(capability.handler(
+      { operation_id: "live.ungranted.operation", operation_version: "1", input_schema_version: "1", input: {} },
+      { sessionId: "s", toolCallId: "t", toolName: "use_capability" },
+    )).resolves.toMatchObject({ resultType: "failure", textResultForLlm: expect.stringContaining("operation_not_granted") });
+    expect(invokeOperation).toHaveBeenCalledWith(
+      "workspace:test",
+      "test-authority",
+      expect.objectContaining({ operation_id: "live.ungranted.operation" }),
+    );
+    expect(recordToolActivity).toHaveBeenNthCalledWith(1, {
+      name: "use_capability",
+      call_id: "t",
+      arguments: {
+        operation_id: "live.ungranted.operation",
+        operation_version: "1",
+        input_schema_version: "1",
+        input: {},
+      },
+    });
+    expect(recordToolActivity).toHaveBeenNthCalledWith(2, {
+      name: "use_capability", call_id: "t", is_error: true, result_code: "operation_not_granted",
+    });
+  });
+
+  it("dispatches SDK external tool requests through registered Bridge handlers", async () => {
+    const emitted: any[] = [];
+    const completed = vi.fn(async () => {});
+    const activity: any[] = [];
+    const tools = createDirectSubstrateTools({
+      getBus: () => ({
+        async emit(event: any) {
+          emitted.push(event);
+          return { event_id: "event-emit-1", accepted_at: "now", event: { artefact_version_ids: [] } };
+        },
+        async listEndpoints() { return [{ endpoint_id: "actor:workspace:test:operator", name: "operator" }]; },
+      }) as any,
+      getAnchor: () => ({
+        workspace_id: "workspace:test", endpoint_id: "actor:workspace:test:worker",
+        thread_id: "context:test", context_id: "context:test", runtime_turn_id: "rt-1",
+        delivery_id: "delivery-1", execution_attempt_id: null, scope_execution_id: null,
+        composition_revision_id: null, node_execution_id: null, target_node_id: null,
+        invocation_request_event_id: null,
+      }),
+      getActiveTurn: () => null,
+      isDependencyRequested: () => false, markDependencyRequested: () => {}, recordEmitted: () => {},
+      recordToolActivity: entry => activity.push(entry),
+    });
+    const sdkSession = new (CopilotSession as any)("sdk-session-1", {});
+    sdkSession._rpc = { tools: { handlePendingToolCall: completed } };
+    sdkSession.registerTools(tools);
+
+    sdkSession._dispatchEvent({
+      type: "external_tool.requested",
+      data: {
+        requestId: "request-1",
+        toolCallId: "tool-call-1",
+        toolName: "emit",
+        arguments: { type: "message", destination: "operator", text: "exact provenance" },
+      },
+    });
+
+    await vi.waitFor(() => expect(completed).toHaveBeenCalledTimes(1));
+    expect(emitted).toEqual([expect.objectContaining({
+      type: "message",
+      source_endpoint_id: "actor:workspace:test:worker",
+      destination: { kind: "endpoint", endpoint_id: "actor:workspace:test:operator" },
+      current_delivery_context_id: "context:test",
+      metadata: expect.objectContaining({ origin: "floe_emit_tool", delivery_id: "delivery-1", runtime_turn_id: "rt-1" }),
+    })]);
+    expect(activity).toEqual([
+      { name: "emit", call_id: "tool-call-1", arguments: { type: "message", destination: "operator", text: "exact provenance" } },
+      { name: "emit", call_id: "tool-call-1", is_error: false },
+    ]);
   });
 });

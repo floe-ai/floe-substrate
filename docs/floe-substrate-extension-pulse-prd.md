@@ -97,18 +97,12 @@ The current supported implementation approach is programmatic TypeScript registr
 Active fired hooks:
 
 - `SessionStart`
-- `SessionResume`
 - `BeforeTurn`
-- `Pulse`
 - `TurnEnd`
 - `Error`
-- `BeforeToolUse`
-- `AfterToolUse`
-- `ToolUseFailed`
-- `SessionEnd`
 - `WebhookReceived`
 
-`BeforeTurn` currently supports prompt/context injection through returned `inject` data. The other active hooks are observation hooks. `SessionEnd` fires when runtime sessions are replaced or disposed, and `WebhookReceived` fires from the persisted bus webhook ingest event path. Declarative YAML hook configuration is future/not implemented.
+`BeforeTurn` currently supports prompt/context injection through returned `inject` data. The other SDK runtime hooks are observation hooks. `WebhookReceived` fires from the persisted bus webhook ingest event path. Pulse deliveries, session reuse/shutdown, and direct-tool activity do not currently fire extension hooks on the SDK path. Declarative YAML hook configuration is future/not implemented.
 
 ### 4. Pulse as substrate scheduling
 Pulse should be a substrate-native scheduled event mechanism, not an agent heartbeat or keepalive.

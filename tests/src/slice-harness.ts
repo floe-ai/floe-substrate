@@ -164,6 +164,23 @@ export class SliceHarness {
   }
 
   /**
+   * Persists bounded, credential-free diagnostics before the ephemeral harness
+   * directory is removed. A live failure must remain inspectable after teardown.
+   */
+  captureEvidence(label: string, details: Record<string, unknown> = {}): string {
+    const directory = process.env.FLOE_LIVE_EVIDENCE_DIR ?? join(tmpdir(), "floe-live-evidence");
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, `${Date.now()}-${this.tier.id}-${label}.json`);
+    writeFileSync(path, JSON.stringify(sanitizeEvidence({
+      tier: this.tier.id,
+      captured_at: new Date().toISOString(),
+      details,
+      bus_messages: this.busMessages,
+    }), null, 2), "utf8");
+    return path;
+  }
+
+  /**
    * Register (and select) the local workspace through the native broker exactly
    * as `floe start` does, then open an operator operation session for it. The
    * session is the real workspace-scoped authority a client holds; the harness
@@ -174,6 +191,15 @@ export class SliceHarness {
     const { workspace_id } = await registerLocalWorkspaceViaBroker(locator, true);
     this.operationSessionBearer = await this.mintOperationSession(workspace_id);
     return workspace_id;
+  }
+
+  function sanitizeEvidence(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(sanitizeEvidence);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [
+      key,
+      /token|bearer|authorization|credential|secret/i.test(key) ? "[redacted]" : sanitizeEvidence(child),
+    ]));
   }
 
   /**

@@ -50,6 +50,8 @@ export type WorkLogToolEntry = {
   call_id?: string;
   summary?: string;
   is_error?: boolean;
+  arguments?: Record<string, unknown>;
+  result_code?: string;
   files_touched?: string[];
   duration_ms?: number;
 };

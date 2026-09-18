@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import YAML from "yaml";
 import { SliceHarness, fileExists, waitFor, type SliceTier } from "./slice-harness.js";
@@ -37,6 +37,7 @@ for (const tier of [FAKE_TIER, LIVE_TIER]) {
     }, tier.live ? 120_000 : 60_000);
 
     afterEach(async () => {
+      h.captureEvidence("core-lifecycle");
       await h.stop();
     });
 
@@ -88,12 +89,29 @@ for (const tier of [FAKE_TIER, LIVE_TIER]) {
         },
         thread_id: "thread:test",
         correlation_id: null,
-        content: { text: "Reply with the single word: ok.", data: {} },
+        content: {
+          text: [
+            "This is a mandatory direct-tool test. Before writing any response, call `emit`",
+            "exactly once with `{ \"type\": \"message\", \"destination\": \"operator\",",
+            "\"text\": \"live direct-tool success\" }`. Tool calls are required; text alone",
+            "does not complete this task. After the call, reply exactly: tool attempted.",
+          ].join(" "),
+          data: {},
+        },
         response: { expected: false },
         metadata: {}
       });
 
       await waitFor(async () => h.runtimeResults(workspaceId, agentEndpointId).then((events) => events.length >= 1), "runtime result", tier.live ? 120_000 : 20_000);
+      if (tier.live) {
+        await waitFor(async () => {
+          const { events } = await h.get<{ events: any[] }>(`/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&limit=100`);
+          return events.some((event) =>
+            event.source_endpoint_id === agentEndpointId &&
+            event.content?.text === "live direct-tool success",
+          );
+        }, "direct Bridge emit tool result", 120_000);
+      }
       await waitFor(() => h.sawBusEvents([
         "event_submitted",
         "destination_selector_resolved",

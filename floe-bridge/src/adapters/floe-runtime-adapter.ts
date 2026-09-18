@@ -65,6 +65,20 @@ type FloeSession = {
   activeTurn?: FloeTurn;
 };
 
+function recordToolActivity(turn: FloeTurn, entry: WorkLogToolEntry): void {
+  const existing = entry.call_id ? turn.tool_activity.find(activity => activity.call_id === entry.call_id) : undefined;
+  if (!existing) {
+    turn.tool_activity.push(entry);
+    return;
+  }
+  if (!existing.name && entry.name) existing.name = entry.name;
+  if (entry.is_error !== undefined) existing.is_error = entry.is_error;
+  if (entry.summary !== undefined) existing.summary = entry.summary;
+  if (entry.duration_ms !== undefined) existing.duration_ms = entry.duration_ms;
+  if (entry.arguments !== undefined) existing.arguments = entry.arguments;
+  if (entry.result_code !== undefined) existing.result_code = entry.result_code;
+}
+
 export class FloeRuntimeAdapter implements RuntimeAdapter {
   readonly name = "floe-runtime";
   // floe-runtime holds no credentials; the vendor CLI authenticates itself.
@@ -341,6 +355,11 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
         isDependencyRequested: () => session.activeTurn?.dependency_requested ?? true,
         markDependencyRequested: () => { if (session.activeTurn) session.activeTurn.dependency_requested = true; },
         recordEmitted: (summary) => { session.activeTurn?.emitted_events.push(summary); },
+        recordToolActivity: (entry) => {
+          const turn = session.activeTurn;
+          if (!turn || turn.finalized) return;
+          recordToolActivity(turn, entry);
+        },
     };
     session.directTools = createDirectSubstrateTools(toolHandle);
     // Normalized activity events feed the work log's tool activity. floe-runtime
@@ -349,11 +368,13 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       const turn = session.activeTurn;
       if (!turn || turn.finalized) return;
       if (event.status === "started") {
-        turn.tool_activity.push({ name: event.title || event.kind, call_id: event.id });
+        recordToolActivity(turn, { name: event.title || event.kind, call_id: event.id });
       } else {
-        const entry = turn.tool_activity.find((t) => t.call_id === event.id);
-        if (entry) entry.is_error = event.status === "failed";
-        else turn.tool_activity.push({ name: event.title || event.kind, call_id: event.id, is_error: event.status === "failed" });
+        recordToolActivity(turn, {
+          name: event.title || event.kind,
+          call_id: event.id,
+          is_error: event.status === "failed",
+        });
       }
     });
     runtime.on("diagnostic", (text: string) => {

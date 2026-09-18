@@ -218,7 +218,7 @@ graph TD
 interface RuntimeAdapter {
   readonly name: string;
   handleBundle(context: RuntimeContext, bundle: DeliveryBundle, runtimeConfig?: AgentRuntimeConfig): Promise<void>;
-  dispose?(reason?: HookPayload<"SessionEnd">["reason"]): Promise<void>;
+  dispose?(reason?: "session_replaced" | "bridge_shutdown"): Promise<void>;
 }
 ```
 
@@ -247,19 +247,17 @@ sequenceDiagram
 
 | Hook | When | Active behaviour |
 |---|---|---|
-| `SessionStart` | New LLM session created | Observation |
-| `SessionResume` | Existing session reused | Observation |
+| `SessionStart` | New SDK session created | Observation |
 | `BeforeTurn` | Before each agent turn | **Injection** — handler may return `{ inject: { source, content } }` to add context to the prompt |
 | `TurnEnd` | After agent turn completes | Observation (visible_output, tool_activity, emitted_events) |
-| `BeforeToolUse` | Before each tool call | Observation |
-| `AfterToolUse` | After successful tool call | Observation |
-| `ToolUseFailed` | After failed tool call | Observation |
-| `Pulse` | When `pulse.fired` delivery is processed | Observation / side-effect trigger |
 | `WebhookReceived` | When webhook ingest event is processed | Observation |
-| `SessionEnd` | Session replaced or bridge shutting down | Observation |
 | `Error` | Unrecoverable turn error | Observation |
 
 Handlers run sequentially in registration order; failures are caught and logged, never crashing the adapter.
+On the SDK-backed runtime path, the supported runtime hooks are
+`SessionStart`, `BeforeTurn`, `TurnEnd`, and `Error`. `WebhookReceived` is a
+Bridge ingress hook. Session reuse, tool activity, Pulse delivery, and shutdown
+remain observable through their respective runtime/Bus records, not hooks.
 
 ---
 
@@ -280,7 +278,7 @@ Extensions are independent consumers of the substrate. They define their own pro
 | Workspaces, Scopes, Contexts | **Substrate** (`floe-bus`) | ✅ Yes |
 | Events, Deliveries, Endpoints | **Substrate** (`floe-bus`) | ✅ Yes |
 | Pulses (`pulse.fired`) | **Substrate** (`floe-bus`) | ✅ Yes |
-| Hooks (`BeforeTurn`, `Pulse`, `TurnEnd`, …) | **Substrate** (`floe-bridge`) | ✅ Yes — register via `ExtensionContext.hooks.on(...)` |
+| SDK runtime hooks (`BeforeTurn`, `TurnEnd`, …) | **Substrate** (`floe-bridge`) | ✅ Yes — register via `ExtensionContext.hooks.on(...)` |
 | HTTP relay (`GET/POST /v1/extensions/name/*`) | **Substrate** (`floe-bridge` + `floe-bus`) | ✅ Yes — declare handlers via `ctx.registerHttpHandler(...)` |
 | Tool namespacing (auto-prefix) | **Substrate** (`extension-loader`) | ✅ Yes — automatic for all extensions |
 | Agent bundling (in-memory, no disk write) | **Substrate** (`floe-bridge` + `floe-bus`) | ✅ Yes — declare `agents` in the manifest |
@@ -331,7 +329,7 @@ graph LR
         HUM["Human action"] -->|"emits"| EV
         WH["Webhook ingest"] -->|"emits"| EV
         EV -->|"delivered to"| EP["Endpoint"]
-        EP -->|"processed by bridge"| HOOKS["Hooks\n(BeforeTurn, TurnEnd, Pulse…)"]
+        EP -->|"processed by bridge"| HOOKS["Hooks\n(BeforeTurn, TurnEnd…)"]
     end
 
     subgraph EXT["Extension handlers"]

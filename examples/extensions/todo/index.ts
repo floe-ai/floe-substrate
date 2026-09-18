@@ -20,15 +20,9 @@ interface TodoItem {
 
 type ExtensionHookName =
   | "SessionStart"
-  | "SessionResume"
   | "BeforeTurn"
-  | "Pulse"
   | "TurnEnd"
   | "Error"
-  | "BeforeToolUse"
-  | "AfterToolUse"
-  | "ToolUseFailed"
-  | "SessionEnd"
   | "WebhookReceived";
 
 interface ExtensionContext {

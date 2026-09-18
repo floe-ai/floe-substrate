@@ -22,6 +22,13 @@ export type SubstrateSessionHandle = {
   isDependencyRequested: () => boolean;
   markDependencyRequested: () => void;
   recordEmitted: (summary: EmittedEventSummary) => void;
+  recordToolActivity: (entry: {
+    name: string;
+    call_id?: string;
+    is_error?: boolean;
+    arguments?: Record<string, unknown>;
+    result_code?: string;
+  }) => void;
 };
 
 export const FLOE_RUNTIME_TOOL_IDENTITY: SubstrateToolIdentity = {

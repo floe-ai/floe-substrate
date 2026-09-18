@@ -31,14 +31,13 @@ The semantic contract (in `floe-bridge/src/runtime-core/types.ts`) defines:
 - `FloeRuntimeContract` — the future strongly-typed adapter interface
 
 Runtime adapters translate between the Floe-native event/endpoint model and
-engine-specific assumptions. Pi's user/assistant/message model is contained
-inside `PiRuntimeAdapter`.
+engine-specific assumptions.
 
 The vertical slice suite runs the same substrate lifecycle on two runtime-adapter
 tiers. Tier one uses `FakeRuntimeAdapter` to exercise the real
 bus/bridge/runtime boundary without consuming premium requests — fast, no
-network, always runs. Tier two drives the real `FloeRuntimeAdapter` against a
-live `copilot --acp` session with the cheapest advertised model; it runs by
+network, always runs. Tier two drives the real `FloeRuntimeAdapter` through
+the official Copilot SDK with the cheapest advertised model; it runs by
 default and fails loudly (never silently skips) when the vendor CLI is not
 reachable, unless deliberately disabled with `FLOE_LIVE_RUNTIME_TIER=off`. The
 fake adapter is development-only and must not define product semantics.
@@ -131,6 +130,6 @@ Local and CI validation use:
 - Unit tests for IDs, config, queue eligibility, and `.floe/` template logic.
 - Contract tests against real daemon processes using temp `FLOE_HOME`.
 - Browser/UI tests against the fake adapter.
-- The vertical slice's live `FloeRuntimeAdapter` tier runs by default against a
-  real `copilot --acp` session; disable it deliberately with
+- The vertical slice's live `FloeRuntimeAdapter` tier runs by default through
+  the official Copilot SDK; disable it deliberately with
   `FLOE_LIVE_RUNTIME_TIER=off` (a visible, announced opt-out, not a silent skip).

@@ -28,6 +28,14 @@ function result(value: { content: Array<{ type: string; text?: string; data?: st
   };
 }
 
+function resultCode(value: { details: Record<string, unknown> }): string | undefined {
+  const refusal = value.details.refusal;
+  if (refusal && typeof refusal === "object" && typeof (refusal as { code?: unknown }).code === "string") {
+    return (refusal as { code: string }).code;
+  }
+  return undefined;
+}
+
 function directTool(
   name: string,
   description: string,
@@ -39,8 +47,27 @@ function directTool(
     name,
     description,
     parameters: zodToJsonSchema(schema, { $refStrategy: "none" }) as Record<string, unknown>,
-    async handler(args: unknown, _invocation) {
-      return result(await execute(schema.parse(args) as Record<string, unknown>, handle));
+    // The handler is the Bridge's authority boundary: it resolves the active
+    // delivery and invokes the Bus with Bridge-only or delivery-scoped authority.
+    skipPermission: true,
+    async handler(args: unknown, invocation) {
+      const callId = invocation.toolCallId;
+      const normalizedArgs = args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {};
+      handle.recordToolActivity({ name, call_id: callId, arguments: normalizedArgs });
+      try {
+        const execution = await execute(schema.parse(args) as Record<string, unknown>, handle);
+        const toolResult = result(execution);
+        handle.recordToolActivity({
+          name,
+          call_id: callId,
+          is_error: toolResult.resultType === "failure",
+          result_code: resultCode(execution),
+        });
+        return toolResult;
+      } catch (error) {
+        handle.recordToolActivity({ name, call_id: callId, is_error: true });
+        throw error;
+      }
     },
   };
 }
