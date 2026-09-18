@@ -3,11 +3,27 @@
 **Floe is a substrate. Install its command-line launcher, then install a surface
 that a person can interact with.**
 
-## Install from source
+## Install
 
-Floe is currently installed from this repository. Node.js and Rust with `cargo`
-are required: the CLI install builds both the TypeScript command and its native
-authority broker.
+Floe installs as a single command from GitHub — no clone, no registry, no
+account, and no Rust toolchain (the native authority broker ships prebuilt in
+the package):
+
+```bash
+npm install -g github:floe-ai/floe
+```
+
+Open a **new** shell afterwards, then run `floe`. To remove it later:
+
+```bash
+npm rm -g floe
+```
+
+### Install from a checkout (for developing Floe)
+
+Contributors working in this repository can install the same `floe` from source.
+This path builds the native authority broker, so Node.js and Rust with `cargo`
+are required:
 
 ```bash
 npm install
@@ -16,13 +32,7 @@ npm run install:cli
 
 `install:cli` builds and globally installs an independent copy of `floe`; it
 does not link the command back to the checkout. Open a new shell after it
-finishes. To remove the command later:
-
-```bash
-npm rm -g floe-cli
-```
-
-Until the global install is complete, run the CLI from the repository with
+finishes. Before it completes, the CLI can be run from the repository with
 `node bin/floe.mjs <args>`.
 
 ## Launch Floe

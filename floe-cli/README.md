@@ -6,30 +6,31 @@ running) and opens a surface.
 
 ## Install (put `floe` on your PATH)
 
-From the repository root:
+Floe installs as a single command straight from GitHub — no clone, no registry,
+no account, and no Rust toolchain (the native authority broker ships prebuilt):
+
+```bash
+npm install -g github:floe-ai/floe
+```
+
+Open a **new** shell and `floe` is available everywhere. To remove it:
+`npm rm -g floe`.
+
+> Floe is distributed from the `floe-ai/floe` repository as one generated
+> package, not a registry. Publishing to npm later is the same artifact pushed
+> to a registry, so only the install command changes.
+
+### Install from a checkout (for developing Floe)
+
+Contributors working in this repository install the same `floe` from source.
+This builds the native authority broker, so Rust with `cargo` is also required:
 
 ```bash
 npm install          # once, to install workspace dependencies
-npm run install:cli  # builds the CLI and installs `floe` globally
+npm run install:cli  # builds the services and installs `floe` globally
 ```
 
-`install:cli` builds the native authority broker (requires Rust/cargo) and the
-TypeScript, then runs `npm install -g ./floe-cli`. After it finishes, open a
-**new** shell and `floe` is available everywhere — nothing needs to be linked by
-hand.
-
-To do the two steps yourself:
-
-```bash
-npm run build --workspace floe-cli   # native broker + dist
-npm install -g ./floe-cli            # put `floe` on PATH
-```
-
-To remove it: `npm rm -g floe-cli`.
-
-> This package is not published to a registry. Global-install-from-checkout is
-> the supported install path while Floe is pre-release, which is why it is
-> marked `private`.
+Open a **new** shell afterwards. To remove it: `npm rm -g floe`.
 
 ## First run
 
