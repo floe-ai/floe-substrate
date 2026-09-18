@@ -5,12 +5,12 @@
  * sequence and hands back the authenticated client helpers the slice tests use.
  * It is parameterised by runtime adapter so the same lifecycle can be proven on
  * both the fake adapter (fast, no network) and the real FloeRuntimeAdapter
- * (spawns the vendor `copilot --acp` CLI). Nothing here bypasses authority: every
+ * (uses the official Copilot SDK). Nothing here bypasses authority: every
  * privileged call is authenticated with a real broker-minted credential.
  */
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createServer } from "node:net";
 import YAML from "yaml";
 import type { LocalConfig } from "../../floe-cli/src/config.js";
@@ -20,6 +20,12 @@ import {
   fetchHostControlToken,
   registerLocalWorkspaceViaBroker
 } from "../../floe-cli/src/operation-client.js";
+import {
+  assembleLiveToolEvidence,
+  assertExactLiveToolEvidence,
+  type LiveToolCase,
+  type LiveToolEvidence,
+} from "./live-evidence.js";
 
 /** One runtime-adapter tier the slice can be proven against. */
 export interface SliceTier {
@@ -180,6 +186,41 @@ export class SliceHarness {
     return path;
   }
 
+  async captureLiveToolEvidence(input: {
+    case: LiveToolCase;
+    workspace_id: string;
+    trigger_event_id: string;
+    trigger_source_endpoint_id: string;
+  }): Promise<{ evidence: LiveToolEvidence; path: string }> {
+    const [deliveryResult, telemetryResult, eventsResult] = await Promise.all([
+      this.get<{ deliveries: unknown[] }>(
+        `/v1/delivery?workspace_id=${encodeURIComponent(input.workspace_id)}&limit=500`
+      ),
+      this.get<{ records: unknown[] }>(
+        `/v1/runtime/telemetry?workspace_id=${encodeURIComponent(input.workspace_id)}&limit=500`
+      ),
+      this.get<{ events: unknown[] }>(
+        `/v1/events?workspace_id=${encodeURIComponent(input.workspace_id)}&limit=500`
+      ),
+    ]);
+    const evidence = assembleLiveToolEvidence({
+      case: input.case,
+      trigger_event_id: input.trigger_event_id,
+      trigger_source_endpoint_id: input.trigger_source_endpoint_id,
+      deliveries: deliveryResult.deliveries ?? [],
+      telemetry: telemetryResult.records ?? [],
+      events: eventsResult.events ?? [],
+      bus_messages: this.busMessages,
+    });
+    assertExactLiveToolEvidence(evidence);
+    const directory = process.env.FLOE_LIVE_EVIDENCE_DIR
+      ? resolve(process.env.FLOE_LIVE_EVIDENCE_DIR)
+      : join(tmpdir(), "floe-live-evidence");
+    const path = join(directory, `${Date.now()}-${this.tier.id}-${input.case}.json`);
+    writeFileSync(path, JSON.stringify(sanitizeEvidence(evidence), null, 2), "utf8");
+    return { evidence, path };
+  }
+
   /**
    * Register (and select) the local workspace through the native broker exactly
    * as `floe start` does, then open an operator operation session for it. The
@@ -191,15 +232,6 @@ export class SliceHarness {
     const { workspace_id } = await registerLocalWorkspaceViaBroker(locator, true);
     this.operationSessionBearer = await this.mintOperationSession(workspace_id);
     return workspace_id;
-  }
-
-  function sanitizeEvidence(value: unknown): unknown {
-    if (Array.isArray(value)) return value.map(sanitizeEvidence);
-    if (!value || typeof value !== "object") return value;
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [
-      key,
-      /token|bearer|authorization|credential|secret/i.test(key) ? "[redacted]" : sanitizeEvidence(child),
-    ]));
   }
 
   /**
@@ -284,6 +316,7 @@ async function removeTemp(path: string): Promise<void> {
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
+
   }
   rmSync(path, { recursive: true, force: true });
 }
@@ -316,4 +349,13 @@ async function freePort(): Promise<number> {
       server.close(() => resolve(port));
     });
   });
+}
+
+function sanitizeEvidence(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeEvidence);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [
+    key,
+    /token|bearer|authorization|credential|secret/i.test(key) ? "[redacted]" : sanitizeEvidence(child),
+  ]));
 }

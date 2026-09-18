@@ -25,11 +25,17 @@ export type SubstrateSessionHandle = {
   recordToolActivity: (entry: {
     name: string;
     call_id?: string;
+    lifecycle?: "started" | "completed" | "failed";
+    provenance?: string;
     is_error?: boolean;
     arguments?: Record<string, unknown>;
+    result_type?: "success" | "failure";
+    result_value?: string;
     result_code?: string;
   }) => void;
 };
+
+export const FLOE_DIRECT_TOOL_CALLBACK_PROVENANCE = "floe_direct_tool_callback";
 
 export const FLOE_RUNTIME_TOOL_IDENTITY: SubstrateToolIdentity = {
   runtimeName: "floe-runtime",

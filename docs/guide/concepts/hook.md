@@ -7,19 +7,19 @@ The bridge fires that hook at the matching lifecycle point. Handlers run sequent
 in registration order; a handler that throws is caught and logged — it never crashes
 the run.
 
-## Active hooks
+## SDK runtime hooks
 
 | Hook | Fires on | Payload carries |
 |---|---|---|
 | `SessionStart` | A new SDK session is created for an (actor, context) pair | `provider`, `model_id`, endpoint/workspace/delivery ids, `reason: "session_created"` |
 | `BeforeTurn` | Just before a [[Delivery and Turn|Turn]] runs | endpoint/delivery ids and the delivery's origin; `kind: "thread"` is legacy storage compatibility, while new contracts use Context |
 | `TurnEnd` | A turn finishes | `visible_output`, `tool_activity`, `emitted_events` |
-| `WebhookReceived` | An inbound webhook lands | `route_id`, `event_id`, `context_id`, `target_endpoint_id`, `content`, `metadata` |
 | `Error` | An unhandled error occurs in a turn | `error` |
-| `ContextCompacted` | A [[Context]]'s history is truncated to a summary | `context_id`, `summary_event_id` |
-| `ContextHistoryCleared` | A context's history is wiped | `context_id`, `events_deleted` |
-| `ParticipantAdded` | An endpoint joins a context | `context_id`, `endpoint_id` |
-| `ParticipantRemoved` | An endpoint leaves a context | `context_id`, `endpoint_id` |
+
+The current SDK runtime path fires only these four hooks. Direct tool activity
+is retained in the turn work log, not exposed as an extension hook.
+`WebhookReceived` is a Bridge ingress hook, not an SDK runtime hook. Other
+names in the registry are not promises that the SDK path fires them.
 
 ## BeforeTurn injection
 

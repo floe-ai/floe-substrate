@@ -7,6 +7,7 @@ import {
   executeCancelPulse, executeReadArtefact,
 } from "../runtime-core/index.js";
 import {
+  FLOE_DIRECT_TOOL_CALLBACK_PROVENANCE,
   FLOE_RUNTIME_TOOL_IDENTITY,
   SUBSTRATE_TOOL_DEFINITIONS,
   type SubstrateSessionHandle,
@@ -24,12 +25,15 @@ function result(value: { content: Array<{ type: string; text?: string; data?: st
     binaryResultsForLlm: value.content
       .filter(block => block.type === "image" && block.data && block.mimeType)
       .map(block => ({ data: block.data!, mimeType: block.mimeType! })),
-    resultType: value.details.ok === false ? "failure" : "success",
+    resultType: value.details.ok === false ? "failure" as const : "success" as const,
   };
 }
 
 function resultCode(value: { details: Record<string, unknown> }): string | undefined {
-  const refusal = value.details.refusal;
+  const receipt = value.details.receipt;
+  const refusal = receipt && typeof receipt === "object"
+    ? (receipt as { refusal?: unknown }).refusal
+    : value.details.refusal;
   if (refusal && typeof refusal === "object" && typeof (refusal as { code?: unknown }).code === "string") {
     return (refusal as { code: string }).code;
   }
@@ -53,19 +57,37 @@ function directTool(
     async handler(args: unknown, invocation) {
       const callId = invocation.toolCallId;
       const normalizedArgs = args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {};
-      handle.recordToolActivity({ name, call_id: callId, arguments: normalizedArgs });
+      handle.recordToolActivity({
+        name,
+        call_id: callId,
+        lifecycle: "started",
+        provenance: FLOE_DIRECT_TOOL_CALLBACK_PROVENANCE,
+        arguments: normalizedArgs,
+      });
       try {
         const execution = await execute(schema.parse(args) as Record<string, unknown>, handle);
         const toolResult = result(execution);
         handle.recordToolActivity({
           name,
           call_id: callId,
+          lifecycle: toolResult.resultType === "failure" ? "failed" : "completed",
+          provenance: FLOE_DIRECT_TOOL_CALLBACK_PROVENANCE,
           is_error: toolResult.resultType === "failure",
+          result_type: toolResult.resultType,
+          result_value: toolResult.textResultForLlm,
           result_code: resultCode(execution),
         });
         return toolResult;
       } catch (error) {
-        handle.recordToolActivity({ name, call_id: callId, is_error: true });
+        handle.recordToolActivity({
+          name,
+          call_id: callId,
+          lifecycle: "failed",
+          provenance: FLOE_DIRECT_TOOL_CALLBACK_PROVENANCE,
+          is_error: true,
+          result_type: "failure",
+          result_value: error instanceof Error ? error.message : String(error),
+        });
         throw error;
       }
     },

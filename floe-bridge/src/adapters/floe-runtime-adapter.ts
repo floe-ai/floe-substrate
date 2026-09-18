@@ -73,9 +73,16 @@ function recordToolActivity(turn: FloeTurn, entry: WorkLogToolEntry): void {
   }
   if (!existing.name && entry.name) existing.name = entry.name;
   if (entry.is_error !== undefined) existing.is_error = entry.is_error;
+  if (
+    entry.lifecycle !== undefined
+    && (existing.lifecycle === undefined || entry.lifecycle !== "started")
+  ) existing.lifecycle = entry.lifecycle;
+  if (entry.provenance !== undefined) existing.provenance = entry.provenance;
   if (entry.summary !== undefined) existing.summary = entry.summary;
   if (entry.duration_ms !== undefined) existing.duration_ms = entry.duration_ms;
   if (entry.arguments !== undefined) existing.arguments = entry.arguments;
+  if (entry.result_type !== undefined) existing.result_type = entry.result_type;
+  if (entry.result_value !== undefined) existing.result_value = entry.result_value;
   if (entry.result_code !== undefined) existing.result_code = entry.result_code;
 }
 
@@ -210,6 +217,21 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       await this.throwIfCancelled(session, turn);
       turn.visible_output = typeof result.text === "string" ? result.text : "";
       if (model) session.model = model;
+      await this.appendTelemetry(context, turn, "sdk_tool_evidence", {
+        sdk_session_id: result.sessionId,
+        offered_tool_names: session.directTools.map(tool => tool.name),
+        registration_acknowledgement: {
+          exposed: false,
+          reason: "copilot_sdk_does_not_expose_tool_registration_acknowledgement",
+        },
+        exposure_proof: turn.tool_activity.length > 0
+          ? {
+              kind: "first_exact_callback",
+              tool_call_id: turn.tool_activity[0]?.call_id ?? null,
+            }
+          : null,
+        tool_calls: turn.tool_activity,
+      });
       await this.recordUsage(context, turn, result);
       await this.finalizeTurn(context, turn, result);
 
@@ -368,11 +390,16 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       const turn = session.activeTurn;
       if (!turn || turn.finalized) return;
       if (event.status === "started") {
-        recordToolActivity(turn, { name: event.title || event.kind, call_id: event.id });
+        recordToolActivity(turn, {
+          name: event.title || event.kind,
+          call_id: event.id,
+          lifecycle: "started",
+        });
       } else {
         recordToolActivity(turn, {
           name: event.title || event.kind,
           call_id: event.id,
+          lifecycle: event.status === "failed" ? "failed" : "completed",
           is_error: event.status === "failed",
         });
       }

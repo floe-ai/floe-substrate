@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import YAML from "yaml";
 import { SliceHarness, fileExists, waitFor, type SliceTier } from "./slice-harness.js";
@@ -9,18 +9,16 @@ import {
   announceLiveTierDisabled,
   assertLiveRuntimeReady
 } from "./live-runtime.js";
+import { assertExactLiveToolEvidence, type LiveToolCase } from "./live-evidence.js";
 
-// The vertical slice proves the same substrate lifecycle on two runtime-adapter
-// tiers. Tier one drives the FakeRuntimeAdapter: fast, no network, always runs.
-// Tier two drives the real FloeRuntimeAdapter against a live `copilot --acp`
-// session with the cheapest advertised model — this is the only automated test
-// that touches the privileged real adapter, and it genuinely exercises the
-// daemon's claim that the fake and real adapters behave identically at attach.
+// The fake tier proves the full substrate lifecycle without a provider. The
+// live tier below isolates each required SDK tool callback so one case cannot
+// accidentally satisfy the other.
 const FAKE_TIER: SliceTier = { id: "fake", adapter: "fake", provider: "fake", model: "fake", live: false };
 const LIVE_TIER: SliceTier = { id: "live-copilot", adapter: "floe-runtime", provider: "copilot", model: LIVE_TIER_MODEL, live: true };
 
-// The core attach -> emit -> delivery -> turn-end lifecycle runs on BOTH tiers.
-for (const tier of [FAKE_TIER, LIVE_TIER]) {
+// The provider-free core lifecycle always runs.
+for (const tier of [FAKE_TIER]) {
   const disabled = tier.live && LIVE_TIER_DISABLED;
   if (disabled) announceLiveTierDisabled();
   const declare = disabled ? describe.skip : describe;
@@ -103,15 +101,6 @@ for (const tier of [FAKE_TIER, LIVE_TIER]) {
       });
 
       await waitFor(async () => h.runtimeResults(workspaceId, agentEndpointId).then((events) => events.length >= 1), "runtime result", tier.live ? 120_000 : 20_000);
-      if (tier.live) {
-        await waitFor(async () => {
-          const { events } = await h.get<{ events: any[] }>(`/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&limit=100`);
-          return events.some((event) =>
-            event.source_endpoint_id === agentEndpointId &&
-            event.content?.text === "live direct-tool success",
-          );
-        }, "direct Bridge emit tool result", 120_000);
-      }
       await waitFor(() => h.sawBusEvents([
         "event_submitted",
         "destination_selector_resolved",
@@ -152,6 +141,133 @@ for (const tier of [FAKE_TIER, LIVE_TIER]) {
     }, tier.live ? 180_000 : 90_000);
   });
 }
+
+if (LIVE_TIER_DISABLED) announceLiveTierDisabled();
+const declareLive = LIVE_TIER_DISABLED ? describe.skip : describe;
+
+declareLive("vertical slice exact Copilot SDK tools [live-copilot]", () => {
+  const h = new SliceHarness(LIVE_TIER);
+
+  beforeEach(async () => {
+    await assertLiveRuntimeReady();
+    await h.start();
+  }, 120_000);
+
+  afterEach(async () => {
+    await h.stop();
+  });
+
+  async function prepareCase(): Promise<{
+    workspaceId: string;
+    agentEndpointId: string;
+    humanEndpointId: string;
+  }> {
+    const workspaceId = await h.registerAndAuthorize(h.projectPath);
+    const agentEndpointId = `actor:${workspaceId}:floe`;
+    const humanEndpointId = `actor:${workspaceId}:operator`;
+    await waitFor(async () => {
+      const { endpoints } = await h.get<{ endpoints: any[] }>(
+        `/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`
+      );
+      return endpoints.some(endpoint => endpoint.endpoint_id === agentEndpointId);
+    }, "agent endpoint registration");
+    await h.post("/v1/endpoints/register", {
+      endpoint_id: humanEndpointId,
+      workspace_id: workspaceId,
+      name: "Operator",
+      status: "online",
+    });
+    await h.post("/v1/runtime/bindings", {
+      scope: "workspace_default",
+      workspace_id: workspaceId,
+      auth_profile: "copilot-atvi",
+      provider: LIVE_TIER.provider,
+      model: LIVE_TIER.model,
+    });
+    await waitFor(async () => {
+      const { endpoints } = await h.get<{ endpoints: any[] }>(
+        `/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`
+      );
+      return endpoints.some(endpoint =>
+        endpoint.endpoint_id === agentEndpointId && endpoint.status === "idle"
+      );
+    }, "runtime configured status");
+    return { workspaceId, agentEndpointId, humanEndpointId };
+  }
+
+  async function runToolCase(caseName: LiveToolCase, prompt: string): Promise<void> {
+    const { workspaceId, agentEndpointId, humanEndpointId } = await prepareCase();
+    let triggerEventId: string | null = null;
+    let evidenceError: unknown;
+    try {
+      const accepted = await h.post<{ event_id: string }>("/v1/events/emit", {
+        type: "message",
+        workspace_id: workspaceId,
+        source_endpoint_id: humanEndpointId,
+        destination: { kind: "endpoint", endpoint_id: agentEndpointId },
+        thread_id: `thread:${caseName}`,
+        correlation_id: null,
+        content: { text: prompt, data: {} },
+        response: { expected: false },
+        metadata: {},
+      });
+      triggerEventId = accepted.event_id;
+      await waitFor(
+        async () => h.runtimeResults(workspaceId, agentEndpointId).then(events => events.length === 1),
+        `${caseName} runtime result`,
+        120_000
+      );
+      await waitFor(async () => {
+        const { records } = await h.get<{ records: any[] }>(
+          `/v1/runtime/telemetry?workspace_id=${encodeURIComponent(workspaceId)}&limit=500`
+        );
+        return records.some(record => record.kind === "sdk_tool_evidence");
+      }, `${caseName} SDK tool evidence`, 120_000);
+      await waitFor(
+        () => h.sawBusEvents(["delivery_acknowledged"]),
+        `${caseName} delivery acknowledgement`,
+        120_000
+      );
+    } catch (error) {
+      evidenceError = error;
+    } finally {
+      if (triggerEventId) {
+        const captured = await h.captureLiveToolEvidence({
+          case: caseName,
+          workspace_id: workspaceId,
+          trigger_event_id: triggerEventId,
+          trigger_source_endpoint_id: humanEndpointId,
+        });
+        if (!evidenceError) assertExactLiveToolEvidence(captured.evidence);
+      }
+    }
+    if (evidenceError) throw evidenceError;
+    await h.post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/delete`, { delete_locator: true });
+  }
+
+  it("records one exact successful emit callback", async () => {
+    await runToolCase(
+      "emit-success",
+      [
+        "Call the `emit` tool exactly once with this exact input:",
+        "{\"type\":\"message\",\"destination\":\"operator\",\"text\":\"live direct-tool success\"}.",
+        "Do not call any other tool. After the tool finishes, reply exactly: tool attempted.",
+      ].join(" ")
+    );
+  }, 180_000);
+
+  it("records one exact denied use_capability callback", async () => {
+    await runToolCase(
+      "use-capability-denied",
+      [
+        "Call the `use_capability` tool exactly once with this exact input:",
+        "{\"operation_id\":\"command.list\",\"operation_version\":\"1\",",
+        "\"input_schema_version\":\"1\",\"input\":{}}.",
+        "Do not call any other tool. After the denial, reply exactly: denial observed.",
+      ].join(" ")
+    );
+  }, 180_000);
+});
 
 // The remaining slices exercise the Bus pulse engine, extension discovery and
 // endpoint resolution. They are adapter-independent, so they run on the fake

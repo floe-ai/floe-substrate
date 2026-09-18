@@ -48,9 +48,13 @@ export type WorkLogEvent = {
 export type WorkLogToolEntry = {
   name: string;
   call_id?: string;
+  lifecycle?: "started" | "completed" | "failed";
+  provenance?: string;
   summary?: string;
   is_error?: boolean;
   arguments?: Record<string, unknown>;
+  result_type?: "success" | "failure";
+  result_value?: string;
   result_code?: string;
   files_touched?: string[];
   duration_ms?: number;
@@ -124,7 +128,8 @@ function renderWorkLogEntry(entry: WorkLogEntry): string {
       const status = tool.is_error ? " ❌" : "";
       const summary = tool.summary ? `: ${tool.summary}` : "";
       const duration = tool.duration_ms != null ? ` (${tool.duration_ms}ms)` : "";
-      lines.push(`- ${tool.name}${summary}${duration}${status}`);
+      const lifecycle = tool.lifecycle ? ` [${tool.lifecycle}]` : "";
+      lines.push(`- ${tool.name}${lifecycle}${summary}${duration}${status}`);
       if (tool.files_touched && tool.files_touched.length > 0) {
         for (const file of tool.files_touched) {
           lines.push(`  - 📄 ${file}`);

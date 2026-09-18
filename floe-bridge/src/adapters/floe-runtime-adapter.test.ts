@@ -70,7 +70,26 @@ describe("FloeRuntimeAdapter SDK route", () => {
 
     await adapter.handleBundle(context(), bundle(), { model: "creation-model" } as any);
 
-    expect(createdConfig).toMatchObject({ model: "creation-model" });
+    expect(createdConfig).toMatchObject({
+      model: "creation-model",
+      availableTools: [
+        "emit",
+        "request",
+        "discover_capabilities",
+        "use_capability",
+        "create_pulse",
+        "list_pulses",
+        "pause_pulse",
+        "resume_pulse",
+        "cancel_pulse",
+        "read_artefact",
+      ],
+    });
+    expect((createdConfig!.tools as any[]).map(tool => tool.name)).toEqual(createdConfig!.availableTools);
+    expect((createdConfig!.tools as any[]).find(tool => tool.name === "emit")).toMatchObject({
+      skipPermission: true,
+      parameters: expect.objectContaining({ type: "object", additionalProperties: false }),
+    });
   });
 
   it("separates first-session system instructions, forwards model selection, and reuses the SDK session", async () => {
@@ -182,6 +201,7 @@ describe("FloeRuntimeAdapter SDK route", () => {
     const ctx = context();
     ctx.bus.emit = vi.fn(async () => ({ event_id: "event-1", accepted_at: "now", event: { artefact_version_ids: [] } }));
     ctx.bus.listEndpoints = vi.fn(async () => [{ endpoint_id: "actor:workspace:test:operator", name: "operator" }]);
+    ctx.bus.appendRuntimeTelemetry = vi.fn(async () => {});
     ctx.hooks = {
       hasHandlers: (name: string) => name === "TurnEnd",
       fire: async (_name: string, payload: any) => { activity.push(...payload.tool_activity); return []; },
@@ -193,9 +213,29 @@ describe("FloeRuntimeAdapter SDK route", () => {
     expect(activity).toEqual([{
       name: "emit",
       call_id: "tool-call-1",
+      lifecycle: "completed",
+      provenance: "floe_direct_tool_callback",
       arguments: { type: "message", destination: "operator", text: "once" },
       is_error: false,
+      result_type: "success",
+      result_value: expect.stringContaining("event-1"),
     }]);
+    const toolEvidence = ctx.bus.appendRuntimeTelemetry.mock.calls
+      .map(([entry]: any[]) => entry)
+      .find((entry: any) => entry.kind === "sdk_tool_evidence");
+    expect(toolEvidence.payload).toMatchObject({
+      sdk_session_id: "sdk-session",
+      registration_acknowledgement: {
+        exposed: false,
+        reason: "copilot_sdk_does_not_expose_tool_registration_acknowledgement",
+      },
+      exposure_proof: { kind: "first_exact_callback", tool_call_id: "tool-call-1" },
+      tool_calls: [expect.objectContaining({
+        call_id: "tool-call-1",
+        lifecycle: "completed",
+        provenance: "floe_direct_tool_callback",
+      })],
+    });
   });
 });
 
@@ -268,7 +308,7 @@ describe("direct substrate tools", () => {
     const invokeOperation = vi.fn(async () => ({
       kind: "rejected",
       refusal: {
-        code: "operation_not_granted",
+        code: "operation_grant_required",
         message: "This operation is not granted to the runtime delivery.",
         retryable: false,
         required_action: "request_grant",
@@ -303,27 +343,57 @@ describe("direct substrate tools", () => {
     const capability = tools.find(tool => tool.name === "use_capability")!;
 
     await expect(capability.handler(
-      { operation_id: "live.ungranted.operation", operation_version: "1", input_schema_version: "1", input: {} },
+      { operation_id: "command.list", operation_version: "1", input_schema_version: "1", input: {} },
       { sessionId: "s", toolCallId: "t", toolName: "use_capability" },
-    )).resolves.toMatchObject({ resultType: "failure", textResultForLlm: expect.stringContaining("operation_not_granted") });
+    )).resolves.toMatchObject({ resultType: "failure", textResultForLlm: expect.stringContaining("operation_grant_required") });
     expect(invokeOperation).toHaveBeenCalledWith(
       "workspace:test",
       "test-authority",
-      expect.objectContaining({ operation_id: "live.ungranted.operation" }),
+      expect.objectContaining({ operation_id: "command.list" }),
     );
     expect(recordToolActivity).toHaveBeenNthCalledWith(1, {
       name: "use_capability",
       call_id: "t",
+      lifecycle: "started",
+      provenance: "floe_direct_tool_callback",
       arguments: {
-        operation_id: "live.ungranted.operation",
+        operation_id: "command.list",
         operation_version: "1",
         input_schema_version: "1",
         input: {},
       },
     });
-    expect(recordToolActivity).toHaveBeenNthCalledWith(2, {
-      name: "use_capability", call_id: "t", is_error: true, result_code: "operation_not_granted",
+    expect(recordToolActivity).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      name: "use_capability",
+      call_id: "t",
+      lifecycle: "failed",
+      provenance: "floe_direct_tool_callback",
+      is_error: true,
+      result_type: "failure",
+      result_value: expect.stringContaining("operation_grant_required"),
+      result_code: "operation_grant_required",
+    }));
+
+    const completed = vi.fn(async () => {});
+    const sdkSession = new (CopilotSession as any)("sdk-session-1", {});
+    sdkSession._rpc = { tools: { handlePendingToolCall: completed } };
+    sdkSession.registerTools(tools);
+    sdkSession._dispatchEvent({
+      type: "external_tool.requested",
+      data: {
+        requestId: "request-denied-1",
+        toolCallId: "tool-denied-1",
+        toolName: "use_capability",
+        arguments: { operation_id: "command.list", operation_version: "1", input_schema_version: "1", input: {} },
+      },
     });
+    await vi.waitFor(() => expect(completed).toHaveBeenCalledWith({
+      requestId: "request-denied-1",
+      result: expect.objectContaining({
+        resultType: "failure",
+        textResultForLlm: expect.stringContaining("operation_grant_required"),
+      }),
+    }));
   });
 
   it("dispatches SDK external tool requests through registered Bridge handlers", async () => {
@@ -364,6 +434,13 @@ describe("direct substrate tools", () => {
     });
 
     await vi.waitFor(() => expect(completed).toHaveBeenCalledTimes(1));
+    expect(completed).toHaveBeenCalledWith({
+      requestId: "request-1",
+      result: expect.objectContaining({
+        resultType: "success",
+        textResultForLlm: expect.any(String),
+      }),
+    });
     expect(emitted).toEqual([expect.objectContaining({
       type: "message",
       source_endpoint_id: "actor:workspace:test:worker",
@@ -372,8 +449,89 @@ describe("direct substrate tools", () => {
       metadata: expect.objectContaining({ origin: "floe_emit_tool", delivery_id: "delivery-1", runtime_turn_id: "rt-1" }),
     })]);
     expect(activity).toEqual([
-      { name: "emit", call_id: "tool-call-1", arguments: { type: "message", destination: "operator", text: "exact provenance" } },
-      { name: "emit", call_id: "tool-call-1", is_error: false },
+      {
+        name: "emit",
+        call_id: "tool-call-1",
+        lifecycle: "started",
+        provenance: "floe_direct_tool_callback",
+        arguments: { type: "message", destination: "operator", text: "exact provenance" },
+      },
+      {
+        name: "emit",
+        call_id: "tool-call-1",
+        lifecycle: "completed",
+        provenance: "floe_direct_tool_callback",
+        is_error: false,
+        result_type: "success",
+        result_value: expect.stringContaining("event-emit-1"),
+        result_code: undefined,
+      },
     ]);
+  });
+});
+
+describe("F1 cancellation regression", () => {
+  it("allows next delivery after cancellation during session creation", async () => {
+    let createSession!: () => void;
+    const runtime = new FakeRuntime();
+    runtime.run = vi.fn(async (...args: any[]) => {
+      // Don't resolve session creation until the test allows it
+      await new Promise<void>(resolve => { createSession = resolve; });
+      await args[3]?.("created-session-f1");
+      // This part should not be reached if cancellation is correct
+      return { text: "must not persist", sessionId: "created-session-f1", stopReason: "idle", usage: { tokens: 1 }, elapsedMs: 1 };
+    }) as any;
+
+    const ctx = context();
+    ctx.bus.recordRuntimeTurnResult = vi.fn(async () => ({ request_resolved: false, result_event: { event_id: "result-f1-2" } }));
+    ctx.bus.appendRuntimeTelemetry = vi.fn();
+    const adapter = new FloeRuntimeAdapter({ runtimeFactory: () => runtime as any });
+
+    // --- First delivery ---
+    const firstDelivery = bundle("delivery-f1-1");
+    const firstWork = adapter.handleBundle(ctx, firstDelivery, undefined);
+
+    // Wait for the adapter to call runtime.run
+    await vi.waitFor(() => expect(runtime.run).toHaveBeenCalled());
+
+    // Cancel the first delivery while it's "creating the session"
+    expect(adapter.cancelDelivery(firstDelivery.delivery_id)).toBe(true);
+
+    // Now, let the session creation proceed
+    createSession();
+
+    // The first delivery should fail with an interruption error
+    await expect(firstWork).rejects.toThrow(/\[interrupted\]/);
+
+    // Public proof the cancellation produced a recorded result: the adapter
+    // emitted a runtime_error telemetry carrying the interrupted fault for the
+    // first delivery. We never inspect the adapter's private session map.
+    const firstErrorTelemetry = ctx.bus.appendRuntimeTelemetry.mock.calls
+      .map(([entry]: [{ kind: string; payload: { fault_code?: unknown } }]) => entry)
+      .find((entry: { kind: string }) => entry.kind === "runtime_error");
+    expect(firstErrorTelemetry).toBeDefined();
+    expect(firstErrorTelemetry.payload.fault_code).toBe("interrupted");
+
+    // --- Second delivery ---
+    const secondDelivery = bundle("delivery-f1-2");
+    runtime.run = vi.fn(async (...args: any[]) => {
+      await args[3]?.("created-session-f1-2");
+      return { text: "second delivery success", sessionId: "created-session-f1-2", stopReason: "idle", usage: null, elapsedMs: 1 };
+    }) as any;
+
+    // The second delivery reuses the same endpoint/context. If the cancelled
+    // turn had not freed the session, this call could not be accepted and
+    // completed. Its success is the public evidence the session is reusable.
+    const secondWork = adapter.handleBundle(ctx, secondDelivery, undefined);
+
+    // The second delivery should complete successfully
+    await expect(secondWork).resolves.toBeUndefined();
+
+    // Verify that the result of the second delivery was recorded
+    expect(ctx.bus.recordRuntimeTurnResult).toHaveBeenCalledWith(expect.objectContaining({
+      delivery_id: "delivery-f1-2",
+      outcome: "completed",
+      text: "second delivery success",
+    }));
   });
 });
