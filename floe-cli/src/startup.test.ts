@@ -75,7 +75,7 @@ describe("startAll refuses a bus it did not start", () => {
 
 describe("planSubstrateStart (connect-first policy)", () => {
   it("connects and spawns nothing when the bus is already reachable", () => {
-    // Reachable always means connect, regardless of the autostart policy — a
+    // Reachable always means connect, regardless of the start_on_demand policy — a
     // surface depends on the endpoint, not on a process being spawned for it.
     expect(planSubstrateStart(true, true)).toBe("connect");
     expect(planSubstrateStart(true, false)).toBe("connect");

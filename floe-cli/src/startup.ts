@@ -142,21 +142,21 @@ function readLogTail(path: string, lines = 25): string {
  */
 export type SubstratePlan = "connect" | "start" | "blocked";
 
-export function planSubstrateStart(reachable: boolean, autostart: boolean): SubstratePlan {
+export function planSubstrateStart(reachable: boolean, startOnDemand: boolean): SubstratePlan {
   if (reachable) return "connect";
-  return autostart ? "start" : "blocked";
+  return startOnDemand ? "start" : "blocked";
 }
 
 /**
  * Connect-first: if the bus is already serving, do nothing and report
- * "connect". Otherwise consult the machine's autostart policy — start the
+ * "connect". Otherwise consult the machine's start_on_demand policy — start the
  * substrate ("start") or refuse and report "blocked". This is the single
  * client-side readiness path shared by the launcher, `floe up`, and
  * `floe <surface>`.
  */
 export async function ensureSubstrateForClient(configPath: string, config: LocalConfig): Promise<SubstratePlan> {
   const reachable = await isHealthy(config.bus.http_base_url);
-  const plan = planSubstrateStart(reachable, config.services.autostart);
+  const plan = planSubstrateStart(reachable, config.services.start_on_demand);
   if (plan === "start") await startAll(configPath, config);
   return plan;
 }

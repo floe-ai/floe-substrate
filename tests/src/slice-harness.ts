@@ -61,7 +61,7 @@ export class SliceHarness {
       schema: "floe.local.v1",
       version: 1,
       home: this.temp,
-      services: { autostart: false, manager: "auto" },
+      services: { start_on_demand: false, manager: "auto" },
       bus: {
         listen: `127.0.0.1:${busPort}`,
         http_base_url: this.busUrl,
@@ -99,7 +99,7 @@ export class SliceHarness {
       schema: "floe.local.v1",
       version: 1,
       home: this.temp,
-      services: { autostart: false, manager: "auto" },
+      services: { start_on_demand: false, manager: "auto" },
       bus: {
         listen: `127.0.0.1:${busPort}`,
         http_base_url: this.busUrl,

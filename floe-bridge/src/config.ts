@@ -9,7 +9,7 @@ const LocalConfigSchema = z.object({
   version: z.number().int(),
   home: z.string(),
   services: z.object({
-    autostart: z.boolean(),
+    start_on_demand: z.boolean(),
     manager: z.string()
   }),
   bus: z.object({
@@ -47,7 +47,7 @@ export function defaultConfig(home = join(homedir(), ".floe")): LocalConfig {
     schema: "floe.local.v1",
     version: 1,
     home,
-    services: { autostart: true, manager: "auto" },
+    services: { start_on_demand: true, manager: "auto" },
     bus: {
       listen: "127.0.0.1:5377",
       http_base_url: "http://127.0.0.1:5377",
@@ -87,7 +87,25 @@ export function resolveLocalPath(configPath: string, home: string, pathValue: st
   return resolve(home ? expandHome(home) : dirname(configPath), expanded);
 }
 
+function rejectRetiredKeys(raw: unknown, configPath: string): void {
+  const services = (raw as { services?: Record<string, unknown> } | null)?.services;
+  if (services && Object.prototype.hasOwnProperty.call(services, "autostart")) {
+    throw new Error(
+      `Floe config at ${configPath} uses the retired key \`services.autostart\`.\n` +
+        `It carried two different meanings and was split into two independent settings:\n` +
+        `  - \`services.start_on_demand\` (config, default true): may a client start the\n` +
+        `    substrate when it is unreachable.\n` +
+        `  - start-at-login: no longer a config key — Floe reads it from the OS. Manage it\n` +
+        `    with \`floe service install\` / \`floe service uninstall\`.\n` +
+        `Remove \`services.autostart\`; to disable on-demand start set \`services.start_on_demand: false\`.\n` +
+        `Then re-run setup:\n` +
+        `  floe setup`
+    );
+  }
+}
+
 function parseLocalConfig(raw: unknown, configPath: string): LocalConfig {
+  rejectRetiredKeys(raw, configPath);
   const result = LocalConfigSchema.safeParse(raw);
   if (result.success) return result.data;
   const details = result.error.issues

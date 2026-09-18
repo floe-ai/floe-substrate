@@ -124,10 +124,10 @@ configCommand.command("edit").description("Open config in EDITOR or print path")
   spawn(editor, [configPath], { stdio: "inherit", shell: true });
 });
 
-// Auto-start the machine can own: install Floe as a real OS auto-start so a
-// person does not have to type anything. Honest about platform reach — see
-// service.ts. This is distinct from the services.autostart policy (which only
-// governs whether a client may start the substrate on demand).
+// Start-at-login the machine can own: install Floe as a real OS start-at-login so
+// a person does not have to type anything. Honest about platform reach — see
+// service.ts. This is distinct from the services.start_on_demand policy (which
+// only governs whether a client may start the substrate on demand).
 const service = program.command("service").description("Install/remove Floe auto-start on this machine");
 service.command("install").description("Install Floe to start automatically on this machine").action(() => {
   const { configPath } = ensureConfig(program.opts().config);
@@ -360,7 +360,7 @@ async function registerCwdWorkspaceBestEffort(config: LocalConfig): Promise<void
 
 function printServiceNotRunning(config: LocalConfig): void {
   console.error(`The Floe substrate is not running at ${config.bus.http_base_url}.`);
-  console.error("This machine is set not to start it on demand (services.autostart is off),");
+  console.error("This machine is set not to start it on demand (services.start_on_demand is off),");
   console.error("so Floe is expected to be running as a managed service here.");
   console.error("Start it now with `floe start`, or have this machine start it for you:");
 }

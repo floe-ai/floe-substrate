@@ -15,7 +15,7 @@ const OLD_CONFIG_WEB = {
   schema: "floe.local.v1",
   version: 1,
   home: "/tmp/floe",
-  services: { autostart: true, manager: "auto", start_web: true },
+  services: { start_on_demand: true, manager: "auto", start_web: true },
   bus: {
     listen: "127.0.0.1:5377",
     http_base_url: "http://127.0.0.1:5377",
@@ -52,7 +52,7 @@ const OLD_CONFIG_APP = {
   schema: "floe.local.v1",
   version: 1,
   home: "/tmp/floe",
-  services: { autostart: true, manager: "auto", start_app: true },
+  services: { start_on_demand: true, manager: "auto", start_app: true },
   bus: {
     listen: "127.0.0.1:5377",
     http_base_url: "http://127.0.0.1:5377",
@@ -122,7 +122,7 @@ describe("incompatible config rejection (no migration)", () => {
     }
   });
 
-  it("fails fast for an old app-keyed config now that floe-app has left the repo", () => {
+  it("fails fast for an app-keyed config now that floe-app has left the repo", () => {
     const tmp = makeTmp();
     try {
       const cfgPath = join(tmp, "config.yaml");
@@ -139,6 +139,60 @@ describe("incompatible config rejection (no migration)", () => {
       const message = thrown!.message;
       expect(message).toContain("incompatible with this version of Floe");
       expect(message).toContain("floe setup");
+      expect(message).toContain(cfgPath);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses the retired services.autostart key by naming both replacements", () => {
+    const tmp = makeTmp();
+    try {
+      const cfgPath = join(tmp, "config.yaml");
+      // A config written before the split, when a single `autostart` key meant
+      // both "start on demand" and "start at login". It must be refused with a
+      // message naming both replacements rather than guessing which was meant.
+      const retired = {
+        schema: "floe.local.v1",
+        version: 1,
+        home: "/tmp/floe",
+        services: { autostart: false, manager: "auto" },
+        bus: {
+          listen: "127.0.0.1:5377",
+          http_base_url: "http://127.0.0.1:5377",
+          ws_base_url: "ws://127.0.0.1:5377",
+          data_dir: "./bus",
+          log_dir: "./logs/bus"
+        },
+        bridge: {
+          data_dir: "./bridge",
+          log_dir: "./logs/bridge",
+          bus_url: "ws://127.0.0.1:5377",
+          workspace_access: { local_paths: true }
+        },
+        library: {
+          configs_dir: "./configs",
+          skills_dir: "./skills",
+          extensions_dir: "./extensions",
+          mcp_dir: "./mcp",
+          templates_dir: "./templates"
+        }
+      };
+      writeFileSync(cfgPath, YAML.stringify(retired), "utf8");
+
+      let thrown: Error | undefined;
+      try {
+        ensureConfig(cfgPath);
+      } catch (error) {
+        thrown = error as Error;
+      }
+
+      expect(thrown, "expected ensureConfig to refuse the retired autostart key").toBeDefined();
+      const message = thrown!.message;
+      expect(message).toContain("services.autostart");
+      expect(message).toContain("services.start_on_demand");
+      expect(message).toContain("start-at-login");
+      expect(message).toContain("floe service");
       expect(message).toContain(cfgPath);
     } finally {
       rmSync(tmp, { recursive: true, force: true });

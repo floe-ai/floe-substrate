@@ -55,7 +55,7 @@ offers operating-system auto-start. `--yes` accepts the auto-start offer,
 before startup.
 
 `floe up` does not launch anything. It starts the local substrate only when
-`services.autostart` allows it; otherwise it reports that the configured
+`services.start_on_demand` allows it; otherwise it reports that the configured
 substrate is not running.
 
 ## Surface registry
@@ -86,7 +86,7 @@ Windows installs a per-user scheduled task at logon and does not require
 administrator rights. Linux systemd and macOS launchd installation are not
 implemented.
 
-This is separate from `services.autostart`, which controls whether a
+This is separate from `services.start_on_demand`, which controls whether a
 client may start an unreachable substrate. Start at login is not a configuration
 key.
 
