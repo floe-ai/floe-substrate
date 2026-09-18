@@ -1,6 +1,6 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
 import { spawn, spawnSync } from "node:child_process";
 import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
@@ -18,10 +18,6 @@ type ServiceRecord = {
 };
 
 type ServiceRecords = Partial<Record<ServiceName, ServiceRecord>>;
-
-export function repoRoot(): string {
-  return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-}
 
 export function recordsPath(configPath: string, config: LocalConfig): string {
   return join(resolveLocalPath(configPath, config.home, "."), "services.json");
@@ -55,21 +51,20 @@ export function isPidRunning(pid: number): boolean {
   }
 }
 
-export function npmCommand(): string {
-  return "npm";
-}
-
-export function commandForNpm(args: string[]): { command: string; args: string[] } {
-  if (process.platform !== "win32") return { command: "npm", args };
-  return {
-    command: process.env.ComSpec ?? "cmd.exe",
-    args: ["/d", "/s", "/c", ["npm", ...args.map(quoteCmdArg)].join(" ")]
-  };
-}
-
-function quoteCmdArg(value: string): string {
-  if (/^[A-Za-z0-9_./:=@\\-]+$/.test(value)) return value;
-  return `"${value.replace(/"/g, '\\"')}"`;
+export function serviceEntry(service: ServiceName): string {
+  const pkg = service === "bus" ? "floe-bus" : "floe-bridge";
+  const require = createRequire(import.meta.url);
+  try {
+    return require.resolve(`${pkg}/dist/index.js`);
+  } catch {
+    throw new Error(
+      `Floe cannot find the ${pkg} service. Its built entry (${pkg}/dist/index.js) is not ` +
+        `resolvable from the floe CLI. This means the install is incomplete: ${pkg} must be ` +
+        `installed alongside floe-cli (in a dev checkout, run \`npm install\` then \`npm run build\`; ` +
+        `for a global install, reinstall with \`npm run install:cli\`, which installs the bus and ` +
+        `bridge alongside the CLI).`
+    );
+  }
 }
 
 export async function startService(configPath: string, config: LocalConfig, service: ServiceName, extraEnv: Readonly<Record<string, string>> = {}, instanceId?: string): Promise<ServiceRecord> {
@@ -77,15 +72,14 @@ export async function startService(configPath: string, config: LocalConfig, serv
   const existing = records[service];
   if (existing && isPidRunning(existing.pid)) return existing;
 
-  const root = repoRoot();
-  const workspace = service === "bus" ? "floe-bus" : "floe-bridge";
-  const args = ["run", "dev", "--workspace", workspace, "--", "--config", configPath];
-  const commandLine = commandForNpm(args);
+  const entry = serviceEntry(service);
+  const command = process.execPath;
+  const args = [entry, "daemon", "--config", configPath];
   const defaultLogFile = serviceLogPath(configPath, config, service);
   mkdirSync(dirname(defaultLogFile), { recursive: true });
   const { logFile, logFd } = openServiceLog(defaultLogFile, service);
-  const child = spawn(commandLine.command, commandLine.args, {
-    cwd: root,
+  const child = spawn(command, args, {
+    cwd: dirname(entry),
     detached: true,
     stdio: ["ignore", logFd, logFd],
     windowsHide: true,
@@ -107,8 +101,8 @@ export async function startService(configPath: string, config: LocalConfig, serv
   const record: ServiceRecord = {
     pid: child.pid ?? 0,
     started_at: new Date().toISOString(),
-    command: commandLine.command,
-    args: commandLine.args,
+    command,
+    args,
     log_file: logFile,
     ...(service === "bus" && instanceId ? { instance_id: instanceId } : {})
   };

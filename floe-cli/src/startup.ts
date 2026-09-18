@@ -17,8 +17,9 @@
  * someone else's live bus while reporting success is the defect this guards.
  */
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import type { LocalConfig } from "./config.js";
-import { readRecords, isPidRunning, startService } from "./process-manager.js";
+import { readRecords, isPidRunning, startService, serviceLogPath } from "./process-manager.js";
 import { fetchHostControlToken, fetchBridgeServiceToken } from "./operation-client.js";
 
 export class ForeignBusError extends Error {
@@ -81,13 +82,50 @@ async function classifyRunningBus(
   return { state: "foreign", detail };
 }
 
-export async function waitForHealth(baseUrl: string, label: string): Promise<void> {
+/**
+ * Wait for the Bus to become healthy, but stay honest about failure. A silent
+ * "did not become healthy" with an empty log is exactly the false-signal this
+ * project keeps hitting, so this checks two things each loop: is the Bus
+ * answering /health, and is the process we started still alive? If the process
+ * has exited, we stop waiting immediately and raise with the tail of its log,
+ * so the person is told what actually happened instead of watching a spawned-
+ * but-dead process time out. This is startup synchronisation against a real
+ * readiness signal (/health), not architectural polling of ongoing state.
+ */
+export async function waitForBusHealth(configPath: string, config: LocalConfig): Promise<void> {
+  const baseUrl = config.bus.http_base_url;
   const started = Date.now();
   while (Date.now() - started < 30_000) {
     if (await isHealthy(baseUrl)) return;
+    const record = readRecords(configPath, config).bus;
+    if (record && record.pid && !isPidRunning(record.pid)) {
+      const logPath = record.log_file ?? serviceLogPath(configPath, config, "bus");
+      throw new Error(
+        `floe-bus started but exited before becoming healthy (pid ${record.pid}). `
+        + `Last lines of ${logPath}:\n${readLogTail(logPath)}`,
+      );
+    }
     await sleep(500);
   }
-  throw new Error(`${label} did not become healthy at ${baseUrl}`);
+  const record = readRecords(configPath, config).bus;
+  const logPath = record?.log_file ?? serviceLogPath(configPath, config, "bus");
+  const running = record ? isPidRunning(record.pid) : false;
+  throw new Error(
+    `floe-bus did not become healthy at ${baseUrl} within 30s `
+    + `(process ${running ? "is still running but not answering" : "is not running"}). `
+    + `Last lines of ${logPath}:\n${readLogTail(logPath)}`,
+  );
+}
+
+function readLogTail(path: string, lines = 25): string {
+  try {
+    if (!existsSync(path)) return "(no log output was written)";
+    const text = readFileSync(path, "utf8").trimEnd();
+    if (!text) return "(log file is empty)";
+    return text.split(/\r?\n/).slice(-lines).join("\n");
+  } catch {
+    return "(log file could not be read)";
+  }
 }
 
 /**
@@ -104,21 +142,21 @@ export async function waitForHealth(baseUrl: string, label: string): Promise<voi
  */
 export type SubstratePlan = "connect" | "start" | "blocked";
 
-export function planSubstrateStart(reachable: boolean, startOnDemand: boolean): SubstratePlan {
+export function planSubstrateStart(reachable: boolean, autostart: boolean): SubstratePlan {
   if (reachable) return "connect";
-  return startOnDemand ? "start" : "blocked";
+  return autostart ? "start" : "blocked";
 }
 
 /**
  * Connect-first: if the bus is already serving, do nothing and report
- * "connect". Otherwise consult the machine's start-on-demand policy — start the
+ * "connect". Otherwise consult the machine's autostart policy — start the
  * substrate ("start") or refuse and report "blocked". This is the single
  * client-side readiness path shared by the launcher, `floe up`, and
  * `floe <surface>`.
  */
 export async function ensureSubstrateForClient(configPath: string, config: LocalConfig): Promise<SubstratePlan> {
   const reachable = await isHealthy(config.bus.http_base_url);
-  const plan = planSubstrateStart(reachable, config.services.start_on_demand);
+  const plan = planSubstrateStart(reachable, config.services.autostart);
   if (plan === "start") await startAll(configPath, config);
   return plan;
 }
@@ -136,7 +174,7 @@ export async function startAll(configPath: string, config: LocalConfig): Promise
     const instanceId = randomUUID();
     const hostControlToken = await fetchHostControlToken(busUrl);
     await startService(configPath, config, "bus", { FLOE_HOST_CONTROL_TOKEN: hostControlToken }, instanceId);
-    await waitForHealth(busUrl, "floe-bus");
+    await waitForBusHealth(configPath, config);
     // Re-verify: the healthy bus must be the one we just started. If a foreign
     // process raced onto the URL, or ours died and a stale one answers, fail
     // loudly rather than seed into it.

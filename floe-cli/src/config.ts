@@ -9,18 +9,12 @@ const LocalConfigSchema = z.object({
   version: z.number().int(),
   home: z.string(),
   services: z.object({
-    // start_on_demand is the client start policy: may a client (a surface, or
-    // the launcher) start the substrate itself when it is not already
-    // reachable? true on a personal machine (typing `floe` just works); set
-    // false where Floe runs as an externally managed service, so a client
-    // reports "not running" instead of starting a rogue copy. Explicit
-    // `floe start` always works regardless.
-    //
-    // Note: this is start-on-demand only. Start-at-login (Floe comes up with
-    // the machine) is NOT a config key — it is the OS auto-start, which either
-    // exists or does not, read from the OS via `floe service status`. We never
-    // record a second, forgeable source of truth for it here.
-    start_on_demand: z.boolean(),
+    // autostart is the client start policy: may Floe start the substrate itself
+    // when it is not already reachable? true on a personal machine (typing
+    // `floe` just works); set false where Floe runs as an externally managed
+    // service, so a client reports "not running" instead of starting a rogue
+    // copy. It does not by itself install any OS auto-start (see `floe service`).
+    autostart: z.boolean(),
     manager: z.string()
   }),
   bus: z.object({
@@ -56,7 +50,7 @@ export function defaultConfig(home = join(homedir(), ".floe")): LocalConfig {
     schema: "floe.local.v1",
     version: 1,
     home,
-    services: { start_on_demand: true, manager: "auto" },
+    services: { autostart: true, manager: "auto" },
     bus: {
       listen: "127.0.0.1:5377",
       http_base_url: "http://127.0.0.1:5377",
@@ -97,7 +91,6 @@ export function resolveLocalPath(configPath: string, home: string, pathValue: st
 }
 
 function parseLocalConfig(raw: unknown, configPath: string): LocalConfig {
-  rejectRetiredAutostartKey(raw, configPath);
   const result = LocalConfigSchema.safeParse(raw);
   if (result.success) return result.data;
   const details = result.error.issues
@@ -110,32 +103,6 @@ function parseLocalConfig(raw: unknown, configPath: string): LocalConfig {
       `  rm -rf ~/.floe            # or: rm ${configPath}\n` +
       `  floe setup\n` +
       `Details: ${details}`
-  );
-}
-
-/**
- * `services.autostart` was one key doing two jobs, and its meaning changed
- * under existing configs (it once installed a login item; it was later
- * repurposed as the start-on-demand policy). Rather than silently reinterpret a
- * stale value, we refuse and say plainly it is gone and what replaced it, so
- * nobody's old "no thanks to a login item" is misread as "this machine is
- * managed, never start on demand".
- */
-function rejectRetiredAutostartKey(raw: unknown, configPath: string): void {
-  const services = (raw as { services?: unknown } | null)?.services;
-  if (!services || typeof services !== "object") return;
-  if (!("autostart" in (services as Record<string, unknown>))) return;
-  throw new Error(
-    `Floe config at ${configPath} uses \`services.autostart\`, which has been removed.\n` +
-      `It was one key doing two different jobs, so it was split and will not be guessed:\n` +
-      `  - start-on-demand (may a surface start Floe when it is not already running)\n` +
-      `    is now \`services.start_on_demand\` (default: true).\n` +
-      `  - start-at-login (Floe comes up when you log in) is no longer a config key.\n` +
-      `    It is the OS auto-start, managed with \`floe service install\` and shown by\n` +
-      `    \`floe service status\`.\n` +
-      `Reset your local config and re-run setup:\n` +
-      `  rm ${configPath}            # or: rm -rf ~/.floe\n` +
-      `  floe setup`
   );
 }
 

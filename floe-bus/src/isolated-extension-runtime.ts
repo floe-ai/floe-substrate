@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
-import debugQuickJsVariant from "@jitl/quickjs-singlefile-mjs-debug-asyncify";
 import releaseQuickJsVariant from "@jitl/quickjs-singlefile-mjs-release-asyncify";
 import {
   newQuickJSAsyncWASMModuleFromVariant,
@@ -256,7 +255,13 @@ export class QuickJsExtensionSandbox {
 
   async activate(entries: VerifiedExtensionPackage["entry_points"]): Promise<void> {
     if (this.runtime) throw new ExtensionSandboxError("extension_already_active", "Extension package is already active.");
-    const variant = this.options.variant === "debug" ? debugQuickJsVariant : releaseQuickJsVariant;
+    // The release variant is a runtime dependency and ships with every install.
+    // The debug variant is a dev-only devDependency, so it is lazily imported
+    // only when explicitly requested — a static import would force every
+    // production install to resolve a package it does not ship, crashing at load.
+    const variant = this.options.variant === "debug"
+      ? (await import("@jitl/quickjs-singlefile-mjs-debug-asyncify")).default
+      : releaseQuickJsVariant;
     const quickJs = await newQuickJSAsyncWASMModuleFromVariant(variant);
     const runtime = quickJs.newRuntime();
     runtime.setMemoryLimit(this.options.memory_limit_bytes ?? DEFAULT_MEMORY_BYTES);

@@ -17,7 +17,7 @@ import {
 import { registerOperationsCommand } from "./operations-command.js";
 import { registerIdentityCommand } from "./identity-command.js";
 import { registerLocalWorkspaceViaBroker } from "./operation-client.js";
-import { startAll, waitForHealth, isHealthy, ensureSubstrateForClient } from "./startup.js";
+import { startAll, waitForBusHealth, isHealthy, ensureSubstrateForClient } from "./startup.js";
 import {
   listSurfaces,
   registerSurface,
@@ -50,7 +50,7 @@ program
     const { configPath, config } = ensureConfig(program.opts().config);
     if (options.repair) clearRecords(configPath, config);
     await startAll(configPath, config);
-    await verifyHealth(config);
+    await verifyHealth(configPath, config);
     const currentWorkspace = findAncestorWithFloe(process.cwd());
     if (currentWorkspace) {
       await registerCurrentWorkspace(config, currentWorkspace, true);
@@ -126,8 +126,8 @@ configCommand.command("edit").description("Open config in EDITOR or print path")
 
 // Auto-start the machine can own: install Floe as a real OS auto-start so a
 // person does not have to type anything. Honest about platform reach — see
-// service.ts. This is start-at-login, distinct from the services.start_on_demand
-// policy (which only governs whether a client may start the substrate on demand).
+// service.ts. This is distinct from the services.autostart policy (which only
+// governs whether a client may start the substrate on demand).
 const service = program.command("service").description("Install/remove Floe auto-start on this machine");
 service.command("install").description("Install Floe to start automatically on this machine").action(() => {
   const { configPath } = ensureConfig(program.opts().config);
@@ -360,7 +360,7 @@ async function registerCwdWorkspaceBestEffort(config: LocalConfig): Promise<void
 
 function printServiceNotRunning(config: LocalConfig): void {
   console.error(`The Floe substrate is not running at ${config.bus.http_base_url}.`);
-  console.error("This machine is set not to start it on demand (services.start_on_demand is off),");
+  console.error("This machine is set not to start it on demand (services.autostart is off),");
   console.error("so Floe is expected to be running as a managed service here.");
   console.error("Start it now with `floe start`, or have this machine start it for you:");
 }
@@ -454,8 +454,8 @@ function collectArg(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 
-async function verifyHealth(config: LocalConfig): Promise<void> {
-  await waitForHealth(config.bus.http_base_url, "floe-bus");
+async function verifyHealth(configPath: string, config: LocalConfig): Promise<void> {
+  await waitForBusHealth(configPath, config);
 }
 
 async function printStatus(configPath: string, config: LocalConfig): Promise<void> {
