@@ -631,7 +631,8 @@ describe("BridgeDaemon – TurnFailedError handling (FIX 1)", () => {
       expect(turnResults).toEqual([expect.objectContaining({
         delivery_id: "del-turn-fail-1",
         outcome: "failed",
-        text: expect.stringContaining("HTTP 400")
+        text: expect.stringContaining("HTTP 400"),
+        metadata: expect.objectContaining({ runtime: "test-failing-adapter" })
       })]);
 
       // An injected runtime turn may already have effects, so it is terminal

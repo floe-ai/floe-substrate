@@ -1,21 +1,17 @@
 /**
  * @invariant This adapter drives Floe runtime turns through floe-runtime's
- * CopilotRuntime, which spawns and speaks ACP to the official `copilot --acp`
- * CLI. floe-runtime holds NO credentials: the vendor CLI authenticates itself
+ * CopilotRuntime. The runtime uses the official Copilot SDK. floe-runtime holds NO credentials:
+ * the vendor CLI authenticates itself
  * through its own supported flow. This adapter therefore never resolves or
  * brokers a model credential — that is the whole point of replacing pi here.
  *
- * Step 1 scope (this file): the text path. A delivery is rendered to a prompt,
- * run as one ACP turn, and its final message recorded as the turn result, with
- * telemetry and a work-log entry. Writing back into Floe from inside the turn
- * (the emit/request substrate tools) is Step 2, delivered by exposing those
- * tools to the vendor CLI over an MCP server (session/new mcpServers) — ACP has
- * no way to inject arbitrary client tools otherwise. It is deliberately absent
- * here so Step 1 proves the transport end-to-end first.
+ * A delivery is rendered to a prompt, run as one SDK turn, and its final
+ * message is recorded with telemetry and a work-log entry. Bridge-owned
+ * substrate tools are direct SDK tools.
  */
-import { randomUUID, randomBytes } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { CopilotRuntime } from "floe-runtime/adapters/copilot";
-import type { ActivityEvent, RunResult, McpServer } from "floe-runtime/adapters/copilot";
+import type { ActivityEvent, HostTool, RunResult } from "floe-runtime/adapters/copilot";
 import type { AgentRuntimeConfig } from "../auth.js";
 import type { DeliveryBundle, RuntimeOperationAuthoritySession } from "../bus-client.js";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
@@ -23,7 +19,8 @@ import type { HookPayload } from "../hooks.js";
 import type { WorkLogEntry, WorkLogToolEntry } from "../runtime-core/index.js";
 import { buildSystemPrompt, deliveryToPrompt, appendWorkLog, renderHookInjections } from "../runtime-core/index.js";
 import type { EmittedEventSummary, SubstrateTurnAnchor } from "../runtime-core/index.js";
-import { SubstrateToolBridge } from "./floe-mcp-server.js";
+import { createDirectSubstrateTools } from "./floe-direct-tools.js";
+import type { SubstrateSessionHandle } from "../runtime-core/substrate-tool-definitions.js";
 import { TurnFailedError } from "./turn-failed-error.js";
 
 type FloeTurn = {
@@ -51,33 +48,68 @@ type FloeTurn = {
   dependency_requested: boolean;
   finalized: boolean;
   cancelled: boolean;
+  cancellation: Promise<void> | null;
+  cancellationFault: unknown;
 };
 
 type FloeSession = {
   runtime: CopilotRuntime;
-  /** ACP sessionId once run() has started a turn; null until the first turn. */
+  /** SDK sessionId once run() has started a turn; null until the first turn. */
   sessionId: string | null;
   endpointId: string;
   contextId: string;
   workspaceId: string;
-  /** Per-session capability token authorising MCP tool-call forwarding. */
-  mcpSessionToken: string;
+  directTools: HostTool[];
   model?: string;
   context?: RuntimeContext;
   activeTurn?: FloeTurn;
 };
+
+function recordToolActivity(turn: FloeTurn, entry: WorkLogToolEntry): void {
+  const existing = entry.call_id ? turn.tool_activity.find(activity => activity.call_id === entry.call_id) : undefined;
+  if (!existing) {
+    turn.tool_activity.push(entry);
+    return;
+  }
+  if (!existing.name && entry.name) existing.name = entry.name;
+  if (entry.is_error !== undefined) existing.is_error = entry.is_error;
+  if (
+    entry.lifecycle !== undefined
+    && (existing.lifecycle === undefined || entry.lifecycle !== "started")
+  ) existing.lifecycle = entry.lifecycle;
+  if (entry.provenance !== undefined) existing.provenance = entry.provenance;
+  if (entry.summary !== undefined) existing.summary = entry.summary;
+  if (entry.duration_ms !== undefined) existing.duration_ms = entry.duration_ms;
+  if (entry.arguments !== undefined) existing.arguments = entry.arguments;
+  if (entry.result_type !== undefined) existing.result_type = entry.result_type;
+  if (entry.result_value !== undefined) existing.result_value = entry.result_value;
+  if (entry.result_code !== undefined) existing.result_code = entry.result_code;
+}
 
 export class FloeRuntimeAdapter implements RuntimeAdapter {
   readonly name = "floe-runtime";
   // floe-runtime holds no credentials; the vendor CLI authenticates itself.
   private readonly sessions = new Map<string, FloeSession>();
   private readonly runtimeFactory: () => CopilotRuntime;
-  /** null when substrate write-back tools are disabled (e.g. in unit tests). */
-  private readonly substrateBridge: SubstrateToolBridge | null;
-
-  constructor(options?: { runtimeFactory?: () => CopilotRuntime; substrateTools?: boolean }) {
+  constructor(options?: { runtimeFactory?: () => CopilotRuntime }) {
     this.runtimeFactory = options?.runtimeFactory ?? (() => new CopilotRuntime());
-    this.substrateBridge = options?.substrateTools === false ? null : new SubstrateToolBridge();
+  }
+
+  private beginCancellation(session: FloeSession, turn: FloeTurn): void {
+    if (!session.sessionId || turn.cancellation) return;
+    turn.cancellation = session.runtime.quiesce(session.sessionId).catch(error => {
+      turn.cancellationFault = error;
+    });
+  }
+
+  private async throwIfCancelled(session: FloeSession, turn: FloeTurn): Promise<void> {
+    if (!turn.cancelled) return;
+    this.beginCancellation(session, turn);
+    await turn.cancellation;
+    if (turn.cancellationFault) throw turn.cancellationFault;
+    const interrupted = new Error("Runtime turn was cancelled before quiescence completed.");
+    (interrupted as Error & { code?: string }).code = "interrupted";
+    throw interrupted;
   }
 
   async handleBundle(context: RuntimeContext, bundle: DeliveryBundle, runtimeConfig?: AgentRuntimeConfig): Promise<void> {
@@ -87,7 +119,6 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
     }
 
     const model = runtimeConfig?.model?.trim() || undefined;
-    session.model = model;
     const freshSession = session.sessionId === null;
     const turn = this.startTurn(bundle);
     turn.operation_authority_session = context.operation_authority_session ?? null;
@@ -136,21 +167,19 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       injectedContext = renderHookInjections(hookResults);
     }
 
-    // ACP session/new has no system-prompt slot (confirmed against the spec:
-    // session/new takes only { cwd, mcpServers }). Floe's system prompt is
-    // therefore folded into the FIRST turn's prompt text only; reused ACP
-    // sessions already carry it in their conversation.
+    // The SDK owns system-message composition. Floe appends its instructions on
+    // creation so vendor guardrails remain active and user prompt ordering is
+    // unchanged.
     const parts: string[] = [];
-    if (freshSession) {
-      const systemPrompt = buildSystemPrompt(runtimeConfig?.instructions?.trim() ?? "");
-      if (systemPrompt) parts.push(systemPrompt);
-    }
     if (injectedContext) parts.push(injectedContext);
     parts.push(deliveryToPrompt(bundle));
     const prompt = parts.join("\n\n");
 
+    await this.throwIfCancelled(session, turn);
     const cwd = context.workspace_locator ?? process.cwd();
-    const mcpServers = await this.buildMcpServers(session);
+    const systemMessage = freshSession
+      ? buildSystemPrompt(runtimeConfig?.instructions?.trim() ?? "")
+      : "";
     console.log("[bridge] floe-runtime prompt injected", {
       delivery_id: bundle.delivery_id,
       runtime_turn_id: turn.runtime_turn_id,
@@ -158,23 +187,51 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       fresh_session: freshSession,
       model: model ?? "(default)",
       prompt_length: prompt.length,
-      mcp_servers: mcpServers.length,
     });
 
     try {
+      await this.throwIfCancelled(session, turn);
+      if (session.sessionId && model && session.model !== model) {
+        await session.runtime.setModel(session.sessionId, model);
+      }
       const result = await session.runtime.run(
         "actor",
         { prompt },
         cwd,
-        (sessionId) => {
+        async (sessionId) => {
           session.sessionId = sessionId;
           turn.thread_id = sessionId;
+          await this.throwIfCancelled(session, turn);
         },
-        { ...(model ? { model } : {}), ...(mcpServers.length ? { mcpServers } : {}) },
+        {
+          ...(model ? { model } : {}),
+          ...(session.directTools.length ? {
+            tools: session.directTools,
+            availableTools: session.directTools.map(tool => tool.name),
+          } : {}),
+          ...(systemMessage ? { systemMessage: { mode: "append" as const, content: systemMessage } } : {}),
+        },
         session.sessionId ? { sessionId: session.sessionId, scope: session.contextId } : { scope: session.contextId },
       );
 
+      await this.throwIfCancelled(session, turn);
       turn.visible_output = typeof result.text === "string" ? result.text : "";
+      if (model) session.model = model;
+      await this.appendTelemetry(context, turn, "sdk_tool_evidence", {
+        sdk_session_id: result.sessionId,
+        offered_tool_names: session.directTools.map(tool => tool.name),
+        registration_acknowledgement: {
+          exposed: false,
+          reason: "copilot_sdk_does_not_expose_tool_registration_acknowledgement",
+        },
+        exposure_proof: turn.tool_activity.length > 0
+          ? {
+              kind: "first_exact_callback",
+              tool_call_id: turn.tool_activity[0]?.call_id ?? null,
+            }
+          : null,
+        tool_calls: turn.tool_activity,
+      });
       await this.recordUsage(context, turn, result);
       await this.finalizeTurn(context, turn, result);
 
@@ -191,8 +248,17 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       }
 
       this.writeWorkLog(context, bundle, turn, "completed");
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+    } catch (caught) {
+      let error = caught;
+      if (turn.cancelled) {
+        this.beginCancellation(session, turn);
+        await turn.cancellation;
+        if (turn.cancellationFault) error = turn.cancellationFault;
+      }
+      const faultCode = typeof (error as { code?: unknown })?.code === "string"
+        ? (error as { code: string }).code
+        : null;
+      const errorMessage = faultCode ? `[${faultCode}] ${error instanceof Error ? error.message : String(error)}` : error instanceof Error ? error.message : String(error);
       const httpStatus = (() => {
         const status = (error as { httpStatus?: unknown; status?: unknown })?.httpStatus ?? (error as { status?: unknown })?.status;
         if (typeof status === "number") return status;
@@ -210,6 +276,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
 
       await this.appendTelemetry(context, turn, "runtime_error", {
         error_message: errorMessage,
+        fault_code: faultCode,
         http_status: httpStatus,
         provider: this.name,
         model: model ?? "(default)",
@@ -247,9 +314,8 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
     for (const session of this.sessions.values()) {
       const turn = session.activeTurn;
       if (!turn || turn.delivery_id !== deliveryId || turn.finalized) continue;
-      if (!session.sessionId) return false;
       turn.cancelled = true;
-      void session.runtime.interrupt(session.sessionId).catch(() => {});
+      this.beginCancellation(session, turn);
       return true;
     }
     return false;
@@ -259,24 +325,16 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
     for (const session of sessions) {
-      if (this.substrateBridge) this.substrateBridge.unregister(session.mcpSessionToken);
       try {
         await session.runtime.close();
       } catch (err) {
         console.error("[bridge] floe-runtime close failed", { endpoint_id: session.endpointId, error: String(err) });
       }
     }
-    if (this.substrateBridge) {
-      try {
-        await this.substrateBridge.stop();
-      } catch (err) {
-        console.error("[bridge] floe-runtime substrate bridge stop failed", { error: String(err) });
-      }
-    }
   }
 
   private getOrCreateSession(context: RuntimeContext, bundle: DeliveryBundle): FloeSession {
-    // One ACP session per (endpoint, context); a session for context A is never
+    // One SDK session per (endpoint, context); a session for context A is never
     // reused for context B. Session continuity across deliveries is handed to
     // floe-runtime via continuation.sessionId on run().
     const contextId = bundle.context_id ?? bundle.events[0]?.context_id ?? "no-context";
@@ -294,19 +352,15 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       endpointId: bundle.endpoint_id,
       contextId,
       workspaceId: bundle.workspace_id,
-      mcpSessionToken: randomBytes(32).toString("hex"),
+      directTools: [],
       context,
     };
-    // Register this session's write-back handle so the MCP server (spawned by
-    // the vendor CLI) can forward emit/request back to this authenticated
-    // Bridge, resolved to whichever turn is active on this session.
-    if (this.substrateBridge) {
-      this.substrateBridge.register(session.mcpSessionToken, {
+    const toolHandle: SubstrateSessionHandle = {
         getBus: () => session.context?.bus ?? context.bus,
-        getAnchor: () => (session.activeTurn && !session.activeTurn.finalized ? this.turnAnchor(session.activeTurn) : null),
+        getAnchor: () => (session.activeTurn && !session.activeTurn.finalized && !session.activeTurn.cancelled ? this.turnAnchor(session.activeTurn) : null),
         getActiveTurn: () => {
           const turn = session.activeTurn;
-          if (!turn || turn.finalized) return null;
+          if (!turn || turn.finalized || turn.cancelled) return null;
           // Getters/setters delegate to the live turn so the operation-authority
           // helper's cache refresh persists across tool calls within one turn.
           return {
@@ -323,19 +377,31 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
         isDependencyRequested: () => session.activeTurn?.dependency_requested ?? true,
         markDependencyRequested: () => { if (session.activeTurn) session.activeTurn.dependency_requested = true; },
         recordEmitted: (summary) => { session.activeTurn?.emitted_events.push(summary); },
-      });
-    }
+        recordToolActivity: (entry) => {
+          const turn = session.activeTurn;
+          if (!turn || turn.finalized) return;
+          recordToolActivity(turn, entry);
+        },
+    };
+    session.directTools = createDirectSubstrateTools(toolHandle);
     // Normalized activity events feed the work log's tool activity. floe-runtime
     // pushes these (no polling); a started/completed pair shares one toolCallId.
     runtime.on("activity", (event: ActivityEvent) => {
       const turn = session.activeTurn;
       if (!turn || turn.finalized) return;
       if (event.status === "started") {
-        turn.tool_activity.push({ name: event.title || event.kind, call_id: event.id });
+        recordToolActivity(turn, {
+          name: event.title || event.kind,
+          call_id: event.id,
+          lifecycle: "started",
+        });
       } else {
-        const entry = turn.tool_activity.find((t) => t.call_id === event.id);
-        if (entry) entry.is_error = event.status === "failed";
-        else turn.tool_activity.push({ name: event.title || event.kind, call_id: event.id, is_error: event.status === "failed" });
+        recordToolActivity(turn, {
+          name: event.title || event.kind,
+          call_id: event.id,
+          lifecycle: event.status === "failed" ? "failed" : "completed",
+          is_error: event.status === "failed",
+        });
       }
     });
     runtime.on("diagnostic", (text: string) => {
@@ -380,6 +446,8 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       dependency_requested: false,
       finalized: false,
       cancelled: false,
+      cancellation: null,
+      cancellationFault: null,
     };
   }
 
@@ -399,32 +467,6 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       target_node_id: turn.target_node_id,
       invocation_request_event_id: turn.invocation_request_event_id,
     };
-  }
-
-  /**
-   * The ACP `mcpServers` list handed to run(). One HTTP entry points the vendor
-   * CLI at the Bridge's in-process substrate MCP server (SubstrateToolBridge).
-   * copilot --acp advertises `mcpCapabilities.http` and ignores stdio entries
-   * despite the ACP spec's stdio MUST (verified live), so HTTP is the transport
-   * that actually works. The headers carry only this session's capability token
-   * — never a Floe/bus credential.
-   */
-  private async buildMcpServers(session: FloeSession): Promise<McpServer[]> {
-    if (!this.substrateBridge) return [];
-    await this.substrateBridge.ensureStarted();
-    // copilot --acp only connects to MCP servers over HTTP (it ignores stdio
-    // entries despite the ACP spec's stdio MUST — verified live). The Bridge
-    // serves the substrate tools in-process; copilot authenticates each request
-    // with the per-session token header. No subprocess, no credential leaves
-    // the Bridge.
-    return [{
-      type: "http",
-      name: "floe",
-      url: this.substrateBridge.mcpUrl,
-      headers: [
-        { name: this.substrateBridge.sessionTokenHeader, value: session.mcpSessionToken },
-      ],
-    }];
   }
 
   private async finalizeTurn(context: RuntimeContext, turn: FloeTurn, result: RunResult): Promise<void> {

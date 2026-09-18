@@ -8,8 +8,8 @@
  * from the active Delivery, not from tool input.
  *
  * These are extracted from the tool bodies (like executeEmit/executeRequest) so
- * the MCP server exposes them to the vendor CLI while running the real Bus call
- * in-process on the authenticated Bridge.
+ * direct SDK tools can invoke the real Bus call in-process on the authenticated
+ * Bridge.
  */
 import { randomUUID } from "node:crypto";
 import type {

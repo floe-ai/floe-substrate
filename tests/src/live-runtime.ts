@@ -1,10 +1,10 @@
 /**
  * Live runtime tier gating.
  *
- * The live tier drives the real FloeRuntimeAdapter, which spawns the official
- * `copilot --acp` CLI. That CLI authenticates itself against a GitHub Copilot
- * account; Floe brokers no model credential. A machine without `copilot`
- * installed and logged in therefore cannot run this tier.
+ * The live tier drives the real FloeRuntimeAdapter through the official
+ * Copilot SDK. The SDK uses vendor-managed Copilot authentication; Floe
+ * brokers no model credential. A machine without an authenticated Copilot
+ * SDK runtime therefore cannot run this tier.
  *
  * The project has learned that opt-in checks do not get run and that a test
  * which quietly skips is the same species of lie as a test that passes with
@@ -12,15 +12,14 @@
  * not reachable and the operator has not *deliberately* disabled the tier, the
  * pre-flight fails loudly with an actionable message rather than skipping.
  *
- * Model choice — verified live, not assumed. `copilot --acp` advertises its
- * model catalogue through ACP `session/new` (`models.availableModels`, each
- * carrying `_meta.copilotUsage` — the account billing multiplier). Probed live
+ * Model choice — verified live, not assumed. The SDK exposes its current model
+ * catalogue through `CopilotRuntime.models()`. Probed live
  * on 2026-09-15, `gpt-5-mini` is the cheapest genuinely-available model at a
  * `0x` usage multiplier (enabled, price category "low"), beating the next
  * cheapest `claude-haiku-4.5` / `gpt-5.4-mini` at `0.33x`. Copilot only reacts
- * to a model chosen with `session/set_model` after `session/new` — verified in
- * floe-runtime's copilot adapter — so the pinned model must be one the account
- * actually advertises. If it ever stops advertising `gpt-5-mini` we do NOT
+ * to a model passed in the SDK session-creation config. Established sessions
+ * may use the separate next-turn model-switch operation, but initial creation
+ * must receive the requested model. If it ever stops advertising `gpt-5-mini` we do NOT
  * silently substitute a pricier model: the pre-flight fails loudly and asks for
  * a deliberate re-pick.
  */
@@ -44,7 +43,7 @@ export function announceLiveTierDisabled(): void {
     "  LIVE RUNTIME TIER DISABLED (FLOE_LIVE_RUNTIME_TIER=off)\n" +
     "  The real FloeRuntimeAdapter was NOT exercised this run.\n" +
     "  Only the fake adapter tier ran. The privileged live surface\n" +
-    "  (attach + a real copilot --acp turn) is UNPROVEN.\n" +
+    "  (attach + a real Copilot SDK turn) is UNPROVEN.\n" +
     "============================================================\n"
   );
 }
@@ -61,10 +60,10 @@ export async function assertLiveRuntimeReady(): Promise<string> {
     models = await runtime.models(process.cwd());
   } catch (error) {
     throw new Error(
-      "Live runtime tier could not reach an authenticated `copilot --acp`.\n" +
+      "Live runtime tier could not reach an authenticated Copilot SDK runtime.\n" +
       `Underlying error: ${error instanceof Error ? error.message : String(error)}\n` +
-      "Install the GitHub Copilot CLI and sign in (`copilot`, then complete login) so the " +
-      "vendor CLI can authenticate itself; Floe brokers no model credential.\n" +
+      "Sign in to the GitHub Copilot client on this machine so its supported runtime can " +
+      "authenticate itself; Floe brokers no model credential.\n" +
       OPT_OUT_HINT
     );
   } finally {

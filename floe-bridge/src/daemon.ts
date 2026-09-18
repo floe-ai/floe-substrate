@@ -1015,7 +1015,7 @@ export class BridgeDaemon {
             outcome: "failed",
             text: errorSummary,
             metadata: {
-              runtime: "pi-agent-core",
+              runtime: this.adapter.name,
               origin: "turn_failed",
               model: error.model_id,
               provider: error.provider,

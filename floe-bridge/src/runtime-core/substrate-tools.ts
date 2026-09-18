@@ -5,8 +5,8 @@
  * into Floe from inside a turn. They are extracted from the tool bodies so that
  * every runtime shares ONE implementation:
  *   - pi-agent-core exposes them as native AgentTools that call these directly;
- *   - floe-runtime (which drives an external vendor CLI) exposes them over an
- *     MCP server whose callback runs these in-process on the Bridge.
+ *   - floe-runtime (which drives an external vendor CLI) exposes them as
+ *     direct SDK tools.
  *
  * The functions take a neutral turn anchor plus the raw tool params and perform
  * the bus.emit. They never resolve credentials: emit authority belongs to the

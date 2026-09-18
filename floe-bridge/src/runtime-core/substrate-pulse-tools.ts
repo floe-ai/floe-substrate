@@ -3,8 +3,8 @@
  *
  * Pulses are scheduled Events (one-off or cron) that fire canonical
  * `pulse.fired` Events to their subscribers. These functions are the pure
- * (bus, turn, params) → result bodies the MCP server exposes to the vendor CLI;
- * they carry no MCP types. Pulse authority is the authenticated Bridge
+ * (bus, turn, params) → result bodies direct SDK tools expose to the vendor CLI;
+ * they carry no transport types. Pulse authority is the authenticated Bridge
  * BusClient's own credential, not an operation-authority bearer: the pulse
  * routes (`/v1/pulses`) are not operation-gated.
  */
