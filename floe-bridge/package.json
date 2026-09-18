@@ -18,7 +18,7 @@
   },
   "dependencies": {
     "diff": "^9.0.0",
-    "floe-runtime": "github:floe-ai/floe-runtime#f9aa08a47898209c7a4270e2f73aee1bd3e17013",
+    "floe-runtime": "github:floe-ai/floe-runtime#4e21695972d29941f465f9edaf0f73a0a3c7acf0",
     "sharp": "0.35.4",
     "vite": "8.0.10",
     "yaml": "^2.6.0",
