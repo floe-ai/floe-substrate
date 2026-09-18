@@ -1,5 +1,6 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { spawn, spawnSync } from "node:child_process";
 import type { LocalConfig } from "./config.js";
@@ -54,15 +55,26 @@ export function isPidRunning(pid: number): boolean {
 export function serviceEntry(service: ServiceName): string {
   const pkg = service === "bus" ? "floe-bus" : "floe-bridge";
   const require = createRequire(import.meta.url);
+  // Layout 1 — sibling package: a dev workspace, or a global install that placed
+  // floe-bus/floe-bridge as real node_modules packages beside floe-cli. Resolve
+  // them by name so npm's own resolution finds the installed version.
   try {
     return require.resolve(`${pkg}/dist/index.js`);
   } catch {
+    // Layout 2 — single-package artifact: the release bundles all three service
+    // packages as sibling subdirectories of one installed package, so the bus and
+    // bridge are not node_modules packages. floe-cli's own module lives at
+    // <root>/floe-cli/dist/*, so the bus/bridge dist sits at <root>/floe-<name>/dist.
+    const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+    const artifactRoot = resolve(moduleDirectory, "..", "..");
+    const bundled = join(artifactRoot, pkg, "dist", "index.js");
+    if (existsSync(bundled)) return bundled;
     throw new Error(
       `Floe cannot find the ${pkg} service. Its built entry (${pkg}/dist/index.js) is not ` +
-        `resolvable from the floe CLI. This means the install is incomplete: ${pkg} must be ` +
-        `installed alongside floe-cli (in a dev checkout, run \`npm install\` then \`npm run build\`; ` +
-        `for a global install, reinstall with \`npm run install:cli\`, which installs the bus and ` +
-        `bridge alongside the CLI).`
+        `resolvable from the floe CLI, and no bundled copy was found at ${bundled}. This means ` +
+        `the install is incomplete: ${pkg} must ship with the CLI. In a dev checkout, run ` +
+        `\`npm install\` then \`npm run build\`; a released install already bundles the bus and ` +
+        `bridge alongside the CLI.`
     );
   }
 }
