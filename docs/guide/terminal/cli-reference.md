@@ -9,7 +9,7 @@ surfaces, and exposes substrate operations for terminal clients.**
 | `floe setup` | Create configuration, start services, check health, and offer auto-start |
 | `floe up` | Ensure the substrate is reachable without launching a surface |
 | `floe start` / `stop` / `restart` | Manage the local bus and bridge |
-| `floe status` | Show bus and bridge process state and bus health |
+| `floe status` | Show bus and bridge process state, bus health and version, and this copy's version |
 | `floe logs [service]` | Print logs for `bus`, `bridge`, or both |
 | `floe surface list` / `register` / `remove` | List surfaces; register or remove non-package surfaces |
 | `floe operations list` / `describe` / `invoke` | Discover and invoke Bus-owned semantic operations |
@@ -96,6 +96,10 @@ implemented.
 This is separate from `services.start_on_demand`, which controls whether a
 client may start an unreachable substrate. Start at login is not a configuration
 key.
+
+`floe service install` only works from a directly installed Floe. A copy that
+lives inside another package's `node_modules` refuses and says to install Floe
+directly (see [[Install and first run]]).
 
 ## Semantic operations
 

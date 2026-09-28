@@ -17,7 +17,8 @@ import {
 import { registerOperationsCommand } from "./operations-command.js";
 import { registerIdentityCommand } from "./identity-command.js";
 import { registerLocalWorkspaceViaBroker } from "./operation-client.js";
-import { startAll, waitForBusHealth, isHealthy, ensureSubstrateForClient } from "./startup.js";
+import { startAll, waitForBusHealth, isHealthy, ensureSubstrateForClient, runningBusVersion, describeVersionMismatch } from "./startup.js";
+import { thisInstallation, directInstallRequiredMessage } from "./installation.js";
 import {
   registerSurface,
   removeSurface,
@@ -132,6 +133,12 @@ configCommand.command("edit").description("Open config in EDITOR or print path")
 // only governs whether a client may start the substrate on demand).
 const service = program.command("service").description("Install/remove Floe auto-start on this machine");
 service.command("install").description("Install Floe to start automatically on this machine").action(() => {
+  const installation = thisInstallation();
+  if (installation.dependencyOf) {
+    console.error(directInstallRequiredMessage(installation));
+    process.exitCode = 1;
+    return;
+  }
   const { configPath } = ensureConfig(program.opts().config);
   const result = installService(configPath, cliInvocation());
   console.log(result.message);
@@ -298,7 +305,18 @@ async function runUp(): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  if (plan === "connect") await reportVersionMismatch(config);
   console.log(`Floe is running: ${config.bus.http_base_url}`);
+}
+
+/** Say plainly when the serving Floe is a different version; never restart it. */
+async function reportVersionMismatch(config: LocalConfig): Promise<void> {
+  const message = describeVersionMismatch(
+    config.bus.http_base_url,
+    thisInstallation().version,
+    await runningBusVersion(config.bus.http_base_url),
+  );
+  if (message) console.warn(message);
 }
 
 async function runLauncher(surfaceName?: string): Promise<void> {
@@ -313,6 +331,7 @@ async function runLauncher(surfaceName?: string): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  if (plan === "connect") await reportVersionMismatch(config);
   await registerCwdWorkspaceBestEffort(config);
   if (!hasBeenAsked(configPath, config, "start_at_login")) {
     // First launch means the person has never been asked — not that the config
@@ -387,6 +406,13 @@ function printServiceNotRunning(config: LocalConfig): void {
  * the person was actually told or asked something, so a caller can record it.
  */
 async function offerServiceInstall(configPath: string, opts: { assumeYes: boolean }): Promise<boolean> {
+  const installation = thisInstallation();
+  if (installation.dependencyOf) {
+    // A dependency's copy must never install anything the machine owns. Not
+    // recorded as "asked": the direct copy should still ask on its own launch.
+    console.log(directInstallRequiredMessage(installation));
+    return false;
+  }
   const status = serviceStatus();
   if (status.installed) return false;
   if (!status.supported) {
@@ -489,7 +515,11 @@ async function printStatus(configPath: string, config: LocalConfig): Promise<voi
     const running = record ? isPidRunning(record.pid) : false;
     console.log(`${service}: ${running ? "running" : "not running"}${record ? ` pid=${record.pid}` : ""}`);
   }
-  console.log(`bus: ${config.bus.http_base_url} ${await isHealthy(config.bus.http_base_url) ? "healthy" : "unreachable"}`);
+  const busVersion = await runningBusVersion(config.bus.http_base_url);
+  const healthy = await isHealthy(config.bus.http_base_url);
+  console.log(`bus: ${config.bus.http_base_url} ${healthy ? `healthy${busVersion ? ` (Floe ${busVersion})` : ""}` : "unreachable"}`);
+  const installation = thisInstallation();
+  console.log(`this copy: Floe ${installation.version ?? "(unknown version)"}${installation.dependencyOf ? `, installed as part of ${installation.dependencyOf}` : ""}`);
 }
 
 async function registerCurrentWorkspace(config: LocalConfig, locator: string, initAuthorized: boolean): Promise<void> {

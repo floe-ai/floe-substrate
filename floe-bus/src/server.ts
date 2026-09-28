@@ -15,6 +15,7 @@ import type { WorkspaceConfigurationPolicyProvider } from "./workspace-config-im
 import { parseListen } from "./config.js";
 import { BROADCAST_TARGETS, BusStore, ContextAnchorError, ContextNotFoundError, ContextParticipantError, ContextScopeAssignmentError, EndpointRetirementBlockedError, PulseNotFoundError, ScopeRequiredError, ScopeRetiredError, type EventCommand, type PulsePersistence, type PulseSubscriber } from "./store.js";
 import { PulseScheduler } from "./pulse-scheduler.js";
+import { BUS_VERSION } from "./version.js";
 import { EVENT_INGRESS_CAPABILITY } from "./event-ingress.js";
 import {
   isValidRenderer,
@@ -847,6 +848,10 @@ export async function createBusServer(
     // prove that a bus answering on a URL is the exact process it launched — not
     // a stale predecessor or a different install that happens to hold the port.
     instance_id: process.env.FLOE_BUS_INSTANCE_ID ?? null,
+    // The Floe release this bus is. Two copies of Floe can exist on one machine
+    // (a direct install and one inside a surface); whichever started serves, so
+    // a client needs this to tell it connected to a different version.
+    version: BUS_VERSION,
     time: new Date().toISOString()
   }));
 

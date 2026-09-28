@@ -138,6 +138,21 @@ On Windows, `floe service install` installs a per-user scheduled task that
 starts Floe at logon. Linux systemd and macOS launchd installation are not
 implemented.
 
+## Two copies of Floe
+
+A surface can carry Floe as a dependency, so one machine may have a copy you
+installed directly and a copy inside a surface. Whichever starts first serves;
+the other connects to it.
+
+- A copy reads where it lives. If it sits in another package's `node_modules`,
+  it is a dependency. Only a directly installed copy (a global install or a
+  checkout) may set up start-at-login, because uninstalling the surface would
+  remove a dependency's copy and silently break it. A dependency's copy says to
+  install Floe directly instead.
+- The bus reports its version at `/health`. When a copy connects to a running
+  Floe of a different version, it says so and leaves it running. `floe status`
+  shows both versions.
+
 See [[CLI reference]] for the complete command list.
 
 ## Implementation
@@ -149,5 +164,7 @@ See [[CLI reference]] for the complete command list.
 - `floe-cli/src/surface-catalog.ts` - merges detected and registered surfaces
 - `floe-cli/src/surfaces.ts` - on-disk surface registry and launching
 - `floe-cli/src/prompt-state.ts` - records one-time questions already asked
+- `floe-cli/src/installation.ts` - this copy's version and whether it is a dependency
+- `floe-bus/src/version.ts` - the version the bus reports at `/health`
 - `floe-cli/src/startup.ts` - connect-first substrate startup
 - `floe-cli/src/service.ts` - operating-system auto-start

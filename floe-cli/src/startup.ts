@@ -34,14 +34,14 @@ export class ForeignBusError extends Error {
   }
 }
 
-type BusHealth = { ok: boolean; instance_id: string | null };
+type BusHealth = { ok: boolean; instance_id: string | null; version: string | null };
 
 async function fetchBusHealth(baseUrl: string): Promise<BusHealth | null> {
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/health`);
     if (!response.ok) return null;
-    const body = (await response.json()) as { ok?: boolean; instance_id?: string | null };
-    return { ok: body.ok === true, instance_id: body.instance_id ?? null };
+    const body = (await response.json()) as { ok?: boolean; instance_id?: string | null; version?: string | null };
+    return { ok: body.ok === true, instance_id: body.instance_id ?? null, version: body.version ?? null };
   } catch {
     return null;
   }
@@ -49,6 +49,26 @@ async function fetchBusHealth(baseUrl: string): Promise<BusHealth | null> {
 
 export async function isHealthy(baseUrl: string): Promise<boolean> {
   return (await fetchBusHealth(baseUrl)) !== null;
+}
+
+/** The version the bus serving at `baseUrl` reports; null if unreachable or it reports none. */
+export async function runningBusVersion(baseUrl: string): Promise<string | null> {
+  return (await fetchBusHealth(baseUrl))?.version ?? null;
+}
+
+/**
+ * Compare this copy's version with the serving bus. Connect-first means the
+ * running substrate is the truth: a mismatch is stated, never "fixed" by
+ * restarting someone else's Floe. Returns the message to show, or null.
+ */
+export function describeVersionMismatch(url: string, ownVersion: string | null, busVersion: string | null): string | null {
+  if (!ownVersion || busVersion === ownVersion) return null;
+  const serving = busVersion ? `Floe ${busVersion}` : "an older Floe that does not report its version";
+  return (
+    `Note: connected to ${serving} at ${url}, but this copy is Floe ${ownVersion}.\n`
+    + `It was already running, so it is left as is. To run this version instead, stop it\n`
+    + `(\`floe stop\`) and start again.`
+  );
 }
 
 /**
