@@ -3131,6 +3131,9 @@ export async function createBusServer(
     });
     return {
       bearer_token: session.bearer_token,
+      // Names this one bearer so its holder, or the operator, can revoke it
+      // without revoking the whole identity.
+      authority_session_id: session.authority_session_id,
       workspace_id: session.workspace_id,
       expires_at: session.expires_at,
       identity: publicIdentity(identity),
@@ -3282,6 +3285,19 @@ export async function createBusServer(
       store.operationAuthoritySessions.revokeSession(session.authority_session_id);
     }
     return { revoked: true, identity_id: identity.identity_id };
+  });
+
+  // Revoke one bearer an identity holds, leaving the identity and its other
+  // sessions intact (host_control, like revoking the identity itself).
+  app.delete("/v1/clients/:identity_id/sessions/:authority_session_id", async (request, reply) => {
+    const authority = requestAuthorities.get(request);
+    if (authority?.audience !== "host_control") return sendTransportForbidden(reply);
+    const params = z.object({ identity_id: z.string().min(1), authority_session_id: z.string().min(1) }).parse(request.params);
+    const owned = store.clientIdentityStore.listSessionsForIdentity(params.identity_id)
+      .some((session) => session.authority_session_id === params.authority_session_id);
+    if (!owned) return reply.code(404).send({ error: "identity_session_not_found" });
+    store.operationAuthoritySessions.revokeSession(params.authority_session_id);
+    return { revoked: true, identity_id: params.identity_id, authority_session_id: params.authority_session_id };
   });
 
   app.delete("/v1/endpoints/:endpoint_id", async (request, reply) => {
@@ -4463,6 +4479,7 @@ export function resolveTransportRequirement(request: any, store: BusStore): Tran
     || route === "/v1/identities"
     || route === "/v1/clients"
     || route === "/v1/clients/:identity_id"
+    || route === "/v1/clients/:identity_id/sessions/:authority_session_id"
     || (route === "/v1/configs" && method !== "GET")
   ) {
     return { kind: "host_control" };

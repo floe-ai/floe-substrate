@@ -157,6 +157,24 @@ describe("executeReset", () => {
     expect(existsSync(join(home, "bridge", "state.json"))).toBe(false);
   });
 
+  it("keeps the identity by default, wipes the agent's run file, and removes the identity only when asked", () => {
+    mkdirSync(join(home, "identity"), { recursive: true });
+    mkdirSync(join(home, "run"), { recursive: true });
+    writeFileSync(join(home, "identity", "identity.json"), "{}", "utf8");
+    writeFileSync(join(home, "run", "identity-agent.json"), "{}", "utf8");
+
+    const plan = buildResetPlan(configPath, config);
+    expect(plan.preserve.map((t) => t.path)).toContain(join(home, "identity"));
+    executeReset(configPath, config);
+    expect(existsSync(join(home, "identity", "identity.json"))).toBe(true);
+    expect(existsSync(join(home, "run", "identity-agent.json"))).toBe(false);
+
+    const removing = buildResetPlan(configPath, config, { includeIdentity: true });
+    expect(removing.wipe.find((t) => t.path === join(home, "identity"))?.label).toMatch(/recovery phrase/);
+    executeReset(configPath, config, { includeIdentity: true });
+    expect(existsSync(join(home, "identity"))).toBe(false);
+  });
+
   it("deletes library directories", () => {
     writeFileSync(join(home, "extensions", "my-ext.json"), "{}", "utf8");
     writeFileSync(join(home, "configs", "agent.md"), "# agent", "utf8");

@@ -47,30 +47,30 @@ checks are exactly NIP-42.
 
 ## Who owns what
 
-**The client owns key material. The substrate never does.**
+**Floe's identity agent owns the person's key. The Bus never sees it, and
+surfaces never hold it.**
 
-- **Mnemonic generation, seed storage, and `nsec` custody are the client's
-  responsibility.** They do not happen in the Floe substrate repository and the
-  Bus never receives them. A client generates a BIP-39 mnemonic (or holds an
-  `nsec`), derives the key via NIP-06, and stores the secret using its own OS
-  keychain / secure storage.
-- **`floe-cli` offers**, as convenience, on the machine that holds
-  `host_control`:
-  - `floe identity generate` — generate a BIP-39 mnemonic and print the mnemonic
-    and derived `npub` **once**, storing nothing. Intended for the operator to
-    hand a seed to a client out of band. Optional; a client may generate its own.
+- A surface does not implement anything on this page. It asks the identity agent
+  to act and receives bearers. Build against the
+  [identity agent protocol](identity-agent-protocol.md) (`floe/identity` for
+  Node surfaces). The agent performs the challenge and signing below.
+- This page remains the Bus contract the agent speaks, and the reference for a
+  client that deliberately holds its own key outside Floe (for example, a key on
+  another machine). Such a client uses a maintained Nostr signer and its own
+  secure storage.
+- **`floe-cli` offers**, on the machine that holds `host_control`:
+  - `floe identity create|unlock|restore|replace|…` — the person's own identity,
+    through the agent (see the [CLI reference](../guide/terminal/cli-reference.md)).
   - `floe identity add --name "<display name>" --pubkey <npub|hex>` — admit a
     public key (the actual trust-anchor action; requires `host_control`). Run
     from inside the workspace directory and it resolves the workspace
     automatically; pass `--workspace <workspace_id>` to override.
   - `floe identity list` / `floe identity revoke <npub|hex>` — inspect and revoke.
-- **A client is expected to implement** its own key generation (or reuse any
-  Nostr signer), its own secret storage, event signing, and the two HTTP calls
-  below.
 
 **Seed loss is unrecoverable.** If the seed/`nsec` is lost the identity cannot
 authenticate. The operator can admit a **new** key under the same display name;
 that is re-admission, not recovery, and prior history stays under the old key.
+`floe identity replace` does exactly this for the person's own identity.
 
 ## Discovering where to connect
 

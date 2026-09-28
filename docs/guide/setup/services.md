@@ -1,12 +1,13 @@
 # Services
 
-**Floe runs the substrate as two local services. A surface is a separate client,
-not another substrate service.**
+**Floe runs the substrate as three local services. A surface is a separate
+client, not another substrate service.**
 
 | Piece | What it does | Port |
 |---|---|---|
 | bus | Owns canonical substrate state and exposes authenticated HTTP and WebSocket transport. | 5377 |
 | bridge | Claims deliveries and runs Actors through runtime adapters. | none |
+| identity agent | Holds the person's unlocked identity and gives surfaces bearers, over a local pipe or socket. | none |
 | floe-cli | Starts and manages the substrate, and launches registered surfaces. | none |
 
 ## Starting and stopping
@@ -18,7 +19,8 @@ floe stop
 floe restart
 ```
 
-`floe start` starts the bus and bridge. It does not launch a surface.
+`floe start` starts the bus, bridge and identity agent. It does not launch a
+surface.
 
 `floe up` is the connect-first entry for clients that need the substrate but do
 not want to launch a surface. It reuses a reachable substrate. If the substrate
@@ -32,12 +34,12 @@ surface. See [[Install and first run]].
 
 | Command | What it does |
 |---|---|
-| `floe logs [service]` | Print logs for `bus`, `bridge`, or both |
+| `floe logs [service]` | Print logs for `bus`, `bridge`, `identity`, or all |
 | `floe doctor` | Show service status, configuration path, and Floe home |
 | `floe config path` / `floe config edit` | Print or edit the active configuration |
 | `floe service install` / `uninstall` / `status` | Manage operating-system auto-start |
 | `floe uninstall` | Remove auto-start and stop services while preserving Floe home data |
-| `floe reset` | Wipe runtime and state data while preserving configuration and provider credentials |
+| `floe reset` | Wipe runtime and state data while preserving configuration, provider credentials and your identity (`--include-identity` removes it too) |
 
 Start on demand and start at login are separate:
 

@@ -6,8 +6,8 @@
 
 use floe_native_authority::{
     ConfirmHostOperationRequest, ConfirmWorkspaceOperationRequest, DiscoverOperationsRequest,
-    InvokeOperationRequest, NativeAuthorityBroker, ProvideBridgeServiceTokenRequest,
-    RegisterWorkspaceRequest,
+    forget_identity_device_key, identity_device_key, InvokeOperationRequest,
+    NativeAuthorityBroker, ProvideBridgeServiceTokenRequest, RegisterWorkspaceRequest,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -27,6 +27,22 @@ enum AuthorityCommand {
     InvokeOperation(InvokeOperationRequest),
     ConfirmAndInvokeHostOperation(ConfirmHostOperationRequest),
     ConfirmAndInvokeWorkspaceOperation(ConfirmWorkspaceOperationRequest),
+    IdentityDeviceKey(IdentityDeviceKeyRequest),
+    ForgetIdentityDeviceKey(ForgetIdentityDeviceKeyRequest),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IdentityDeviceKeyRequest {
+    home: String,
+    #[serde(default)]
+    create: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForgetIdentityDeviceKeyRequest {
+    home: String,
 }
 
 #[tokio::main]
@@ -57,6 +73,20 @@ async fn run() -> Result<Value, String> {
     let command = parse_command(&bytes)?;
     bytes.fill(0);
 
+    // The identity device key is a vault entry of its own; it needs no Bus and
+    // no host-control credential, so it is answered before either is opened.
+    match &command {
+        AuthorityCommand::IdentityDeviceKey(input) => {
+            let result = identity_device_key(&input.home, input.create)?;
+            return Ok(json!({ "ok": true, "result": result }));
+        }
+        AuthorityCommand::ForgetIdentityDeviceKey(input) => {
+            let result = forget_identity_device_key(&input.home)?;
+            return Ok(json!({ "ok": true, "result": result }));
+        }
+        _ => {}
+    }
+
     let broker = NativeAuthorityBroker::from_os_vault();
     let result = match command {
         AuthorityCommand::ListLocalWorkspaces => broker.list_local_workspaces().await,
@@ -74,6 +104,9 @@ async fn run() -> Result<Value, String> {
         }
         AuthorityCommand::ConfirmAndInvokeWorkspaceOperation(input) => {
             broker.confirm_and_invoke_workspace_operation(input).await
+        }
+        AuthorityCommand::IdentityDeviceKey(_) | AuthorityCommand::ForgetIdentityDeviceKey(_) => {
+            unreachable!("answered before the broker is opened")
         }
     }?;
     Ok(json!({ "ok": true, "result": result }))
@@ -103,6 +136,8 @@ fn parse_command(bytes: &[u8]) -> Result<AuthorityCommand, String> {
             "interaction_session_id",
             "invocation",
         ],
+        "identity_device_key" => &["command", "home", "create"],
+        "forget_identity_device_key" => &["command", "home"],
         _ => return Err("The native authority request is invalid.".into()),
     };
     if object.keys().any(|key| !allowed.contains(&key.as_str())) {
@@ -151,5 +186,17 @@ mod tests {
         )
         .is_err());
         assert!(parse_command(br#"{"command":"run_process","program":"cmd.exe"}"#).is_err());
+        assert!(parse_command(
+            br#"{"command":"identity_device_key","home":"C:/Users/a/.floe","create":true}"#
+        )
+        .is_ok());
+        assert!(parse_command(
+            br#"{"command":"identity_device_key","home":"C:/Users/a/.floe","account":"x"}"#
+        )
+        .is_err());
+        assert!(parse_command(
+            br#"{"command":"forget_identity_device_key","home":"C:/Users/a/.floe"}"#
+        )
+        .is_ok());
     }
 }

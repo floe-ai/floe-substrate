@@ -1,12 +1,16 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { spawn, spawnSync } from "node:child_process";
 import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
+import { readRunFile, runFilePath } from "./identity/protocol.js";
 
-export type ServiceName = "bus" | "bridge";
+export type ServiceName = "bus" | "bridge" | "identity";
+
+/** Start order; stop in reverse. */
+export const SERVICE_NAMES: readonly ServiceName[] = ["bus", "bridge", "identity"];
 
 type ServiceRecord = {
   pid: number;
@@ -39,7 +43,9 @@ export function writeRecords(configPath: string, config: LocalConfig, records: S
 export function serviceLogPath(configPath: string, config: LocalConfig, service: ServiceName): string {
   const dir = service === "bus"
     ? config.bus.log_dir
-    : config.bridge.log_dir;
+    : service === "bridge"
+      ? config.bridge.log_dir
+      : "./logs/identity";
   return join(resolveLocalPath(configPath, config.home, dir), `${service}.log`);
 }
 
@@ -53,6 +59,15 @@ export function isPidRunning(pid: number): boolean {
 }
 
 export function serviceEntry(service: ServiceName): string {
+  if (service === "identity") {
+    // The identity agent ships inside the CLI package itself.
+    const entry = join(dirname(fileURLToPath(import.meta.url)), "identity", "agent-main.js");
+    if (existsSync(entry)) return entry;
+    throw new Error(
+      `Floe cannot find its identity agent at ${entry}. The install is incomplete. In a dev ` +
+        `checkout, run \`npm run build --workspace floe-cli\`; a released install already includes it.`
+    );
+  }
   const pkg = service === "bus" ? "floe-bus" : "floe-bridge";
   const require = createRequire(import.meta.url);
   // Layout 1 — sibling package: a dev workspace, or a global install that placed
@@ -162,6 +177,11 @@ export function stopService(configPath: string, config: LocalConfig, service: Se
   }
   delete records[service];
   writeRecords(configPath, config, records);
+  if (service === "identity") {
+    // A forced stop skips the agent's own cleanup; its run file would point at a dead agent.
+    const home = resolveLocalPath(configPath, config.home, ".");
+    if (readRunFile(home)?.pid === record.pid) rmSync(runFilePath(home), { force: true });
+  }
   return stopped;
 }
 

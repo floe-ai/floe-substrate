@@ -1,6 +1,22 @@
 # ADR-0015: Client identity and the unprivileged Workspace credential
 
-**Status:** accepted (2026-09-15)
+**Status:** accepted (2026-09-15), amended by
+[ADR-0016](0016-floe-owns-the-identity.md) (2026-09-28)
+
+> **Amendment (ADR-0016).** Where the key lives has changed; the bus protocol
+> below has not.
+>
+> - The person's key is no longer held by each client. Floe's identity agent
+>   holds it under the Floe home and does the challenge and signing. Surfaces
+>   receive only bearers.
+> - `floe identity generate` is removed. The key is made by `floe identity
+>   create` or by a surface through the agent.
+> - The authenticate response also returns `authority_session_id`, and
+>   `DELETE /v1/clients/:identity_id/sessions/:authority_session_id`
+>   (`host_control`) revokes that one bearer.
+> - "Seed loss is unrecoverable" still holds. A forgotten passphrase now has two
+>   ways out: restore from the phrase, or replace, which is the re-admission
+>   described below, done by the agent.
 
 ## Context
 
@@ -227,7 +243,8 @@ This decision does **not** cross the freeze, on the strength of that text:
   single-use challenges.
 - `floe-bus/src/server.ts` — admission, challenge, authenticate, list, and
   revoke routes; challenge-to-session minting via `issueWorkspaceOperationSession`.
-- `floe-cli/src/*` — `floe identity` admission and key-generation commands.
+- `floe-cli/src/*` — `floe identity` admission commands (key custody moved to
+  the identity agent, ADR-0016).
 - Client protocol reference: [Client identity protocol](../reference/client-identity-protocol.md).
 
 Relates to ADR-0007 (renderer identity), ADR-0013 (model auth belongs to the

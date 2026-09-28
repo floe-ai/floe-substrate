@@ -7,12 +7,14 @@
  * Preserved:
  *   - ~/.floe/config.yaml          (service settings: ports, listen addresses)
  *   - ~/.floe/auth/                (provider credentials: OAuth tokens, API keys, profiles)
+ *   - ~/.floe/identity/            (the person's identity, unless includeIdentity is set)
  *
  * Wiped (all configured data directories):
  *   - bus data + log dirs          (floe-bus.sqlite — workspaces, contexts, scopes, agents)
  *   - bridge data + log dirs       (bridge runtime state)
  *   - library dirs                 (configs, skills, extensions, mcp, templates)
  *   - services.json                (stale PID/process-manager records)
+ *   - run/ and identity agent logs (the agent's per-start secret and log)
  */
 
 import { existsSync, rmSync, statSync } from "node:fs";
@@ -35,8 +37,14 @@ export interface ResetPlan {
  * Build the set of paths that will be wiped vs preserved.
  * Does NOT mutate anything on disk.
  */
-export function buildResetPlan(configPath: string, config: LocalConfig): ResetPlan {
+export type ResetOptions = {
+  /** Also remove the person's identity. Off by default: reset keeps who you are. */
+  includeIdentity?: boolean;
+};
+
+export function buildResetPlan(configPath: string, config: LocalConfig, options: ResetOptions = {}): ResetPlan {
   const r = (p: string): string => resolveLocalPath(configPath, config.home, p);
+  const identityDir = join(r("."), "identity");
 
   const wipeTargets: ResetTarget[] = [
     { path: r(config.bus.data_dir), label: "bus data (workspaces, contexts, agents)" },
@@ -49,6 +57,9 @@ export function buildResetPlan(configPath: string, config: LocalConfig): ResetPl
     { path: r(config.library.mcp_dir), label: "library: mcp" },
     { path: r(config.library.templates_dir), label: "library: templates" },
     { path: recordsPath(configPath, config), label: "service process records (services.json)" },
+    { path: r("./logs/identity"), label: "identity agent logs" },
+    { path: r("./run"), label: "identity agent run file" },
+    ...(options.includeIdentity ? [{ path: identityDir, label: "identity/ (your identity; only its recovery phrase can bring it back)" }] : []),
   ];
 
   // Deduplicate by path (two config keys may resolve to the same directory)
@@ -65,6 +76,7 @@ export function buildResetPlan(configPath: string, config: LocalConfig): ResetPl
   const preserve: ResetTarget[] = [
     { path: configPath, label: "config.yaml (service settings)" },
     { path: authDir, label: "auth/ (provider credentials)" },
+    ...(options.includeIdentity ? [] : [{ path: identityDir, label: "identity/ (your identity)" }]),
   ];
 
   return { wipe, preserve };
@@ -76,8 +88,8 @@ export function buildResetPlan(configPath: string, config: LocalConfig): ResetPl
  *
  * Safe to call multiple times (idempotent).
  */
-export function executeReset(configPath: string, config: LocalConfig): void {
-  const { wipe } = buildResetPlan(configPath, config);
+export function executeReset(configPath: string, config: LocalConfig, options: ResetOptions = {}): void {
+  const { wipe } = buildResetPlan(configPath, config, options);
 
   for (const target of wipe) {
     if (!existsSync(target.path)) continue;

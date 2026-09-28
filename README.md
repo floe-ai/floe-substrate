@@ -50,15 +50,22 @@ node bin/floe.mjs logs
 node bin/floe.mjs service status
 ```
 
-### Admitting a terminal client identity
+### Your identity and terminal clients
 
-An unprivileged client (for example a terminal console) authenticates as a
-client-held keypair. Admit its public key to the workspace it may act in. Run
-`identity add` from inside the workspace directory and it resolves the workspace
-for you — no id to copy:
+Floe holds your identity; surfaces ask Floe to act as you and never hold the
+key. Create it once, then create or join a workspace as you:
 
 ```bash
-node bin/floe.mjs identity generate --name "Console"    # optional: mint a keypair
+node bin/floe.mjs identity create --name "<your name>"
+node bin/floe.mjs identity join            # the current folder's workspace
+node bin/floe.mjs identity status
+```
+
+A surface built on Floe uses `floe/identity`; see
+[Identity agent protocol](docs/reference/identity-agent-protocol.md). A client
+that holds its own key outside Floe is admitted by public key instead:
+
+```bash
 node bin/floe.mjs identity add --name "Console" --pubkey <npub>
 node bin/floe.mjs identity list
 ```

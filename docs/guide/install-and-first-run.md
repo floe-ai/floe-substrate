@@ -120,15 +120,15 @@ case for any surface.
 floe setup
 ```
 
-Setup creates the local configuration when needed, starts the bus and bridge,
-checks bus health, registers an enclosing `.floe/` Workspace when present, and
-offers to install operating-system auto-start.
+Setup creates the local configuration when needed, starts the bus, bridge and
+identity agent, checks bus health, registers an enclosing `.floe/` Workspace
+when present, and offers to install operating-system auto-start.
 
 Useful service commands:
 
 ```bash
 floe up       # ensure the substrate is reachable without launching a surface
-floe start    # start the local bus and bridge
+floe start    # start the local bus, bridge and identity agent
 floe status
 floe stop
 floe restart
@@ -152,6 +152,23 @@ the other connects to it.
 - The bus reports its version at `/health`. When a copy connects to a running
   Floe of a different version, it says so and leaves it running. `floe status`
   shows both versions.
+- Both copies share one identity agent, because the agent's address comes from
+  the Floe home. The same rule applies: whichever agent is running serves.
+
+## Your identity
+
+Floe holds one identity for you, under the Floe home, and every surface uses it.
+A surface asks you to create or unlock it and draws those screens; Floe keeps
+the key. The same steps work in the terminal:
+
+```bash
+floe identity create --name "<your name>"   # shows your recovery phrase once
+floe identity join                          # create or join this folder's workspace
+floe identity status
+```
+
+`floe reset` keeps your identity. See [[CLI reference]] for unlock, restore,
+"forgot passphrase" and revoking a surface's session.
 
 See [[CLI reference]] for the complete command list.
 
@@ -168,3 +185,4 @@ See [[CLI reference]] for the complete command list.
 - `floe-bus/src/version.ts` - the version the bus reports at `/health`
 - `floe-cli/src/startup.ts` - connect-first substrate startup
 - `floe-cli/src/service.ts` - operating-system auto-start
+- `floe-cli/src/identity/` - the identity agent and the `floe/identity` client

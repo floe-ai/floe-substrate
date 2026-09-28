@@ -803,6 +803,53 @@ fn mint_or_migrate_host_credential(entry: &keyring::Entry) -> Result<String, Str
     Ok(token)
 }
 
+/// The vault account holding the device-protection wrapping key for the
+/// identity stored in one Floe home. It is keyed to the home's location, so a
+/// copied Floe home (a backup, a synced folder, another machine or OS user)
+/// finds no key and cannot unlock a device-protected identity.
+fn identity_device_account_for(home: &str) -> String {
+    format!("identity-device-key::{home}")
+}
+
+fn validate_identity_home(home: &str) -> Result<(), String> {
+    if home.trim().is_empty() || home.len() > 1024 || home.chars().any(char::is_control) {
+        return Err("The Floe home for the identity device key is invalid.".into());
+    }
+    Ok(())
+}
+
+/// Read, or with `create` mint, the 32-byte wrapping key that seals a
+/// device-protected identity (base64url). Reading never mints: an identity
+/// whose key is absent must say so rather than get a fresh, useless key.
+pub fn identity_device_key(home: &str, create: bool) -> Result<Value, String> {
+    validate_identity_home(home)?;
+    let entry = keyring::Entry::new(VAULT_SERVICE, &identity_device_account_for(home))
+        .map_err(|_| secure_storage_message())?;
+    match entry.get_password() {
+        Ok(key) => Ok(json!({ "key": key, "created": false })),
+        Err(keyring::Error::NoEntry) if create => {
+            let key = random_secret(32);
+            entry.set_password(&key).map_err(|_| secure_storage_message())?;
+            Ok(json!({ "key": key, "created": true }))
+        }
+        Err(keyring::Error::NoEntry) => Ok(json!({ "key": Value::Null, "created": false })),
+        Err(_) => Err(secure_storage_message()),
+    }
+}
+
+/// Remove the device-protection wrapping key for a Floe home. Used only when
+/// the person explicitly removes their identity.
+pub fn forget_identity_device_key(home: &str) -> Result<Value, String> {
+    validate_identity_home(home)?;
+    let entry = keyring::Entry::new(VAULT_SERVICE, &identity_device_account_for(home))
+        .map_err(|_| secure_storage_message())?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(json!({ "removed": true })),
+        Err(keyring::Error::NoEntry) => Ok(json!({ "removed": false })),
+        Err(_) => Err(secure_storage_message()),
+    }
+}
+
 fn random_secret(bytes: usize) -> String {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     let mut buffer = vec![0_u8; bytes];

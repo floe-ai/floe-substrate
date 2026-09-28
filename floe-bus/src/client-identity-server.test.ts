@@ -127,6 +127,54 @@ describe("Client identity credential path (ADR-0015)", () => {
     expect(response.statusCode).toBe(401);
   });
 
+  it("revokes one named bearer without revoking the identity or its other bearers", async () => {
+    const identityId = await admit();
+    const mint = async () => {
+      const { challenge, relay } = (await handle.app.inject({ method: "GET", url: "/v1/identity/challenge" })).json();
+      const response = await handle.app.inject({
+        method: "POST",
+        url: "/v1/identity/authenticate",
+        payload: { workspace_id: workspaceId, auth_event: signAuthEvent(secretKey, relay, challenge) },
+      });
+      expect(response.statusCode).toBe(200);
+      return response.json() as { bearer_token: string; authority_session_id: string };
+    };
+    const first = await mint();
+    const second = await mint();
+    expect(first.authority_session_id).toBeTruthy();
+    expect(first.authority_session_id).not.toBe(second.authority_session_id);
+
+    const unprivileged = await handle.app.inject({
+      method: "DELETE",
+      url: `/v1/clients/${identityId}/sessions/${first.authority_session_id}`,
+      headers: { authorization: `Bearer ${second.bearer_token}` },
+    });
+    // A workspace bearer is not host authority; the transport refuses it.
+    expect(unprivileged.statusCode).toBe(401);
+
+    const revoke = await handle.app.inject({
+      method: "DELETE",
+      url: `/v1/clients/${identityId}/sessions/${first.authority_session_id}`,
+      headers: hostAuth,
+    });
+    expect(revoke.statusCode).toBe(200);
+
+    const read = (bearer: string) => handle.app.inject({
+      method: "GET",
+      url: `/v1/pending-responses?workspace_id=${workspaceId}`,
+      headers: { authorization: `Bearer ${bearer}` },
+    });
+    expect((await read(first.bearer_token)).statusCode).toBe(401);
+    expect((await read(second.bearer_token)).statusCode).toBe(200);
+
+    const unknown = await handle.app.inject({
+      method: "DELETE",
+      url: `/v1/clients/${identityId}/sessions/not-a-session`,
+      headers: hostAuth,
+    });
+    expect(unknown.statusCode).toBe(404);
+  });
+
   it("revocation kills a live bearer and blocks re-authentication", async () => {
     const identityId = await admit();
     const authenticated = await authenticate();

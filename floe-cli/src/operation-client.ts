@@ -347,6 +347,26 @@ export async function fetchHostControlToken(busHttpBase?: string): Promise<strin
 }
 
 /**
+ * The vault key that seals a device-protected identity, scoped to one Floe
+ * home. Reading never mints one; `create` does, once. Only the identity agent
+ * calls this, and the key never leaves its memory.
+ */
+export async function fetchIdentityDeviceKey(home: string, create: boolean): Promise<Uint8Array | null> {
+  const result = await runNativeAuthorityCommand({ command: "identity_device_key", home, create });
+  if (!isRecord(result) || !("key" in result)) throw new Error("Floe's native authority broker returned no device key answer.");
+  if (result.key === null) return null;
+  if (typeof result.key !== "string") throw new Error("Floe's native authority broker returned an invalid device key.");
+  const key = new Uint8Array(Buffer.from(result.key, "base64url"));
+  if (key.length !== 32) throw new Error("Floe's native authority broker returned an invalid device key.");
+  return key;
+}
+
+export async function forgetIdentityDeviceKey(home: string): Promise<boolean> {
+  const result = await runNativeAuthorityCommand({ command: "forget_identity_device_key", home });
+  return isRecord(result) && result.removed === true;
+}
+
+/**
  * Obtain the ephemeral Bridge service credential from the native broker so the
  * CLI can boot the Bridge as an authenticated transport peer of the Bus.
  *

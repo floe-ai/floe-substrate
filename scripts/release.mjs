@@ -198,6 +198,16 @@ function assemble(version) {
     private: false,
     type: "module",
     bin: { [PACKAGE_NAME]: binEntry },
+    // The one library entry a surface imports: how it acts as the person
+    // through the identity agent (docs/reference/identity-agent-protocol.md).
+    // `./package.json` stays exported: surfaces resolve it to find the bin.
+    exports: {
+      "./identity": {
+        types: `./${BIN_PACKAGE}/dist/identity/client.d.ts`,
+        default: `./${BIN_PACKAGE}/dist/identity/client.js`,
+      },
+      "./package.json": "./package.json",
+    },
     engines: { node: ">=20" },
     // The real, resolvable union of the source packages' runtime dependencies —
     // this is what npm installs, and what the sibling-tarball path provided that
@@ -313,6 +323,19 @@ function guard(version) {
       );
     }
     log("guard", "PASS — Floe installed from the artifact and came up healthy from a neutral directory");
+
+    // The identity agent is Floe's fourth service. `floe status` must see it
+    // answering, and a real surface — a separate package that depends on this
+    // artifact and imports only its public `floe/identity` entry — must be able
+    // to create, lock, unlock and get a working bearer through it.
+    const status = spawnSync(floeBin, ["--config", configPath, "status"], { cwd: neutralCwd, encoding: "utf8", shell: isWindows });
+    process.stdout.write(status.stdout ?? "");
+    if (!/identity agent: answering/.test(status.stdout ?? "")) {
+      dumpLog(home, "identity");
+      throw new Error("`floe status` does not show the identity agent answering after `floe start`.");
+    }
+    guardSurface({ workRoot, tarball: join(workRoot, tarball), configPath, port, neutralCwd, home });
+    log("guard", "PASS — a surface depending on the artifact created, locked, unlocked and used a bearer via the identity agent");
   } finally {
     // Best-effort stop, then remove all isolated state.
     try {
@@ -343,9 +366,69 @@ function checkBusHealth(port) {
 }
 
 function dumpBusLog(home) {
-  const log = join(home, "logs", "bus", "bus.log");
-  console.error(`\n[release:guard] bus log (${log}):`);
-  console.error(existsSync(log) ? readFileSync(log, "utf8") : "(no bus log written)");
+  dumpLog(home, "bus");
+}
+
+function dumpLog(home, service) {
+  const log = join(home, "logs", service, `${service}.log`);
+  console.error(`\n[release:guard] ${service} log (${log}):`);
+  console.error(existsSync(log) ? readFileSync(log, "utf8") : `(no ${service} log written)`);
+}
+
+/**
+ * Install a throwaway surface package that depends on the packed artifact the
+ * way a real surface does, and drive the identity agent through `floe/identity`.
+ */
+function guardSurface({ workRoot, tarball, configPath, port, neutralCwd, home }) {
+  const surfaceDir = join(workRoot, "surface");
+  mkdirSync(surfaceDir, { recursive: true });
+  writeFileSync(join(surfaceDir, "package.json"), JSON.stringify({
+    name: "floe-release-guard-surface",
+    version: "0.0.0",
+    private: true,
+    type: "module",
+    dependencies: { [PACKAGE_NAME]: `file:${tarball.replace(/\\/g, "/")}` },
+  }, null, 2) + "\n", "utf8");
+  runNpm(["install", "--no-audit", "--no-fund"], surfaceDir);
+  const folder = join(workRoot, "guard-workspace");
+  writeFileSync(join(surfaceDir, "surface.mjs"), `
+import { connectIdentity } from "${PACKAGE_NAME}/identity";
+const step = (message) => console.log("[surface] " + message);
+const identity = await connectIdentity({ surface: "release-guard", configPath: ${JSON.stringify(configPath)} });
+if (identity.state.kind !== "none") throw new Error("expected no identity, found " + identity.state.kind);
+const created = await identity.create({ display_name: "Release Guard", passphrase: "guard passphrase" });
+step("created " + created.npub + " (" + created.phrase.split(" ").length + " recovery words)");
+await identity.lock();
+if (identity.state.kind !== "locked") throw new Error("lock did not lock");
+step("locked");
+const refused = await identity.unlock("not the passphrase").then(() => null, (error) => error.code);
+if (refused !== "wrong_passphrase") throw new Error("a wrong passphrase was not refused distinctly: " + refused);
+step("wrong passphrase refused as wrong_passphrase");
+await identity.unlock("guard passphrase");
+if (identity.state.kind !== "unlocked") throw new Error("unlock did not unlock");
+step("unlocked");
+const joined = await identity.joinFolder({ locator: ${JSON.stringify(folder)}, create_directory: true });
+if (joined.kind !== "ready" && joined.kind !== "pending") throw new Error("joining a folder failed: " + JSON.stringify(joined));
+step("joined " + joined.workspace_id);
+const ready = await new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error("no bearer was pushed within 15s")), 15000);
+  identity.session({ workspace_id: joined.workspace_id }, (event) => {
+    if (event.status === "ready") { clearTimeout(timer); resolve(event); }
+    else if (event.status !== "selection_required") { clearTimeout(timer); reject(new Error("session: " + JSON.stringify(event))); }
+  });
+});
+const response = await fetch("http://127.0.0.1:${port}/v1/pending-responses?workspace_id=" + encodeURIComponent(joined.workspace_id), {
+  headers: { authorization: "Bearer " + ready.bearer_token },
+});
+if (response.status !== 200) throw new Error("the pushed bearer was refused by the bus: " + response.status);
+step("bearer pushed and accepted by the bus (expires " + ready.expires_at + ")");
+identity.close();
+`, "utf8");
+  const run = spawnSync(process.execPath, [join(surfaceDir, "surface.mjs")], { cwd: neutralCwd, stdio: "inherit" });
+  if (run.status !== 0) {
+    dumpLog(home, "identity");
+    throw new Error("the guard surface could not complete the identity flow through the installed artifact.");
+  }
 }
 
 // ── 6. publish ───────────────────────────────────────────────────────────────
