@@ -19,13 +19,13 @@ import { registerIdentityCommand } from "./identity-command.js";
 import { registerLocalWorkspaceViaBroker } from "./operation-client.js";
 import { startAll, waitForBusHealth, isHealthy, ensureSubstrateForClient } from "./startup.js";
 import {
-  listSurfaces,
   registerSurface,
   removeSurface,
   launchSurface,
   type SurfaceEntry,
-  type BrokenSurface,
 } from "./surfaces.js";
+import { buildSurfaceCatalog, type SurfaceCatalog } from "./surface-catalog.js";
+import { hasBeenAsked, markAsked } from "./prompt-state.js";
 import {
   serviceStatus,
   installService,
@@ -57,7 +57,9 @@ program
     }
     console.log(`Floe services are running: ${config.bus.http_base_url}`);
     if (options.autostart !== false) {
-      await offerServiceInstall(configPath, { assumeYes: options.yes === true });
+      if (await offerServiceInstall(configPath, { assumeYes: options.yes === true })) {
+        markAsked(configPath, config, "start_at_login");
+      }
     }
     printSurfacesSummary(configPath, config);
   });
@@ -199,30 +201,33 @@ program
 registerOperationsCommand(program, {});
 registerIdentityCommand(program, {});
 
-// The registry of surfaces (how a person actually uses Floe). Floe never names
-// a surface; these commands only read and write whatever is on disk.
-const surfaceCommand = program.command("surface").description("Manage the registry of surfaces (how you use Floe)");
+// The surfaces a person can use Floe through: installed packages that declare
+// themselves, plus registry files for surfaces that are not packages. Floe never
+// names a surface; these commands only read what is installed or on disk.
+const surfaceCommand = program.command("surface").description("List and manage surfaces (how you use Floe)");
 
 surfaceCommand
   .command("list")
-  .description("List registered surfaces")
+  .description("List detected and registered surfaces")
   .action(() => {
     const { configPath, config } = ensureConfig(program.opts().config);
-    const { surfaces, broken } = listSurfaces(configPath, config);
-    if (surfaces.length === 0 && broken.length === 0) {
+    const catalog = buildSurfaceCatalog(configPath, config);
+    reportCatalogProblems(catalog);
+    if (catalog.surfaces.length === 0) {
       printNoSurfaces(config);
-      return;
     }
-    for (const surface of surfaces) {
-      const launch = [surface.launch.command, ...surface.launch.args].join(" ");
-      console.log(`${surface.name}  —  ${surface.label}  (${launch})`);
+    for (const surface of catalog.surfaces) {
+      const from = surface.source.kind === "package" ? `package ${surface.source.package}` : "registry file";
+      console.log(`${surface.name}  —  ${surface.label}  (${from})`);
     }
-    reportBroken(broken);
+    for (const item of catalog.shadowed) {
+      console.log(`(registry file '${item.name}.yaml' is unused: installed package ${item.byPackage} declares the same surface)`);
+    }
   });
 
 surfaceCommand
   .command("register")
-  .description("Register a surface so `floe` can launch it (a surface's installer calls this)")
+  .description("Register a surface that is not an npm package (packages declare floe.surface in package.json instead)")
   .requiredOption("--name <name>", "stable id a person can type (lowercase, digits, hyphens)")
   .requiredOption("--label <label>", "human label shown when choosing a surface")
   .requiredOption("--command <command>", "command that launches the surface")
@@ -248,8 +253,14 @@ surfaceCommand
   .argument("<name>", "surface name")
   .action((name: string) => {
     const { configPath, config } = ensureConfig(program.opts().config);
-    console.log(removeSurface(configPath, config, name)
-      ? `Removed surface '${name}'.`
+    if (removeSurface(configPath, config, name)) {
+      console.log(`Removed surface '${name}'.`);
+      return;
+    }
+    const fromPackage = buildSurfaceCatalog(configPath, config).surfaces
+      .find((surface) => surface.name === name && surface.source.kind === "package");
+    console.log(fromPackage && fromPackage.source.kind === "package"
+      ? `Surface '${name}' comes from the installed package ${fromPackage.source.package}. Uninstall it with: npm rm -g ${fromPackage.source.package}`
       : `No surface named '${name}' is registered.`);
   });
 
@@ -291,7 +302,7 @@ async function runUp(): Promise<void> {
 }
 
 async function runLauncher(surfaceName?: string): Promise<void> {
-  const { configPath, config, created } = ensureConfig(program.opts().config);
+  const { configPath, config } = ensureConfig(program.opts().config);
 
   // Connect-first: use a running substrate and spawn nothing; start one only if
   // this machine's policy allows; otherwise say plainly it is not running.
@@ -303,20 +314,24 @@ async function runLauncher(surfaceName?: string): Promise<void> {
     return;
   }
   await registerCwdWorkspaceBestEffort(config);
-  if (created) {
-    // First launch: make sure the person knows the machine can start Floe for them.
-    await offerServiceInstall(configPath, { assumeYes: false });
+  if (!hasBeenAsked(configPath, config, "start_at_login")) {
+    // First launch means the person has never been asked — not that the config
+    // file is new (a surface may have created it first).
+    if (await offerServiceInstall(configPath, { assumeYes: false })) {
+      markAsked(configPath, config, "start_at_login");
+    }
   }
 
-  const { surfaces, broken } = listSurfaces(configPath, config);
-  reportBroken(broken);
+  const catalog = buildSurfaceCatalog(configPath, config);
+  reportCatalogProblems(catalog);
+  const { surfaces } = catalog;
 
   if (surfaceName) {
     const found = surfaces.find((surface) => surface.name === surfaceName);
     if (!found) {
-      console.error(`No surface named '${surfaceName}' is registered.`);
+      console.error(`No surface named '${surfaceName}' is installed.`);
       if (surfaces.length > 0) {
-        console.error(`Registered surfaces: ${surfaces.map((surface) => surface.name).join(", ")}`);
+        console.error(`Installed surfaces: ${surfaces.map((surface) => surface.name).join(", ")}`);
       } else {
         printNoSurfaces(config);
       }
@@ -368,26 +383,28 @@ function printServiceNotRunning(config: LocalConfig): void {
 /**
  * Offer to install real OS auto-start. Skips silently when it is already
  * installed or when there is no terminal to answer; on a platform where
- * auto-start is not built, it says so once rather than pretending.
+ * auto-start is not built, it says so rather than pretending. Returns true when
+ * the person was actually told or asked something, so a caller can record it.
  */
-async function offerServiceInstall(configPath: string, opts: { assumeYes: boolean }): Promise<void> {
+async function offerServiceInstall(configPath: string, opts: { assumeYes: boolean }): Promise<boolean> {
   const status = serviceStatus();
-  if (status.installed) return;
+  if (status.installed) return false;
   if (!status.supported) {
     console.log(status.detail);
-    return;
+    return true;
   }
   let yes = opts.assumeYes;
   if (!yes) {
-    if (!input.isTTY) return;
+    if (!input.isTTY) return false;
     const rl = createInterface({ input, output });
     const answer = await rl.question("Install Floe to start automatically on this machine? [Y/n] ");
     rl.close();
     yes = !answer.trim().toLowerCase().startsWith("n");
   }
-  if (!yes) return;
+  if (!yes) return true;
   const result = installService(configPath, cliInvocation());
   console.log(result.message);
+  return true;
 }
 
 /** How this CLI re-invokes itself unattended: node + the exec args and entry
@@ -427,26 +444,33 @@ async function promptChooseSurface(surfaces: SurfaceEntry[]): Promise<SurfaceEnt
 }
 
 function printSurfacesSummary(configPath: string, config: LocalConfig): void {
-  const { surfaces, broken } = listSurfaces(configPath, config);
-  reportBroken(broken);
+  const catalog = buildSurfaceCatalog(configPath, config);
+  reportCatalogProblems(catalog);
+  const { surfaces } = catalog;
   if (surfaces.length === 0) {
     console.log("");
     printNoSurfaces(config);
     return;
   }
-  console.log(`Registered surfaces: ${surfaces.map((surface) => surface.name).join(", ")}. Run \`floe\` to launch.`);
+  console.log(`Installed surfaces: ${surfaces.map((surface) => surface.name).join(", ")}. Run \`floe\` to launch.`);
 }
 
 function printNoSurfaces(_config: LocalConfig): void {
   console.log("Surfaces are how you use Floe — a surface is what you actually interact with.");
-  console.log("None are registered yet. Install a surface (it will register itself), then run `floe`.");
-  console.log("To register one manually:");
+  console.log("None are installed yet. Install a surface globally with npm, then run `floe`.");
+  console.log("A surface that is not an npm package can be registered by hand:");
   console.log("  floe surface register --name <name> --label \"<label>\" --command <command>");
 }
 
-function reportBroken(broken: BrokenSurface[]): void {
-  for (const item of broken) {
+function reportCatalogProblems(catalog: SurfaceCatalog): void {
+  for (const item of catalog.brokenFiles) {
     console.warn(`Ignoring unreadable surface file '${item.file}': ${item.reason}`);
+  }
+  for (const item of catalog.brokenManifests) {
+    console.warn(`Ignoring package ${item.package}: its floe.surface declaration is invalid (${item.reason})`);
+  }
+  for (const item of catalog.conflicts) {
+    console.warn(`Not offering surface '${item.name}': it is declared by more than one installed package (${item.packages.join(", ")}). Uninstall all but one.`);
   }
 }
 

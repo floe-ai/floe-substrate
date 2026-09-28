@@ -38,7 +38,7 @@ Open a **new** shell afterwards. To remove it: `npm rm -g floe`.
 floe            # start the substrate and open a surface
 ```
 
-- With no surface registered, `floe` starts the substrate and tells you how to
+- With no surface installed, `floe` starts the substrate and tells you how to
   add one.
 - `floe setup` also offers to install Floe as a real OS auto-start, so the
   machine starts it for you from then on (see `floe service`).

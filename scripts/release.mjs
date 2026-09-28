@@ -25,11 +25,12 @@
  *      directory unrelated to this checkout, and start Floe from that install —
  *      refuse to publish an artifact that installs but cannot start;
  *   4. publish (only with --publish): commit the generated artifact to a clone of
- *      the distribution repo and push.
+ *      the distribution repo, tag it v<version>, and push both. A version that
+ *      is already tagged there is refused before anything is built.
  *
  * Usage:
  *   node scripts/release.mjs [--version <v>] [--out <dir>] [--publish]
- *                            [--dist-repo <path-or-url>] [--keep]
+ *                            [--dist-repo <path-or-url>]
  *
  * The generated package.json is generated every run and never hand-edited: it is
  * derived from the source packages, so it takes whatever the services become.
@@ -82,7 +83,6 @@ function value(name, fallback) {
 }
 
 const doPublish = flag("publish");
-const keepStaging = flag("keep");
 const distRepo = value("dist-repo", "https://github.com/floe-ai/floe.git");
 const outDir = resolve(value("out", join(repoRoot, "dist-release")));
 
@@ -350,8 +350,26 @@ function dumpBusLog(home) {
 
 // ── 6. publish ───────────────────────────────────────────────────────────────
 
+function tagFor(version) {
+  return `v${version}`;
+}
+
+/**
+ * A released version is immutable: surfaces depend on the tag, so the same tag
+ * must never point at two different artifacts. Checked before building so a
+ * forgotten version bump fails in seconds, not after a full build and guard.
+ */
+function refuseExistingTag(version) {
+  const tag = tagFor(version);
+  const out = execFileSync("git", ["ls-remote", "--tags", distRepo, `refs/tags/${tag}`], { encoding: "utf8" });
+  if (out.trim()) {
+    fail(`${distRepo} already has release ${tag}. Bump the version in the source packages before releasing.`);
+  }
+}
+
 function publish(version) {
-  log("publish", `committing the generated artifact to ${distRepo}`);
+  const tag = tagFor(version);
+  log("publish", `committing the generated artifact to ${distRepo} as ${tag}`);
   const workRoot = mkdtempSync(join(tmpdir(), "floe-release-publish-"));
   const clone = join(workRoot, "floe");
   try {
@@ -366,8 +384,9 @@ function publish(version) {
     }
     execFileSync("git", ["add", "-A"], { cwd: clone, stdio: "inherit" });
     execFileSync("git", ["commit", "-m", `Release floe ${version}`], { cwd: clone, stdio: "inherit" });
-    execFileSync("git", ["push", "origin", "HEAD"], { cwd: clone, stdio: "inherit" });
-    log("publish", `pushed floe ${version} to ${distRepo}`);
+    execFileSync("git", ["tag", "-a", tag, "-m", `floe ${version}`], { cwd: clone, stdio: "inherit" });
+    execFileSync("git", ["push", "origin", "HEAD", `refs/tags/${tag}`], { cwd: clone, stdio: "inherit" });
+    log("publish", `pushed floe ${version} to ${distRepo}, tagged ${tag}`);
   } finally {
     rmSync(workRoot, { recursive: true, force: true });
   }
@@ -377,6 +396,7 @@ function publish(version) {
 
 const version = resolveVersion();
 log("start", `building floe ${version} (publish: ${doPublish ? "yes" : "no"})`);
+if (doPublish) refuseExistingTag(version);
 buildServices();
 assemble(version);
 guard(version);
@@ -384,8 +404,4 @@ if (doPublish) {
   publish(version);
 } else {
   log("done", `staged and verified at ${outDir}. Re-run with --publish to push to the distribution repo.`);
-}
-if (!keepStaging && !doPublish) {
-  // Leave the staging dir for inspection unless asked otherwise; --keep is the
-  // default-friendly no-op kept for symmetry with publish runs.
 }

@@ -1,17 +1,17 @@
 # CLI reference
 
-**The `floe` command starts and manages the substrate, launches registered
+**The `floe` command starts and manages the substrate, launches installed
 surfaces, and exposes substrate operations for terminal clients.**
 
 | Command | What it does |
 |---|---|
-| `floe` / `floe <surface>` | Ensure the substrate is reachable, then launch a registered surface |
+| `floe` / `floe <surface>` | Ensure the substrate is reachable, then launch an installed surface |
 | `floe setup` | Create configuration, start services, check health, and offer auto-start |
 | `floe up` | Ensure the substrate is reachable without launching a surface |
 | `floe start` / `stop` / `restart` | Manage the local bus and bridge |
 | `floe status` | Show bus and bridge process state and bus health |
 | `floe logs [service]` | Print logs for `bus`, `bridge`, or both |
-| `floe surface list` / `register` / `remove` | Manage the surface registry |
+| `floe surface list` / `register` / `remove` | List surfaces; register or remove non-package surfaces |
 | `floe operations list` / `describe` / `invoke` | Discover and invoke Bus-owned semantic operations |
 | `floe identity generate` / `add` / `list` / `revoke` | Manage client keypair identities |
 | `floe config path` / `edit` | Inspect local configuration |
@@ -28,8 +28,11 @@ floe <surface-name>
 ```
 
 Both forms first reuse a reachable substrate or start it when the machine's
-policy permits. Bare `floe` launches the only registered surface, prompts when
-several are registered, and gives registration guidance when none exist.
+policy permits. Bare `floe` launches the only installed surface, prompts when
+several are installed, and explains how to add one when none exist. Surfaces
+come from globally installed packages that declare `floe.surface` in their
+`package.json`, plus registry files (see [[Install and first run]]). The first
+launch asks once about start-at-login.
 
 Before launch, Floe makes a best-effort attempt to register a Workspace found
 in the current directory or an ancestor. Failure to register that Workspace
@@ -58,7 +61,7 @@ before startup.
 `services.start_on_demand` allows it; otherwise it reports that the configured
 substrate is not running.
 
-## Surface registry
+## Surfaces
 
 ```bash
 floe surface list
@@ -70,9 +73,13 @@ floe surface register \
 floe surface remove <name>
 ```
 
-`--arg` may be repeated. Registry entries are YAML files in the `surfaces`
-directory under the configured Floe home. Unreadable entries are reported
-rather than silently ignored.
+`list` shows surfaces declared by installed packages and registered surfaces
+together, with where each came from. `register` is for surfaces that are not npm
+packages; `--arg` may be repeated. Registry entries are YAML files in the
+`surfaces` directory under the configured Floe home. `remove` deletes a
+registry entry; a package surface is removed by uninstalling its package.
+Unreadable entries and invalid `floe.surface` declarations are reported rather
+than silently ignored.
 
 ## Operating-system auto-start
 

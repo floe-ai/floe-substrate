@@ -45,26 +45,58 @@ The launcher first checks whether the configured substrate is reachable. It
 reuses a running substrate. If none is reachable, it starts the local bus and
 bridge only when `services.start_on_demand` allows that.
 
-Floe then reads the registered surfaces from the `surfaces` directory under the
-configured Floe home:
+Floe then finds the installed surfaces, like a boot menu:
 
 - one surface: launch it;
 - several surfaces: ask which one to launch;
-- no surfaces: keep the substrate running and explain how to register one.
+- no surfaces: keep the substrate running and explain how to add one.
 
-Run a particular registered surface by name:
+Run a particular surface by name:
 
 ```bash
 floe <surface-name>
 ```
 
+On the first launch, Floe asks once whether to start automatically at login.
+It records that it asked, so it asks once per Floe home no matter which command
+created the configuration.
+
 If the current directory or an ancestor contains `.floe/`, the launcher also
 tries to register that Workspace before handing control to the surface.
 
-## Register a surface
+## Make a package a surface
 
-A surface's installer should register it. A surface can also be registered
-manually:
+A surface that is an npm package declares itself in its own `package.json`.
+Nothing runs at install time: installing the package globally is enough for
+`floe` to find it.
+
+```json
+{
+  "name": "my-surface",
+  "bin": { "my-surface": "./dist/main.js" },
+  "floe": {
+    "surface": {
+      "name": "my-surface",
+      "label": "My Surface",
+      "bin": "my-surface"
+    }
+  }
+}
+```
+
+- `name` — what a person types (`floe my-surface`): lowercase letters, digits
+  and hyphens.
+- `label` — what a person sees in the menu.
+- `bin` — which of the package's own `bin` entries launches it. The surface
+  stays launchable by that command on its own.
+
+Floe reads these from globally installed packages (`npm root -g`). A surface
+must not ship a bin called `floe`; that command belongs to Floe.
+
+## Register a surface that is not a package
+
+A surface that is not an npm package (a script, a tool in another language) is
+registered by hand:
 
 ```bash
 floe surface register --name <name> --label "<label>" --command <command>
@@ -73,8 +105,14 @@ floe surface remove <name>
 ```
 
 Use `--arg <arg>` more than once when the launch command needs arguments. Each
-surface owns one YAML file in the registry; Floe does not contain a built-in
-list or special case for any surface.
+registered surface owns one YAML file in the `surfaces` directory under the Floe
+home.
+
+`floe surface list` shows both kinds together. If an installed package and a
+registry file use the same name, the installed package wins, and the unused file
+is listed. If two installed packages use the same name, Floe offers neither and
+says which packages conflict. Floe does not contain a built-in list or special
+case for any surface.
 
 ## Set up and manage the substrate
 
@@ -104,8 +142,12 @@ See [[CLI reference]] for the complete command list.
 
 ## Implementation
 
-- `scripts/install-cli.mjs` - builds, packs, and globally installs `floe-cli`
+- `scripts/install-cli.mjs` - builds, packs, and globally installs `floe` from a checkout
+- `scripts/release.mjs` - builds, verifies, tags, and publishes the `floe-ai/floe` artifact
 - `floe-cli/src/cli.ts` - launcher and command definitions
+- `floe-cli/src/surface-manifests.ts` - detects surfaces declared by installed packages
+- `floe-cli/src/surface-catalog.ts` - merges detected and registered surfaces
 - `floe-cli/src/surfaces.ts` - on-disk surface registry and launching
+- `floe-cli/src/prompt-state.ts` - records one-time questions already asked
 - `floe-cli/src/startup.ts` - connect-first substrate startup
 - `floe-cli/src/service.ts` - operating-system auto-start

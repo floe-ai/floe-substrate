@@ -27,3 +27,6 @@ floe-native-authority/target/
 floe-cli/native/
 livegate-bus.mts
 livegate-identity.mts
+
+# release staging (scripts/release.mjs)
+dist-release/

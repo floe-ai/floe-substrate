@@ -1,13 +1,17 @@
 /**
- * surfaces — the on-disk registry of the things a person actually uses Floe
- * through.
+ * surfaces — the on-disk registry of surfaces that are not npm packages.
+ *
+ * Surfaces that ARE npm packages declare themselves in their own package.json
+ * and are detected (see surface-manifests.ts); nothing needs to run at install
+ * time for those. This registry remains for everything else: a surface written
+ * in another language, a script, a tool a person wires up by hand. The two
+ * sources are merged into one list in surface-catalog.ts.
  *
  * Floe is a substrate: on its own it is correct but not something a person
  * interacts with. What they interact with is a *surface* (a console, a map, a
  * bespoke tool). Floe must never name a surface — knowing about "the console"
- * would be the same coupling we remove everywhere else. So surfaces self
- * register: installing one writes a small file here that Floe discovers. Floe
- * has no built-in list and no special case for any entry.
+ * would be the same coupling we remove everywhere else. Floe has no built-in
+ * list and no special case for any entry.
  *
  * A registry entry carries the smallest thing that lets Floe launch something
  * it has never heard of:
@@ -27,7 +31,7 @@ import { z } from "zod";
 import { resolveLocalPath, type LocalConfig } from "./config.js";
 
 /** A typeable, stable id: lowercase, starts alphanumeric, words joined by '-'. */
-const SURFACE_NAME = /^[a-z0-9][a-z0-9-]*$/;
+export const SURFACE_NAME = /^[a-z0-9][a-z0-9-]*$/;
 
 const SurfaceEntrySchema = z.object({
   name: z.string().regex(SURFACE_NAME, "must be lowercase letters, digits and hyphens"),
