@@ -61,6 +61,13 @@ describe("version mismatch", () => {
     expect(message).toContain("left as is");
   });
 
+  it("tells the person a newer Floe is installed after an upgrade, and how to switch", () => {
+    const message = describeVersionMismatch(url, "0.3.1", "0.3.0")!;
+    expect(message).toContain("a newer Floe is installed");
+    expect(message).toContain("Floe 0.3.0 is still running");
+    expect(message).toContain("`floe restart`");
+  });
+
   it("reports a bus too old to state its version", () => {
     expect(describeVersionMismatch(url, "0.2.1", null)).toContain("does not report its version");
   });

@@ -30,6 +30,23 @@ is unavailable, it starts the local services only when
 Typing `floe` uses the same readiness path and then launches a registered
 surface. See [[Install and first run]].
 
+## Where the services run from
+
+An npm-installed Floe does not run its services from the installed package.
+Before starting one, it snapshots the package and the packages it loads into
+`<Floe home>/runtime/<version>-<fingerprint>/` and runs the service there. On
+Windows a running process locks the folder it runs from, so this is what lets
+`npm install -g` replace Floe, or a surface that carries it, while Floe runs.
+
+- Files are hard links to the installed ones, so a snapshot takes almost no
+  disk space. It is built once per install (about a second) and reused after.
+- A snapshot belongs to the copy that made it. Its `stage.json` records that
+  copy, and a staged service reports that copy's version and whether it is a
+  dependency. Staging adds no third kind of copy.
+- Each start removes snapshots that no running service uses. A snapshot still in
+  use is kept until the next start after it stops. `floe reset` removes them all.
+- A source checkout runs in place and is never staged.
+
 ## Other commands
 
 | Command | What it does |
@@ -53,4 +70,5 @@ Start on demand and start at login are separate:
 - `floe-cli/src/cli.ts` - service and launcher commands
 - `floe-cli/src/startup.ts` - connect-first readiness and startup
 - `floe-cli/src/process-manager.ts` - local process records, logs, and stopping
+- `floe-cli/src/staging.ts` - service snapshots under `<Floe home>/runtime/`
 - `floe-cli/src/service.ts` - operating-system auto-start

@@ -1,6 +1,6 @@
 {
   "name": "floe-bridge",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "bin": {
@@ -19,8 +19,6 @@
   "dependencies": {
     "diff": "^9.0.0",
     "floe-runtime": "github:floe-ai/floe-runtime#4e21695972d29941f465f9edaf0f73a0a3c7acf0",
-    "sharp": "0.35.4",
-    "vite": "8.0.10",
     "yaml": "^2.6.0",
     "zod": "^3.24.0",
     "zod-to-json-schema": "^3.25.1"

@@ -15,6 +15,7 @@
  *   - library dirs                 (configs, skills, extensions, mcp, templates)
  *   - services.json                (stale PID/process-manager records)
  *   - run/ and identity agent logs (the agent's per-start secret and log)
+ *   - runtime/                     (staged service files; rebuilt on next start)
  */
 
 import { existsSync, rmSync, statSync } from "node:fs";
@@ -59,6 +60,7 @@ export function buildResetPlan(configPath: string, config: LocalConfig, options:
     { path: recordsPath(configPath, config), label: "service process records (services.json)" },
     { path: r("./logs/identity"), label: "identity agent logs" },
     { path: r("./run"), label: "identity agent run file" },
+    { path: r("./runtime"), label: "staged service files (runtime/)" },
     ...(options.includeIdentity ? [{ path: identityDir, label: "identity/ (your identity; only its recovery phrase can bring it back)" }] : []),
   ];
 

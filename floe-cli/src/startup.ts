@@ -66,12 +66,32 @@ export async function runningBusVersion(baseUrl: string): Promise<string | null>
  */
 export function describeVersionMismatch(url: string, ownVersion: string | null, busVersion: string | null): string | null {
   if (!ownVersion || busVersion === ownVersion) return null;
+  if (busVersion && compareVersions(ownVersion, busVersion) > 0) {
+    // The usual case after an upgrade: the running Floe runs from its own
+    // stage, so npm replaced the package underneath it without stopping it.
+    return (
+      `Note: a newer Floe is installed. Floe ${busVersion} is still running at ${url};\n`
+      + `this copy is Floe ${ownVersion}. It is left as is and keeps serving until it restarts.\n`
+      + `To switch to Floe ${ownVersion}, run \`floe restart\`.`
+    );
+  }
   const serving = busVersion ? `Floe ${busVersion}` : "an older Floe that does not report its version";
   return (
     `Note: connected to ${serving} at ${url}, but this copy is Floe ${ownVersion}.\n`
-    + `It was already running, so it is left as is. To run this version instead, stop it\n`
-    + `(\`floe stop\`) and start again.`
+    + `It was already running, so it is left as is. To run this version instead, run\n`
+    + `\`floe restart\`.`
   );
+}
+
+/** Numeric dotted-version comparison; pre-release tags are ignored. */
+function compareVersions(a: string, b: string): number {
+  const parts = (v: string) => v.split("-")[0]!.split(".").map((n) => Number.parseInt(n, 10) || 0);
+  const [x, y] = [parts(a), parts(b)];
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] ?? 0) - (y[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
 }
 
 /**
@@ -245,8 +265,13 @@ export async function startAll(configPath: string, config: LocalConfig): Promise
   // broker on the same trust path as the host-control token, then handed to the
   // Bridge process environment only — never set by the operator, never on disk.
   const bridgeServiceToken = await fetchBridgeServiceToken("bridge:local", busUrl);
-  await startService(configPath, config, "bridge", { FLOE_BRIDGE_SERVICE_TOKEN: bridgeServiceToken });
+  const bridge = await startService(configPath, config, "bridge", { FLOE_BRIDGE_SERVICE_TOKEN: bridgeServiceToken });
   await ensureIdentityAgent(configPath, config);
+  // Launching is not starting: a bridge that died on its first line must not
+  // be reported as a started Floe.
+  if (bridge.pid && !isPidRunning(bridge.pid)) {
+    throw new Error(`Floe's bridge exited while starting (pid ${bridge.pid}). Last lines of ${bridge.log_file}:\n${readLogTail(bridge.log_file)}`);
+  }
 }
 
 function sleep(ms: number): Promise<void> {

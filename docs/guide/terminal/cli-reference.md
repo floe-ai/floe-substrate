@@ -63,6 +63,12 @@ before startup.
 `services.start_on_demand` allows it; otherwise it reports that the configured
 substrate is not running.
 
+`floe start` fails if the bridge exits while Floe is starting, and shows the
+end of the bridge's log. `floe status`, `floe up` and `floe` report when the
+running Floe is a different version from this copy, for example after an
+upgrade. `floe restart` switches to this copy's version. See
+[[Install and first run]] for upgrading.
+
 ## Surfaces
 
 ```bash

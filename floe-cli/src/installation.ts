@@ -17,6 +17,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stageOf } from "./staging.js";
 
 export type Installation = {
   /** Directory of the package this copy shipped in. */
@@ -65,7 +66,12 @@ export function thisInstallation(): Installation {
   if (cached) return cached;
   const moduleDir = realpathSync(dirname(fileURLToPath(import.meta.url)));
   const packageDir = nearestPackageDir(moduleDir) ?? moduleDir;
-  cached = classifyPackageDir(packageDir);
+  // A staged service is a run snapshot of the copy that started it (staging.ts),
+  // never a copy of its own: report that copy.
+  const stage = stageOf(packageDir);
+  cached = stage
+    ? { packageDir: stage.source, version: stage.version, dependencyOf: stage.dependency_of }
+    : classifyPackageDir(packageDir);
   return cached;
 }
 

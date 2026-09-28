@@ -8,9 +8,9 @@
  * far has come from: a workspaces root cannot be installed globally, a git
  * subdirectory cannot be installed at all, and three sibling packages have to
  * find each other. So the shipped artifact collapses them into ONE plain package
- * (no `workspaces` field) with one `floe` bin, the built dist of all three as
- * sibling subdirectories, and a generated package.json whose dependencies are the
- * real union of the three — the thing npm actually resolves on install.
+ * (no `workspaces` field) with one `floe` bin, each of the three bundled into its
+ * own sibling subdirectory, and a generated package.json whose dependencies are
+ * only the packages the bundles must leave installed (see EXTERNAL).
  *
  * This script is the source of truth for what a user receives. A person can run
  * it locally and inspect the staged package before anything is published; CI on a
@@ -20,7 +20,7 @@
  * Order of operations (each a gate — a failure aborts, nothing is published):
  *   1. build every service package from source (a package whose dist did not
  *      build cannot ship);
- *   2. assemble the single package with a generated union-deps package.json;
+ *   2. assemble the single package: bundle each service, generate package.json;
  *   3. GUARD: pack it, install it globally into an isolated prefix from a working
  *      directory unrelated to this checkout, and start Floe from that install —
  *      refuse to publish an artifact that installs but cannot start;
@@ -48,7 +48,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -140,31 +141,87 @@ function buildServices() {
   }
 }
 
-// ── 3. compute the union of runtime dependencies ─────────────────────────────
+// ── 4. assemble the single package ───────────────────────────────────────────
 
-function unionDependencies() {
-  const merged = {};
-  for (const pkg of SERVICE_PACKAGES) {
-    const deps = readJson(join(repoRoot, pkg, "package.json")).dependencies ?? {};
-    for (const [name, range] of Object.entries(deps)) {
-      // A source package never depends on a sibling by name (the CLI resolves the
-      // bus and bridge by path inside the artifact), so drop any that appear.
-      if (SERVICE_PACKAGES.includes(name)) continue;
-      if (merged[name] && merged[name] !== range) {
-        fail(
-          `dependency version conflict for ${name}: ${merged[name]} vs ${range}. ` +
-            `The single package cannot carry two versions — align it in the source ` +
-            `package.json files before releasing.`,
-        );
+// Each service ships as bundles, not as its dist tree plus node_modules. A first
+// start reads every file a service loads, and on Windows each freshly installed
+// file is scanned on first read: unbundled, the bus alone read ~2,000 files and
+// took 4.8s to load cold against 0.34s as one bundle. Fewer files also make the
+// run stage (floe-cli/src/staging.ts) cheap to build.
+//
+// Entries are the files something starts by path: the bin, each service, the
+// library a surface imports, and any sibling script a module launches via
+// `new URL("./x.js", import.meta.url)` (found by scanning, so a new one is
+// picked up). Every bundle is written where its unbundled file was, so lookups
+// relative to a module's own file (prompts, the native broker, host scripts)
+// resolve exactly as before. Code shared between entries is split into chunks
+// beside them rather than duplicated.
+const ENTRIES = {
+  "floe-cli": ["index.js", "identity/agent-main.js", "identity/client.js"],
+  "floe-bus": ["index.js"],
+  "floe-bridge": ["index.js"],
+};
+// Packages the bundles must not absorb, with why. They stay real installed
+// packages and become the artifact's only dependencies.
+const EXTERNAL = {
+  "@github/copilot-sdk": "locates and loads its platform package's native runtime (runtime.node) by resolution",
+};
+// Imported only in development, behind a guard: left unresolved in the bundle,
+// exactly as it is absent from an install.
+const DEV_ONLY = ["@jitl/quickjs-singlefile-mjs-debug-asyncify"];
+
+function launchedSiblings(distDir) {
+  const found = new Set();
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.name.endsWith(".js") && !entry.name.includes(".test.")) {
+        for (const match of readFileSync(path, "utf8").matchAll(/new URL\(\s*["'](\.\/[\w./-]+\.js)["']\s*,\s*import\.meta\.url\s*\)/g)) {
+          found.add(relative(distDir, join(dirname(path), match[1])).replace(/\\/g, "/"));
+        }
       }
-      merged[name] = range;
     }
-  }
-  // Deterministic key order so the generated file is stable across runs.
-  return Object.fromEntries(Object.entries(merged).sort(([a], [b]) => a.localeCompare(b)));
+  };
+  walk(distDir);
+  return [...found];
 }
 
-// ── 4. assemble the single package ───────────────────────────────────────────
+function bundle() {
+  const require = createRequire(join(repoRoot, "package.json"));
+  const esbuild = require("esbuild");
+  for (const pkg of SERVICE_PACKAGES) {
+    const distDir = join(repoRoot, pkg, "dist");
+    const entries = [...new Set([...ENTRIES[pkg], ...launchedSiblings(distDir)])];
+    const result = esbuild.buildSync({
+      entryPoints: entries.map((entry) => ({ in: join(distDir, entry), out: entry.replace(/\.js$/, "") })),
+      outdir: join(outDir, pkg, "dist"),
+      bundle: true,
+      splitting: true,
+      format: "esm",
+      platform: "node",
+      target: `node${process.versions.node.split(".")[0]}`,
+      // Chunks sit at the dist root: shared code that resolves paths from its own
+      // file (import.meta.url) must see the same directory it was built for.
+      chunkNames: "[name]-[hash]",
+      external: [...Object.keys(EXTERNAL), ...DEV_ONLY],
+      // CommonJS dependencies inside an ES module bundle still call require().
+      banner: { js: "import { createRequire as __floeCreateRequire } from 'node:module'; const require = __floeCreateRequire(import.meta.url);" },
+      logLevel: "silent",
+      metafile: true,
+    });
+    for (const warning of result.warnings) console.warn(`[release:bundle] ${pkg}: ${warning.text}`);
+    log("bundle", `${pkg}: ${entries.join(", ")} → ${Object.keys(result.metafile.outputs).length} files`);
+  }
+  // Pin each external to the exact version this build resolved and tested.
+  const pinned = {};
+  for (const name of Object.keys(EXTERNAL)) {
+    const manifest = join(repoRoot, "node_modules", ...name.split("/"), "package.json");
+    if (!existsSync(manifest)) fail(`external package ${name} is not installed in the checkout; run npm install.`);
+    pinned[name] = readJson(manifest).version;
+  }
+  return pinned;
+}
 
 function assemble(version) {
   log("assemble", `staging the single \`${PACKAGE_NAME}\` package at ${outDir}`);
@@ -178,9 +235,15 @@ function assemble(version) {
         if (asset === "README.md") continue; // optional
         fail(`expected built asset ${pkg}/${asset} is missing after build.`);
       }
-      cpSync(from, join(outDir, pkg, asset), { recursive: true });
+      // Built JavaScript is not copied: bundle() replaces it with one bundle per
+      // entry. Everything else a dist carries (prompts, declarations) ships.
+      cpSync(from, join(outDir, pkg, asset), {
+        recursive: true,
+        filter: (path) => !/\.js(\.map)?$/.test(path) && !/\.test\.d\.ts$/.test(path),
+      });
     }
   }
+  const external = bundle();
 
   // The bin lives inside the bin package's shipped dist. Point the generated
   // package.json at that path within the artifact.
@@ -209,10 +272,9 @@ function assemble(version) {
       "./package.json": "./package.json",
     },
     engines: { node: ">=20" },
-    // The real, resolvable union of the source packages' runtime dependencies —
-    // this is what npm installs, and what the sibling-tarball path provided that
-    // a workspaces-root git install never could.
-    dependencies: unionDependencies(),
+    // Only what the bundles leave external is installed by npm: packages that
+    // must stay packages (see EXTERNAL), at the exact versions this build used.
+    dependencies: external,
   };
   writeFileSync(
     join(outDir, "package.json"),
@@ -334,8 +396,12 @@ function guard(version) {
       dumpLog(home, "identity");
       throw new Error("`floe status` does not show the identity agent answering after `floe start`.");
     }
+    requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after `floe start`" });
     guardSurface({ workRoot, tarball: join(workRoot, tarball), configPath, port, neutralCwd, home });
     log("guard", "PASS — a surface depending on the artifact created, locked, unlocked and used a bearer via the identity agent");
+    guardUpgradeWhileRunning({ tarball: join(workRoot, tarball), prefix, port, neutralCwd, home });
+    requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after npm removed and reinstalled the package" });
+    log("guard", "PASS — npm removed and reinstalled the package while Floe kept serving from its stage");
   } finally {
     // Best-effort stop, then remove all isolated state.
     try {
@@ -373,6 +439,40 @@ function dumpLog(home, service) {
   const log = join(home, "logs", service, `${service}.log`);
   console.error(`\n[release:guard] ${service} log (${log}):`);
   console.error(existsSync(log) ? readFileSync(log, "utf8") : `(no ${service} log written)`);
+}
+
+/**
+ * `floe start` returns once it has launched the bridge, and a bridge that dies
+ * on its first line looks like a clean start. The guard asks `floe status`.
+ */
+function requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when }) {
+  const status = spawnSync(floeBin, ["--config", configPath, "status"], { cwd: neutralCwd, encoding: "utf8", shell: isWindows });
+  if (!/^bridge: running/m.test(status.stdout ?? "")) {
+    process.stdout.write(status.stdout ?? "");
+    dumpLog(home, "bridge");
+    throw new Error(`the bridge is not running ${when}.`);
+  }
+}
+
+/**
+ * Upgrading must never require stopping Floe. On Windows a running process
+ * locks its working directory and loaded images, so a Floe running from inside
+ * the package makes npm fail with EBUSY. Floe's services run from a stage under
+ * the Floe home instead: prove it by removing the package outright while Floe
+ * runs (the harshest form of an upgrade), checking Floe still serves, then
+ * reinstalling it.
+ */
+function guardUpgradeWhileRunning({ tarball, prefix, port, neutralCwd, home }) {
+  const records = JSON.parse(readFileSync(join(home, "services.json"), "utf8"));
+  const runtime = join(home, "runtime").toLowerCase();
+  for (const [service, record] of Object.entries(records)) {
+    if (!String(record.args?.[0] ?? "").toLowerCase().startsWith(runtime)) {
+      throw new Error(`the ${service} service runs from ${record.args?.[0]}, not from a stage under ${join(home, "runtime")}.`);
+    }
+  }
+  runNpm(["uninstall", "-g", PACKAGE_NAME, "--prefix", prefix], neutralCwd);
+  if (!checkBusHealth(port)) throw new Error("Floe stopped serving when npm removed the package it was installed from.");
+  runNpm(["install", "-g", tarball, "--prefix", prefix], neutralCwd);
 }
 
 /**

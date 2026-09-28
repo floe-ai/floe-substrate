@@ -138,7 +138,7 @@ export class IdentityClient {
     const agent = this.channel.agentVersion;
     if (!own || agent === own) return null;
     return `Connected to the identity agent of ${agent ? `Floe ${agent}` : "an older Floe"}, but this surface ships Floe ${own}. `
-      + "It was already running, so it is left as is.";
+      + "It was already running, so it is left as is and keeps serving until Floe restarts.";
   }
 
   onState(listener: (state: IdentityState) => void): () => void {

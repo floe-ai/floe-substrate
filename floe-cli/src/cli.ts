@@ -539,6 +539,8 @@ async function printStatus(configPath: string, config: LocalConfig): Promise<voi
   console.log(`bus: ${config.bus.http_base_url} ${healthy ? `healthy${busVersion ? ` (Floe ${busVersion})` : ""}` : "unreachable"}`);
   const installation = thisInstallation();
   console.log(`this copy: Floe ${installation.version ?? "(unknown version)"}${installation.dependencyOf ? `, installed as part of ${installation.dependencyOf}` : ""}`);
+  const mismatch = healthy ? describeVersionMismatch(config.bus.http_base_url, installation.version, busVersion) : null;
+  if (mismatch) console.log(mismatch);
   const agent = await probeAgent(floeHome(configPath, config));
   if (!agent) {
     console.log("identity agent: not answering");

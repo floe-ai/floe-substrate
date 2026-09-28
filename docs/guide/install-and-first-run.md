@@ -155,6 +155,23 @@ the other connects to it.
 - Both copies share one identity agent, because the agent's address comes from
   the Floe home. The same rule applies: whichever agent is running serves.
 
+## Upgrading
+
+Upgrade while Floe is running; there is no need to stop it first:
+
+```bash
+npm install -g github:floe-ai/floe     # or upgrade the surface that carries Floe
+floe restart                           # when you want the new version to serve
+```
+
+The running Floe keeps serving the old version until it restarts. `floe`,
+`floe up` and `floe status` say when a newer Floe is installed than the one
+running. A surface gets the same fact from `floe/identity` (`versionNote`), and
+restarting is always the person's choice.
+
+This works from 0.3.1 on. A Floe 0.3.0 or older that is running still blocks
+npm on Windows (`EBUSY`), so stop it once (`floe stop`) for that upgrade.
+
 ## Your identity
 
 Floe holds one identity for you, under the Floe home, and every surface uses it.
@@ -182,6 +199,7 @@ See [[CLI reference]] for the complete command list.
 - `floe-cli/src/surfaces.ts` - on-disk surface registry and launching
 - `floe-cli/src/prompt-state.ts` - records one-time questions already asked
 - `floe-cli/src/installation.ts` - this copy's version and whether it is a dependency
+- `floe-cli/src/staging.ts` - runs the services from a snapshot, so npm can upgrade under them
 - `floe-bus/src/version.ts` - the version the bus reports at `/health`
 - `floe-cli/src/startup.ts` - connect-first substrate startup
 - `floe-cli/src/service.ts` - operating-system auto-start

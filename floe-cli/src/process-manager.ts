@@ -6,6 +6,8 @@ import { spawn, spawnSync } from "node:child_process";
 import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
 import { readRunFile, runFilePath } from "./identity/protocol.js";
+import { thisInstallation } from "./installation.js";
+import { ensureStage, isNpmInstalled, pruneStages } from "./staging.js";
 
 export type ServiceName = "bus" | "bridge" | "identity";
 
@@ -99,7 +101,7 @@ export async function startService(configPath: string, config: LocalConfig, serv
   const existing = records[service];
   if (existing && isPidRunning(existing.pid)) return existing;
 
-  const entry = serviceEntry(service);
+  const entry = await runnableEntry(configPath, config, records, serviceEntry(service));
   const command = process.execPath;
   const args = [entry, "daemon", "--config", configPath];
   const defaultLogFile = serviceLogPath(configPath, config, service);
@@ -136,6 +138,24 @@ export async function startService(configPath: string, config: LocalConfig, serv
   records[service] = record;
   writeRecords(configPath, config, records);
   return record;
+}
+
+/**
+ * Where a service actually runs from. An npm-installed copy runs its services
+ * from a stage under the Floe home, so npm can replace the package while they
+ * run (see staging.ts); a checkout runs in place. Stages that no live service
+ * runs from are removed here, so they never pile up.
+ */
+async function runnableEntry(configPath: string, config: LocalConfig, records: ServiceRecords, entry: string): Promise<string> {
+  const installation = thisInstallation();
+  if (!isNpmInstalled(installation.packageDir)) return entry;
+  const home = resolveLocalPath(configPath, config.home, ".");
+  const stage = await ensureStage(home, installation);
+  const inUse = Object.values(records)
+    .filter((record): record is ServiceRecord => Boolean(record && isPidRunning(record.pid)))
+    .map((record) => record.args[0] ?? "");
+  pruneStages(home, stage.dir, inUse);
+  return stage.map(entry);
 }
 
 function openServiceLog(defaultLogFile: string, service: ServiceName): { logFile: string; logFd: number } {
