@@ -26,8 +26,9 @@ export function packagedCopilotCliPath(): string | null {
     return null;
   }
   const fromLauncher = createRequire(launcher);
-  // npm installs only the platform package whose os, cpu and libc match.
-  const platforms = process.platform === "linux" ? ["linuxmusl", "linux"] : [process.platform];
+  // npm may install both Linux builds, so ask the launcher's own libc check.
+  const platforms = process.platform !== "linux" ? [process.platform]
+    : (fromLauncher("detect-libc") as { isNonGlibcLinuxSync(): boolean }).isNonGlibcLinuxSync() ? ["linuxmusl", "linux"] : ["linux"];
   for (const platform of platforms) {
     try {
       return fromLauncher.resolve(`@github/copilot-${platform}-${process.arch}`);
