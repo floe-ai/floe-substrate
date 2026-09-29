@@ -331,9 +331,34 @@ export class BridgeDaemon {
 
   private async handleEventStreamMessage(message: any): Promise<void> {
     if (message.type === "delivery_cancel_requested" && message.payload?.delivery_id) {
+      if (message.payload?.runtime_owner === "bus") return;
       const deliveryId = String(message.payload.delivery_id);
       this.cancelledDeliveries.add(deliveryId);
-      await this.adapter.cancelDelivery?.(deliveryId);
+      const accepted = this.adapter.cancelDelivery?.(deliveryId) ?? false;
+      const result = accepted
+        ? await this.adapter.waitForDeliveryCancellation?.(deliveryId)
+        : null;
+      if (result && typeof message.payload?.workspace_id === "string") {
+        await this.bus.reportPauseCancellation({
+          workspace_id: message.payload.workspace_id,
+          delivery_id: deliveryId,
+          outcome: result.outcome,
+          evidence: result.evidence,
+        });
+      }
+    }
+    if (message.type === "delivery_force_retire_requested" && message.payload?.delivery_id) {
+      const deliveryId = String(message.payload.delivery_id);
+      this.cancelledDeliveries.add(deliveryId);
+      const result = await this.adapter.forceRetireDelivery?.(deliveryId);
+      if (result && typeof message.payload?.workspace_id === "string") {
+        await this.bus.reportPauseCancellation({
+          workspace_id: message.payload.workspace_id,
+          delivery_id: deliveryId,
+          outcome: result.outcome,
+          evidence: result.evidence,
+        });
+      }
     }
     if (
       (message.type === "approval_decided" || message.type === "approval_invalidated")

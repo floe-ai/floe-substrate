@@ -1,3 +1,7 @@
+/**
+ * @invariant Scope operations expose Bus-owned execution state through
+ * governed operation receipts and never perform runtime work directly.
+ */
 import {
   ScopeCompositionConflictError,
   ScopeCompositionImpactConflictError,
@@ -338,6 +342,7 @@ const stoppableScopeExecutionStatuses = new Set<ScopeExecutionRecord["status"]>(
   "queued",
   "active",
   "waiting_external",
+  "pausing",
   "paused",
   "blocked",
 ]);
@@ -655,7 +660,7 @@ const scopeExecutionSchema: JsonSchema = {
     state_revision: { type: "integer", minimum: 1 },
     status: {
       enum: [
-        "queued", "active", "waiting_external", "paused",
+        "queued", "active", "waiting_external", "pausing", "paused",
         "blocked", "completed", "failed", "cancelled", "superseded",
       ],
     },
@@ -2053,7 +2058,7 @@ export function pauseScopeExecutionOperation(
     authority_boundary_kinds: ["workspace"],
     category: "scope-execution",
     title: "Pause Scope execution",
-    description: "Pause queued work at a durable scheduling boundary without changing the pinned plan or execution evidence.",
+    description: "Request an immediate pause, interrupt active turns, and retain the pinned plan and execution evidence.",
     effects: { mode: "write", reversibility: "reversible", external: false, secret_access: "none" },
     required_grants: [PAUSE_SCOPE_EXECUTION_OPERATION_ID],
     interaction_constraints: { allowed_modes: ["interactive", "unattended"] },
@@ -2084,12 +2089,16 @@ export function pauseScopeExecutionOperation(
         call: operationCall(context),
       });
       return {
-        state: "completed" as const,
+        state: "accepted" as const,
         result,
         changed_refs: [{
           kind: "scope_execution", id: result.execution.execution_id,
           revision: scopeExecutionStateRevision(result.execution),
         }],
+        progress_ref: {
+          kind: "scope_execution", id: result.execution.execution_id,
+          revision: scopeExecutionStateRevision(result.execution),
+        },
         audit_ref: auditRef(context),
       };
     }),

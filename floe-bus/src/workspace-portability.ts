@@ -1,3 +1,7 @@
+/**
+ * @invariant Workspace portability preserves every workspace-owned canonical
+ * record and its declared relationships without inventing replacement state.
+ */
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -283,6 +287,7 @@ export const PORTABLE_WORKSPACE_TABLES = new Set([
   "node_execution_inputs",
   "node_execution_join_expectations",
   "node_execution_outputs",
+  "node_execution_state_outbox",
   "node_executions",
   "operation_invocation_ledger",
   "pending_responses",
@@ -408,6 +413,7 @@ const EXPLICIT_PORTABLE_RELATIONSHIPS: readonly PortableRelationship[] = [
   relation("node_execution_inputs", "node_execution_id", "node_executions", "node_execution_id"),
   relation("node_execution_join_expectations", "node_execution_id", "node_executions", "node_execution_id"),
   relation("node_execution_outputs", "publication_id", "scope_output_publications", "publication_id"),
+  relation("node_execution_state_outbox", "node_execution_id", "node_executions", "node_execution_id"),
   relation("node_executions", "execution_id", "scope_executions", "execution_id"),
   relation("pulse_subscribers", "pulse_id", "pulses", "pulse_id"),
   relation("runtime_profile_head_changes", "runtime_profile_id", "runtime_profiles", "runtime_profile_id"),

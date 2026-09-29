@@ -1,3 +1,8 @@
+/**
+ * @invariant BusClient is the Bridge's authenticated transport boundary.
+ * Runtime facts are reported to Bus-owned routes; the Bridge does not persist
+ * parallel canonical delivery or execution state.
+ */
 import type { WorkspaceConfigurationInventory } from "./workspace-config-inventory.js";
 
 export type EventEnvelope = {
@@ -779,6 +784,22 @@ export class BusClient {
       processing_contract?: RuntimeProcessingContract;
     } };
     return result.delivery;
+  }
+
+  async reportPauseCancellation(input: {
+    workspace_id: string;
+    delivery_id: string;
+    outcome: "quiesced" | "session_retired";
+    evidence?: Record<string, unknown>;
+  }): Promise<void> {
+    await this.post(
+      `/v1/delivery/${encodeURIComponent(input.delivery_id)}/pause-cancellation`,
+      {
+        workspace_id: input.workspace_id,
+        outcome: input.outcome,
+        evidence: input.evidence ?? {},
+      },
+    );
   }
 
   async prepareRuntimeDelivery(deliveryId: string): Promise<PreparedRuntimeDelivery> {

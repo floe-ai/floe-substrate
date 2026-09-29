@@ -363,12 +363,7 @@ export async function createBusServer(
   /** Maps bridge_id → the WS socket it opened; used for socket-presence liveness (D4). */
   const bridgeSockets = new Map<string, SocketLike>();
 
-  function broadcast(type: string, payload: Record<string, unknown> = {}): void {
-    const entry = pushStream.append({
-      workspace_id: resolveBroadcastWorkspaceId(store, payload),
-      type,
-      payload,
-    });
+  function sendPushEntry(entry: TransportPushEntry): void {
     const message = serializePushEntry(entry);
     for (const [socket, authority] of socketAuthorities) {
       try {
@@ -377,6 +372,24 @@ export async function createBusServer(
         socketAuthorities.delete(socket);
       }
     }
+  }
+
+  function dispatchPendingNodeStateChanges(): void {
+    let entries: TransportPushEntry[];
+    do {
+      entries = pushStream.drainNodeExecutionStateOutbox();
+      for (const entry of entries) sendPushEntry(entry);
+    } while (entries.length === 1_000);
+  }
+
+  function broadcast(type: string, payload: Record<string, unknown> = {}): void {
+    dispatchPendingNodeStateChanges();
+    const entry = pushStream.append({
+      workspace_id: resolveBroadcastWorkspaceId(store, payload),
+      type,
+      payload,
+    });
+    sendPushEntry(entry);
     // A Workspace newly bound to a host whose Bridge is already connected learns
     // of that Bridge now, not at its next reconnect.
     if (type === "workspace_attachment_requested" && typeof payload.workspace_id === "string") {
@@ -385,6 +398,12 @@ export async function createBusServer(
       }
     }
   }
+
+  // One bounded startup drain recovers committed transitions after a crash.
+  dispatchPendingNodeStateChanges();
+  app.addHook("onResponse", async () => {
+    dispatchPendingNodeStateChanges();
+  });
 
   /** Bridges connected now: those serving one Workspace, or all of them when workspaceId is null. */
   function connectedBridgeIds(workspaceId: string | null): string[] {
@@ -2913,6 +2932,34 @@ export async function createBusServer(
     };
   });
 
+  app.post("/v1/delivery/:delivery_id/pause-cancellation", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
+    const params = z.object({ delivery_id: z.string().min(1) }).parse(request.params);
+    const body = z.object({
+      workspace_id: z.string().min(1),
+      outcome: z.enum(["quiesced", "session_retired"]),
+      evidence: z.record(z.string(), z.unknown()).optional(),
+    }).parse(request.body);
+    if (
+      !testBypassedRequests.has(request)
+      && (
+        !bridgeMayUseWorkspace(store, bridgeAuthority, body.workspace_id)
+        || !bridgeOwnsDelivery(store, bridgeAuthority.bridge_id, params.delivery_id)
+      )
+    ) {
+      return sendTransportForbidden(reply);
+    }
+    return {
+      pause: store.recordScopePauseCancellation({
+        workspace_id: body.workspace_id,
+        delivery_id: params.delivery_id,
+        outcome: body.outcome,
+        evidence: body.evidence,
+      }, broadcast),
+    };
+  });
+
   app.post("/v1/delivery/:delivery_id/runtime-prepare", async (request, reply) => {
     const bridgeAuthority = requireBridgeService(request, reply);
     if (!bridgeAuthority) return reply;
@@ -4561,6 +4608,7 @@ export function resolveTransportRequirement(request: any, store: BusStore): Tran
     || route === "/v1/bridges/liveness"
     || route === "/v1/bridges/:bridge_id/liveness"
     || route === "/v1/delivery/:delivery_id/status"
+    || route === "/v1/delivery/:delivery_id/pause-cancellation"
     || route === "/v1/delivery/:delivery_id/runtime-prepare"
     || route === "/v1/delivery/:delivery_id/tool-policy/evaluate"
     || route === "/v1/delivery/:delivery_id/tool-policy/:evaluation_id/resolve"

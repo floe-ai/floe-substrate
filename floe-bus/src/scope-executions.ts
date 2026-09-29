@@ -1,3 +1,8 @@
+/**
+ * @invariant ScopeExecutionStore owns durable Scope, NodeExecution, attempt,
+ * pause, and Node state-outbox mutations. Each Node state revision and its
+ * outbox record commit in the same SQLite transaction.
+ */
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
@@ -181,9 +186,18 @@ export type ScopeExecutionPauseResult = {
   pause_id: string;
   node_execution_ids: string[];
   delivery_ids: string[];
+  active_delivery_ids: string[];
+  deadline_at: string;
 };
 
 export type ScopeExecutionResumeResult = ScopeExecutionPauseResult;
+
+export type ScopeExecutionCancellationResult = {
+  execution: ScopeExecutionRecord;
+  pause_id: string;
+  paused: boolean;
+  remaining_delivery_ids: string[];
+};
 
 export type NodeExecutionRetryResult = {
   execution: ScopeExecutionRecord;
@@ -449,6 +463,27 @@ export function applyScopeExecutionSchema(db: DatabaseSync): void {
       prior_state TEXT NOT NULL,
       PRIMARY KEY (pause_id, queue_id)
     );
+
+    CREATE TABLE IF NOT EXISTS node_execution_state_outbox (
+      node_execution_id TEXT NOT NULL,
+      state_revision INTEGER NOT NULL,
+      workspace_id TEXT NOT NULL,
+      scope_id TEXT NOT NULL,
+      scope_execution_id TEXT NOT NULL,
+      composition_revision_id TEXT NOT NULL,
+      node_id TEXT NOT NULL,
+      from_status TEXT,
+      to_status TEXT NOT NULL,
+      attempt_id TEXT,
+      delivery_id TEXT,
+      failure_json TEXT,
+      changed_at TEXT NOT NULL,
+      push_sequence INTEGER,
+      PRIMARY KEY (node_execution_id, state_revision)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_node_execution_state_outbox_pending
+      ON node_execution_state_outbox(push_sequence, changed_at, node_execution_id);
   `);
 
   // Retained databases predate Actor/runtime pinning. The columns stay nullable
@@ -471,6 +506,14 @@ export function applyScopeExecutionSchema(db: DatabaseSync): void {
   addColumnIfMissing(db, "node_execution_inputs", "state", "TEXT NOT NULL DEFAULT 'received'");
   addColumnIfMissing(db, "node_execution_inputs", "supersedes_input_id", "TEXT");
   addColumnIfMissing(db, "node_execution_inputs", "reason_json", "TEXT NOT NULL DEFAULT '{}'");
+  addColumnIfMissing(db, "scope_execution_pauses", "status", "TEXT NOT NULL DEFAULT 'paused'");
+  addColumnIfMissing(db, "scope_execution_pauses", "deadline_at", "TEXT");
+  addColumnIfMissing(db, "scope_execution_pauses", "completed_at", "TEXT");
+  addColumnIfMissing(db, "scope_execution_pause_deliveries", "delivery_id", "TEXT");
+  addColumnIfMissing(db, "scope_execution_pause_deliveries", "attempt_id", "TEXT");
+  addColumnIfMissing(db, "scope_execution_pause_deliveries", "cancellation_state", "TEXT NOT NULL DEFAULT 'not_required'");
+  addColumnIfMissing(db, "scope_execution_pause_deliveries", "outcome_unknown", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(db, "scope_execution_pause_deliveries", "interruption_json", "TEXT NOT NULL DEFAULT '{}'");
 
   // Older rows named the physical Delivery but did not retain a stable logical
   // input identity. Reconstruct that identity from the exact ArtefactVersion
@@ -723,19 +766,16 @@ export class ScopeExecutionStore {
     return this.getExecution(executionId) as ScopeExecutionRecord;
   }
 
-  /**
-   * Pause is a durable scheduling barrier. Work already owned by a runtime is
-   * refused because the Bus cannot claim that an external effect is paused.
-   */
   pauseExecution(input: {
     execution_id: string;
     reason?: string | null;
+    deadline_ms?: number;
   }): ScopeExecutionPauseResult {
     const execution = this.getExecution(input.execution_id);
     if (!execution) {
       throw new ScopeExecutionReferenceError(`ScopeExecution '${input.execution_id}' does not exist`);
     }
-    if (execution.status === "paused") {
+    if (execution.status === "paused" || execution.status === "pausing") {
       const active = this.activePause(execution.execution_id);
       if (!active) {
         throw new ScopeExecutionReferenceError(
@@ -749,27 +789,22 @@ export class ScopeExecutionStore {
         `ScopeExecution '${execution.execution_id}' cannot pause while '${execution.status}'`,
       );
     }
-    const unsettledAttempts = this.db.prepare(`
-      SELECT ea.attempt_id
-      FROM execution_attempts ea
-      JOIN node_executions n ON n.node_execution_id = ea.node_execution_id
-      WHERE n.execution_id = ? AND ea.status IN ('pending', 'running')
-      ORDER BY ea.created_at, ea.attempt_id
-    `).all(execution.execution_id) as Array<{ attempt_id: string }>;
     const hasQueue = tableExists(this.db, "event_queue");
-    const activeDeliveries = hasQueue
+    const activeDeliveries = hasQueue && tableExists(this.db, "delivery_bundles")
       ? this.db.prepare(`
-          SELECT queue_id FROM event_queue
-          WHERE scope_execution_id = ?
-            AND state IN ('reserved', 'delivered_to_bridge', 'injected_to_runtime')
-          ORDER BY created_at, queue_id
-        `).all(execution.execution_id) as Array<{ queue_id: string }>
+          SELECT q.queue_id, q.state, q.delivery_id, b.execution_attempt_id AS attempt_id
+          FROM event_queue q
+          LEFT JOIN delivery_bundles b ON b.delivery_id = q.delivery_id
+          WHERE q.scope_execution_id = ?
+            AND q.state IN ('reserved', 'delivered_to_bridge', 'injected_to_runtime')
+          ORDER BY q.created_at, q.queue_id
+        `).all(execution.execution_id) as Array<{
+          queue_id: string;
+          state: string;
+          delivery_id: string | null;
+          attempt_id: string | null;
+        }>
       : [];
-    if (unsettledAttempts.length > 0 || activeDeliveries.length > 0) {
-      throw new ScopeExecutionTransitionError(
-        `ScopeExecution '${execution.execution_id}' has runtime-owned work and cannot be represented as paused`,
-      );
-    }
     const nodes = this.listNodeExecutions(execution.execution_id).filter((node) => ![
       "completed", "failed", "cancelled", "superseded",
     ].includes(node.status));
@@ -782,11 +817,13 @@ export class ScopeExecutionStore {
       : [];
     const pauseId = `pause_${randomUUID()}`;
     const timestamp = nowIso();
+    const deadlineAt = new Date(Date.parse(timestamp) + Math.max(1, input.deadline_ms ?? 10_000)).toISOString();
     this.transaction(() => {
       this.db.prepare(`
         INSERT INTO scope_execution_pauses (
-          pause_id, execution_id, prior_status, prior_terminal_json, reason, paused_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
+          pause_id, execution_id, prior_status, prior_terminal_json, reason,
+          paused_at, status, deadline_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'pausing', ?)
       `).run(
         pauseId,
         execution.execution_id,
@@ -794,6 +831,7 @@ export class ScopeExecutionStore {
         json(execution.terminal),
         input.reason?.trim() || null,
         timestamp,
+        deadlineAt,
       );
       const insertNode = this.db.prepare(`
         INSERT INTO scope_execution_pause_nodes (
@@ -802,20 +840,26 @@ export class ScopeExecutionStore {
       `);
       for (const node of nodes) {
         insertNode.run(pauseId, node.node_execution_id, node.status, json(node.failure));
-        if (node.status !== "paused") {
-          this.db.prepare(`
-            UPDATE node_executions SET status = 'paused', state_revision = state_revision + 1
-            WHERE node_execution_id = ?
-          `)
-            .run(node.node_execution_id);
-        }
       }
       const insertDelivery = this.db.prepare(`
-        INSERT INTO scope_execution_pause_deliveries (pause_id, queue_id, prior_state)
-        VALUES (?, ?, ?)
+        INSERT INTO scope_execution_pause_deliveries (
+          pause_id, queue_id, prior_state, delivery_id, attempt_id,
+          cancellation_state, outcome_unknown
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
       for (const delivery of deliveries) {
-        insertDelivery.run(pauseId, delivery.queue_id, delivery.state);
+        insertDelivery.run(pauseId, delivery.queue_id, delivery.state, null, null, "not_required", 0);
+      }
+      for (const delivery of activeDeliveries) {
+        insertDelivery.run(
+          pauseId,
+          delivery.queue_id,
+          delivery.state,
+          delivery.delivery_id,
+          delivery.attempt_id,
+          "requested",
+          delivery.state === "injected_to_runtime" ? 1 : 0,
+        );
       }
       if (hasQueue) {
         this.db.prepare(`
@@ -825,11 +869,86 @@ export class ScopeExecutionStore {
       }
       this.db.prepare(`
         UPDATE scope_executions
-        SET status = 'paused', terminal_json = ?, state_revision = state_revision + 1
+        SET status = 'pausing', terminal_json = ?, state_revision = state_revision + 1
         WHERE execution_id = ?
-      `).run(json({ code: "operator_paused", reason: input.reason?.trim() || null }), execution.execution_id);
+      `).run(json({ code: "operator_pausing", reason: input.reason?.trim() || null }), execution.execution_id);
+      if (activeDeliveries.length === 0) this.finalizePause(pauseId, timestamp);
     });
     return this.pauseResult(this.getExecution(execution.execution_id) as ScopeExecutionRecord, pauseId);
+  }
+
+  recordPauseCancellation(input: {
+    workspace_id: string;
+    delivery_id: string;
+    outcome: "quiesced" | "session_retired";
+    evidence?: Record<string, unknown>;
+  }): ScopeExecutionCancellationResult | null {
+    const row = this.db.prepare(`
+      SELECT p.pause_id, p.execution_id
+      FROM scope_execution_pause_deliveries d
+      JOIN scope_execution_pauses p ON p.pause_id = d.pause_id
+      JOIN scope_executions e ON e.execution_id = p.execution_id
+      WHERE d.delivery_id = ? AND e.workspace_id = ?
+        AND p.resumed_at IS NULL AND p.status = 'pausing'
+      ORDER BY p.paused_at DESC
+      LIMIT 1
+    `).get(input.delivery_id, input.workspace_id) as { pause_id: string; execution_id: string } | undefined;
+    if (!row) return null;
+    this.transaction(() => {
+      this.db.prepare(`
+        UPDATE scope_execution_pause_deliveries
+        SET cancellation_state = ?, interruption_json = ?
+        WHERE pause_id = ? AND delivery_id = ?
+          AND cancellation_state IN ('requested', 'force_requested')
+      `).run(input.outcome, json(input.evidence), row.pause_id, input.delivery_id);
+      if (this.pendingPauseDeliveryIds(row.pause_id).length === 0) {
+        this.finalizePause(row.pause_id, nowIso());
+      }
+    });
+    const execution = this.getExecution(row.execution_id) as ScopeExecutionRecord;
+    return {
+      execution,
+      pause_id: row.pause_id,
+      paused: execution.status === "paused",
+      remaining_delivery_ids: this.pendingPauseDeliveryIds(row.pause_id),
+    };
+  }
+
+  claimExpiredPauseDeliveryIds(at = nowIso()): Array<{
+    pause_id: string;
+    execution_id: string;
+    delivery_id: string;
+  }> {
+    return this.transaction(() => {
+      const rows = this.db.prepare(`
+        SELECT p.pause_id, p.execution_id, d.delivery_id
+        FROM scope_execution_pauses p
+        JOIN scope_executions e ON e.execution_id = p.execution_id
+        JOIN scope_execution_pause_deliveries d ON d.pause_id = p.pause_id
+        WHERE p.status = 'pausing' AND e.status = 'pausing' AND p.deadline_at <= ?
+          AND d.cancellation_state = 'requested' AND d.delivery_id IS NOT NULL
+        ORDER BY p.deadline_at, p.pause_id, d.delivery_id
+      `).all(at) as Array<{ pause_id: string; execution_id: string; delivery_id: string }>;
+      const mark = this.db.prepare(`
+        UPDATE scope_execution_pause_deliveries SET cancellation_state = 'force_requested'
+        WHERE pause_id = ? AND delivery_id = ? AND cancellation_state = 'requested'
+      `);
+      for (const row of rows) mark.run(row.pause_id, row.delivery_id);
+      return rows;
+    });
+  }
+
+  nextPauseDeadline(): string | null {
+    const row = this.db.prepare(`
+      SELECT MIN(deadline_at) AS deadline_at
+      FROM scope_execution_pauses p
+      JOIN scope_executions e ON e.execution_id = p.execution_id
+      WHERE p.status = 'pausing' AND e.status = 'pausing' AND EXISTS (
+        SELECT 1 FROM scope_execution_pause_deliveries d
+        WHERE d.pause_id = p.pause_id AND d.cancellation_state = 'requested'
+      )
+    `).get() as { deadline_at: string | null };
+    return row.deadline_at;
   }
 
   resumeExecution(input: {
@@ -866,18 +985,32 @@ export class ScopeExecutionStore {
     const timestamp = nowIso();
     this.transaction(() => {
       for (const node of nodeRows) {
-        this.db.prepare(`
-          UPDATE node_executions
-          SET status = ?, failure_json = ?, state_revision = state_revision + 1
-          WHERE node_execution_id = ? AND status = 'paused'
-        `).run(node.prior_status, node.prior_failure_json, node.node_execution_id);
+        const current = this.getNodeExecution(node.node_execution_id);
+        if (!current || current.status !== "paused") continue;
+        const interruption = this.pauseInterruptionEvidence(pause.pause_id, node.node_execution_id);
+        const interrupted = interruption.length > 0;
+        this.setNodeExecutionStatus(
+          node.node_execution_id,
+          interrupted ? "retrying" : node.prior_status,
+          interrupted
+            ? {
+                code: "resumed_after_interruption",
+                prior_failure: parseJson(node.prior_failure_json, {}),
+                interruption,
+              }
+            : parseJson(node.prior_failure_json, {}),
+        );
       }
       if (tableExists(this.db, "event_queue")) {
         for (const delivery of deliveryRows) {
+          const wasRuntimeOwned = ["reserved", "delivered_to_bridge", "injected_to_runtime"]
+            .includes(delivery.prior_state);
           this.db.prepare(`
-            UPDATE event_queue SET state = ?
+            UPDATE event_queue
+            SET state = ?, delivery_id = CASE WHEN ? THEN NULL ELSE delivery_id END,
+                lease_expires_at = NULL, last_error = NULL
             WHERE queue_id = ? AND state = 'held'
-          `).run(delivery.prior_state, delivery.queue_id);
+          `).run(wasRuntimeOwned ? "queued" : delivery.prior_state, wasRuntimeOwned ? 1 : 0, delivery.queue_id);
         }
       }
       this.db.prepare(`
@@ -959,12 +1092,7 @@ export class ScopeExecutionStore {
           WHERE queue_id = ?
         `).run(row.queue_id);
       }
-      this.db.prepare(`
-        UPDATE node_executions
-        SET status = 'retrying', failure_json = '{}', completed_at = NULL, cancelled_at = NULL,
-            state_revision = state_revision + 1
-        WHERE node_execution_id = ?
-      `).run(node.node_execution_id);
+      this.setNodeExecutionStatus(node.node_execution_id, "retrying");
       if (execution.status === "failed" || execution.status === "blocked") {
         this.db.prepare(`
           UPDATE scope_executions
@@ -1056,34 +1184,37 @@ export class ScopeExecutionStore {
     const id = `node_execution_${randomUUID()}`;
     const timestamp = nowIso();
     const status = input.status ?? "collecting";
-    this.db.prepare(`
-      INSERT INTO node_executions (
-        node_execution_id, execution_id, revision_id, node_id, activation_key,
-        join_key, context_id, actor_definition_revision_id, runtime_profile_revision_id,
-        actor_runtime_binding_id, command_definition_revision_id, command_worker_binding_id,
-        status, assigned_actor_ids_json,
-        failure_json, created_at, activated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
-    `).run(
-      id,
-      input.execution_id,
-      input.revision_id,
-      input.node_id,
-      input.activation_key,
-      input.join_key ?? null,
-      input.context_id,
-      pins.actor_definition_revision_id,
-      pins.runtime_profile_revision_id,
-      pins.actor_runtime_binding_id,
-      commandPins.command_definition_revision_id,
-      commandPins.command_worker_binding_id,
-      status,
-      json(assignedActorIds),
-      timestamp,
-      ["ready", "active", "waiting_external", "paused", "retrying", "completed"].includes(status)
-        ? timestamp
-        : null,
-    );
+    this.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO node_executions (
+          node_execution_id, execution_id, revision_id, node_id, activation_key,
+          join_key, context_id, actor_definition_revision_id, runtime_profile_revision_id,
+          actor_runtime_binding_id, command_definition_revision_id, command_worker_binding_id,
+          status, assigned_actor_ids_json,
+          failure_json, created_at, activated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
+      `).run(
+        id,
+        input.execution_id,
+        input.revision_id,
+        input.node_id,
+        input.activation_key,
+        input.join_key ?? null,
+        input.context_id,
+        pins.actor_definition_revision_id,
+        pins.runtime_profile_revision_id,
+        pins.actor_runtime_binding_id,
+        commandPins.command_definition_revision_id,
+        commandPins.command_worker_binding_id,
+        status,
+        json(assignedActorIds),
+        timestamp,
+        ["ready", "active", "waiting_external", "paused", "retrying", "completed"].includes(status)
+          ? timestamp
+          : null,
+      );
+      this.appendNodeStateChange(id, 1, null, status, {}, timestamp);
+    });
     return this.getNodeExecution(id) as NodeExecutionRecord;
   }
 
@@ -1115,14 +1246,32 @@ export class ScopeExecutionStore {
     if (current.status === status) return current;
     assertNodeStatusTransition(current.status, status);
     const timestamp = nowIso();
-    this.db.prepare(`
-      UPDATE node_executions
-      SET status = ?, failure_json = ?, state_revision = state_revision + 1,
-          activated_at = CASE WHEN ? IN ('ready', 'active', 'waiting_external', 'paused', 'retrying', 'completed') THEN COALESCE(activated_at, ?) ELSE activated_at END,
-          completed_at = CASE WHEN ? IN ('completed', 'failed', 'superseded') THEN ? ELSE completed_at END,
-          cancelled_at = CASE WHEN ? = 'cancelled' THEN ? ELSE cancelled_at END
-      WHERE node_execution_id = ?
-    `).run(status, json(failure), status, timestamp, status, timestamp, status, timestamp, nodeExecutionId);
+    this.transaction(() => {
+      this.db.prepare(`
+        UPDATE node_executions
+        SET status = ?, failure_json = ?, state_revision = state_revision + 1,
+            activated_at = CASE WHEN ? IN ('ready', 'active', 'waiting_external', 'paused', 'retrying', 'completed') THEN COALESCE(activated_at, ?) ELSE activated_at END,
+            completed_at = CASE
+              WHEN ? IN ('completed', 'failed', 'superseded') THEN ?
+              WHEN ? IN ('collecting', 'ready', 'active', 'waiting_external', 'paused', 'retrying', 'blocked') THEN NULL
+              ELSE completed_at END,
+            cancelled_at = CASE WHEN ? = 'cancelled' THEN ? WHEN ? <> 'cancelled' THEN NULL ELSE cancelled_at END
+        WHERE node_execution_id = ?
+      `).run(
+        status, json(failure), status, timestamp,
+        status, timestamp, status,
+        status, timestamp, status,
+        nodeExecutionId,
+      );
+      this.appendNodeStateChange(
+        nodeExecutionId,
+        current.state_revision + 1,
+        current.status,
+        status,
+        failure,
+        timestamp,
+      );
+    });
     return this.getNodeExecution(nodeExecutionId) as NodeExecutionRecord;
   }
 
@@ -1852,6 +2001,161 @@ export class ScopeExecutionStore {
     };
   }
 
+  private appendNodeStateChange(
+    nodeExecutionId: string,
+    stateRevision: number,
+    fromStatus: NodeExecutionStatus | null,
+    toStatus: NodeExecutionStatus,
+    failure: Record<string, unknown>,
+    changedAt: string,
+  ): void {
+    const identity = this.db.prepare(`
+      SELECT n.execution_id, n.revision_id, n.node_id, e.workspace_id, e.scope_id
+      FROM node_executions n
+      JOIN scope_executions e ON e.execution_id = n.execution_id
+      WHERE n.node_execution_id = ?
+    `).get(nodeExecutionId) as {
+      execution_id: string;
+      revision_id: string;
+      node_id: string;
+      workspace_id: string;
+      scope_id: string;
+    } | undefined;
+    if (!identity) throw new ScopeExecutionReferenceError(`NodeExecution '${nodeExecutionId}' does not exist`);
+    const attempt = this.db.prepare(`
+      SELECT attempt_id, delivery_bundle_id
+      FROM execution_attempts
+      WHERE node_execution_id = ?
+      ORDER BY ordinal DESC
+      LIMIT 1
+    `).get(nodeExecutionId) as { attempt_id: string; delivery_bundle_id: string | null } | undefined;
+    this.db.prepare(`
+      INSERT INTO node_execution_state_outbox (
+        node_execution_id, state_revision, workspace_id, scope_id,
+        scope_execution_id, composition_revision_id, node_id,
+        from_status, to_status, attempt_id, delivery_id, failure_json, changed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      nodeExecutionId,
+      stateRevision,
+      identity.workspace_id,
+      identity.scope_id,
+      identity.execution_id,
+      identity.revision_id,
+      identity.node_id,
+      fromStatus,
+      toStatus,
+      attempt?.attempt_id ?? null,
+      attempt?.delivery_bundle_id ?? null,
+      Object.keys(failure).length > 0 ? json(failure) : null,
+      changedAt,
+    );
+  }
+
+  private pendingPauseDeliveryIds(pauseId: string): string[] {
+    return (this.db.prepare(`
+      SELECT DISTINCT delivery_id
+      FROM scope_execution_pause_deliveries
+      WHERE pause_id = ? AND cancellation_state IN ('requested', 'force_requested')
+        AND delivery_id IS NOT NULL
+      ORDER BY delivery_id
+    `).all(pauseId) as Array<{ delivery_id: string }>).map((row) => row.delivery_id);
+  }
+
+  private pauseInterruptionEvidence(pauseId: string, nodeExecutionId: string): Array<Record<string, unknown>> {
+    return (this.db.prepare(`
+      SELECT d.delivery_id, d.cancellation_state, d.outcome_unknown, d.interruption_json
+      FROM scope_execution_pause_deliveries d
+      JOIN execution_attempts a ON a.attempt_id = d.attempt_id
+      WHERE d.pause_id = ? AND a.node_execution_id = ?
+        AND d.cancellation_state IN ('quiesced', 'session_retired')
+      ORDER BY d.delivery_id
+    `).all(pauseId, nodeExecutionId) as Array<{
+      delivery_id: string;
+      cancellation_state: string;
+      outcome_unknown: number;
+      interruption_json: string;
+    }>).map((row) => ({
+      delivery_id: row.delivery_id,
+      outcome: row.cancellation_state,
+      outcome_unknown: Boolean(row.outcome_unknown),
+      evidence: parseJson(row.interruption_json, {}),
+    }));
+  }
+
+  private finalizePause(pauseId: string, timestamp: string): void {
+    const pause = this.db.prepare(`
+      SELECT execution_id, reason FROM scope_execution_pauses WHERE pause_id = ?
+    `).get(pauseId) as { execution_id: string; reason: string | null } | undefined;
+    if (!pause) throw new ScopeExecutionReferenceError(`Pause '${pauseId}' does not exist`);
+    const nodeRows = this.db.prepare(`
+      SELECT node_execution_id FROM scope_execution_pause_nodes
+      WHERE pause_id = ? ORDER BY node_execution_id
+    `).all(pauseId) as Array<{ node_execution_id: string }>;
+    const deliveryRows = this.db.prepare(`
+      SELECT queue_id, delivery_id, attempt_id, outcome_unknown, cancellation_state
+      FROM scope_execution_pause_deliveries
+      WHERE pause_id = ?
+    `).all(pauseId) as Array<{
+      queue_id: string;
+      delivery_id: string | null;
+      attempt_id: string | null;
+      outcome_unknown: number;
+      cancellation_state: string;
+    }>;
+    for (const delivery of deliveryRows) {
+      if (delivery.attempt_id) {
+        const attempt = this.getAttempt(delivery.attempt_id);
+        if (attempt && ["pending", "running"].includes(attempt.status)) {
+          this.finishAttempt({
+            attempt_id: attempt.attempt_id,
+            status: delivery.outcome_unknown ? "outcome_unknown" : "cancelled",
+            error: {
+              code: "scope_paused",
+              delivery_id: delivery.delivery_id,
+              interruption: delivery.cancellation_state,
+              outcome_unknown: Boolean(delivery.outcome_unknown),
+            },
+          });
+        }
+      }
+      if (tableExists(this.db, "delivery_bundles") && delivery.delivery_id) {
+        this.db.prepare(`
+          UPDATE delivery_bundles
+          SET state = 'cancelled', lease_expires_at = NULL, last_error = 'Scope paused by operator'
+          WHERE delivery_id = ?
+        `).run(delivery.delivery_id);
+      }
+      if (tableExists(this.db, "event_queue")) {
+        this.db.prepare(`
+          UPDATE event_queue SET state = 'held', lease_expires_at = NULL
+          WHERE queue_id = ?
+        `).run(delivery.queue_id);
+      }
+    }
+    for (const row of nodeRows) {
+      const node = this.getNodeExecution(row.node_execution_id);
+      if (!node || ["completed", "failed", "cancelled", "superseded", "paused"].includes(node.status)) continue;
+      const interruption = this.pauseInterruptionEvidence(pauseId, node.node_execution_id);
+      this.setNodeExecutionStatus(node.node_execution_id, "paused", {
+        code: "operator_paused",
+        reason: pause.reason,
+        outcome_unknown: interruption.some((entry) => entry.outcome_unknown === true),
+        interruption,
+      });
+    }
+    this.db.prepare(`
+      UPDATE scope_executions
+      SET status = 'paused', terminal_json = ?, state_revision = state_revision + 1
+      WHERE execution_id = ? AND status = 'pausing'
+    `).run(json({ code: "operator_paused", reason: pause.reason }), pause.execution_id);
+    this.db.prepare(`
+      UPDATE scope_execution_pauses
+      SET status = 'paused', completed_at = ?
+      WHERE pause_id = ? AND status = 'pausing'
+    `).run(timestamp, pauseId);
+  }
+
   private activePause(executionId: string): {
     pause_id: string;
     prior_status: ScopeExecutionStatus;
@@ -1878,15 +2182,26 @@ export class ScopeExecutionStore {
       SELECT queue_id FROM scope_execution_pause_deliveries
       WHERE pause_id = ? ORDER BY queue_id
     `).all(pauseId) as Array<{ queue_id: string }>).map((row) => row.queue_id);
+    const activeDeliveryIds = (this.db.prepare(`
+      SELECT DISTINCT delivery_id FROM scope_execution_pause_deliveries
+      WHERE pause_id = ? AND delivery_id IS NOT NULL ORDER BY delivery_id
+    `).all(pauseId) as Array<{ delivery_id: string }>).map((row) => row.delivery_id);
+    const pause = this.db.prepare(`
+      SELECT COALESCE(deadline_at, paused_at) AS deadline_at
+      FROM scope_execution_pauses WHERE pause_id = ?
+    `).get(pauseId) as { deadline_at: string };
     return {
       execution,
       pause_id: pauseId,
       node_execution_ids: nodeIds,
       delivery_ids: deliveryIds,
+      active_delivery_ids: activeDeliveryIds,
+      deadline_at: pause.deadline_at,
     };
   }
 
   private transaction<T>(fn: () => T): T {
+    if (this.db.isTransaction) return fn();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const result = fn();
@@ -2170,11 +2485,12 @@ function hasAllCommandPins(value: Pick<NodeExecutionRecord,
 }
 
 const SCOPE_STATUS_TRANSITIONS: Readonly<Record<ScopeExecutionStatus, readonly ScopeExecutionStatus[]>> = {
-  queued: ["active", "paused", "blocked", "failed", "cancelled", "superseded"],
-  active: ["waiting_external", "paused", "blocked", "completed", "failed", "cancelled", "superseded"],
-  waiting_external: ["active", "paused", "blocked", "completed", "failed", "cancelled", "superseded"],
+  queued: ["active", "pausing", "paused", "blocked", "failed", "cancelled", "superseded"],
+  active: ["waiting_external", "pausing", "paused", "blocked", "completed", "failed", "cancelled", "superseded"],
+  waiting_external: ["active", "pausing", "paused", "blocked", "completed", "failed", "cancelled", "superseded"],
+  pausing: ["paused", "failed", "cancelled", "superseded"],
   paused: ["active", "waiting_external", "blocked", "failed", "cancelled", "superseded"],
-  blocked: ["active", "waiting_external", "paused", "failed", "cancelled", "superseded"],
+  blocked: ["active", "waiting_external", "pausing", "paused", "failed", "cancelled", "superseded"],
   completed: [],
   failed: [],
   cancelled: [],
@@ -2188,9 +2504,9 @@ const NODE_STATUS_TRANSITIONS: Readonly<Record<NodeExecutionStatus, readonly Nod
   waiting_external: ["ready", "active", "paused", "retrying", "blocked", "completed", "failed", "cancelled", "superseded"],
   paused: ["collecting", "ready", "active", "waiting_external", "retrying", "blocked", "failed", "cancelled", "superseded"],
   retrying: ["ready", "active", "waiting_external", "paused", "blocked", "completed", "failed", "cancelled", "superseded"],
-  blocked: ["collecting", "ready", "paused", "failed", "cancelled", "superseded"],
+  blocked: ["collecting", "ready", "paused", "retrying", "failed", "cancelled", "superseded"],
   completed: [],
-  failed: [],
+  failed: ["retrying"],
   cancelled: [],
   superseded: [],
 };

@@ -76,6 +76,8 @@ type FloeTurn = {
   cancelled: boolean;
   cancellation: Promise<void> | null;
   cancellationFault: unknown;
+  settled: Promise<void>;
+  settle: () => void;
 };
 
 type FloeSession = {
@@ -314,6 +316,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       }
 
       this.writeWorkLog(context, bundle, turn, "completed");
+      turn.settle();
     } catch (caught) {
       let error = caught;
       if (turn.cancelled) {
@@ -362,6 +365,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       this.toolGate.abandonDelivery(turn.delivery_id);
       if (session.activeTurn === turn) session.activeTurn = undefined;
       this.writeWorkLog(context, bundle, turn, "error");
+      turn.settle();
 
       throw new TurnFailedError(
         bundle.delivery_id,
@@ -387,6 +391,43 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       return true;
     }
     return false;
+  }
+
+  async waitForDeliveryCancellation(deliveryId: string) {
+    for (const session of this.sessions.values()) {
+      const turn = session.activeTurn;
+      if (!turn || turn.delivery_id !== deliveryId) continue;
+      if (turn.cancellation) await turn.cancellation;
+      else await turn.settled;
+      if (turn.cancellationFault) return null;
+      return {
+        outcome: "quiesced" as const,
+        evidence: {
+          runtime_turn_id: turn.runtime_turn_id,
+          session_id: session.sessionId,
+        },
+      };
+    }
+    return null;
+  }
+
+  async forceRetireDelivery(deliveryId: string) {
+    for (const [key, session] of this.sessions) {
+      const turn = session.activeTurn;
+      if (!turn || turn.delivery_id !== deliveryId || turn.finalized) continue;
+      turn.cancelled = true;
+      this.toolGate.abandonDelivery(deliveryId);
+      await session.runtime.close();
+      this.sessions.delete(key);
+      return {
+        outcome: "session_retired" as const,
+        evidence: {
+          runtime_turn_id: turn.runtime_turn_id,
+          session_id: session.sessionId,
+        },
+      };
+    }
+    return null;
   }
 
   async dispose(_reason: HookPayload<"SessionEnd">["reason"] = "bridge_shutdown"): Promise<void> {
@@ -487,6 +528,8 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
     const contextId = bundle.context_id ?? trigger?.context_id ?? null;
     const threadId = contextId ?? trigger?.thread_id ?? `thread:${bundle.workspace_id}:floe-runtime`;
     const sourceEndpoint = trigger?.source_endpoint_id || `actor:${bundle.workspace_id}:operator`;
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => { settle = resolve; });
     return {
       runtime_turn_id: `rt_${randomUUID()}`,
       delivery_id: bundle.delivery_id,
@@ -519,6 +562,8 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       cancelled: false,
       cancellation: null,
       cancellationFault: null,
+      settled,
+      settle,
     };
   }
 

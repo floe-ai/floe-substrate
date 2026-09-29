@@ -195,6 +195,27 @@ describe("FloeRuntimeAdapter SDK route", () => {
     await expect(work).rejects.toThrow(/\[interrupted\]/);
   });
 
+  it("force-retires only the isolated session that owns an overdue delivery", async () => {
+    let release!: () => void;
+    const runtime = new FakeRuntime();
+    runtime.run = vi.fn(async (...args: any[]) => {
+      await args[3]?.("sdk-session");
+      await new Promise<void>((resolve) => { release = resolve; });
+      throw new Error("session closed");
+    }) as any;
+    runtime.close.mockImplementation(async () => { release(); });
+    const adapter = new FloeRuntimeAdapter({ runtimeFactory: () => runtime as any });
+    const work = adapter.handleBundle(context(), bundle(), undefined);
+    await vi.waitFor(() => expect(runtime.run).toHaveBeenCalled());
+
+    await expect(adapter.forceRetireDelivery("delivery-1")).resolves.toMatchObject({
+      outcome: "session_retired",
+      evidence: { session_id: "sdk-session" },
+    });
+    expect(runtime.close).toHaveBeenCalledOnce();
+    await expect(work).rejects.toThrow();
+  });
+
   it("retains cancellation during session creation and quiesces before any result or usage is persisted", async () => {
     let createSession!: () => void;
     let modelOrToolWorkStarted = false;
