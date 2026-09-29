@@ -419,6 +419,12 @@ Reconnect with the latest cursor. Invalid authentication closes with code
 `4401`; an invalid cursor closes with `4400`. This is push with bounded
 catch-up, not polling.
 
+When a Bridge connects or disconnects, every connection of each Workspace that
+Bridge's host serves receives `bridge_connected` or `bridge_disconnected` with
+payload `{ "bridge_id": "...", "workspace_id": "..." }`. A Bridge that serves
+no Workspace yet announces itself only to host connections, without
+`workspace_id`.
+
 ## Legacy and internal routes
 
 The server still contains raw routes used by Bridge transport, diagnostics,

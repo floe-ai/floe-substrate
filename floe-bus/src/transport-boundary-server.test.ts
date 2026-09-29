@@ -724,6 +724,35 @@ describe("authenticated Bus transport boundary", () => {
     );
     resumed.socket.close();
   });
+
+  it("pushes Bridge presence to the connections of every Workspace the Bridge serves", async () => {
+    const { handle } = await makeServer();
+    const tokens = [await issueWorkspaceSession(handle, WORKSPACE_ONE), await issueWorkspaceSession(handle, WORKSPACE_TWO)];
+    const bridge = handle.issueBridgeServiceCredential("bridge:presence");
+    const address = await handle.app.listen({ host: "127.0.0.1", port: 0 });
+    const streamUrl = address.replace(/^http/, "ws") + "/v1/events/stream";
+    const surfaces = [];
+    for (const [index, workspaceId] of [WORKSPACE_ONE, WORKSPACE_TWO].entries()) {
+      const surface = await openSocket(streamUrl);
+      surface.socket.send(JSON.stringify({ type: "authenticate", bearer_token: tokens[index], workspace_id: workspaceId }));
+      await waitFor(surface.messages, message => message.type === "caught_up");
+      surfaces.push({ ...surface, workspaceId });
+    }
+
+    const runtime = await openSocket(streamUrl);
+    runtime.socket.send(JSON.stringify({ type: "authenticate", bearer_token: bridge.bearer_token }));
+    for (const surface of surfaces) {
+      const connected = await waitFor(surface.messages, message => message.type === "bridge_connected");
+      expect(connected.payload).toEqual({ bridge_id: "bridge:presence", workspace_id: surface.workspaceId });
+    }
+    await closeSocket(runtime.socket);
+    for (const surface of surfaces) {
+      const disconnected = await waitFor(surface.messages, message => message.type === "bridge_disconnected");
+      expect(disconnected.payload).toEqual({ bridge_id: "bridge:presence", workspace_id: surface.workspaceId });
+      expect(surface.messages.filter(message => message.type.startsWith("bridge_"))).toHaveLength(2);
+      surface.socket.close();
+    }
+  });
 });
 
 function bearer(token: string): Record<string, string> {

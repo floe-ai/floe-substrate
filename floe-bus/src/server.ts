@@ -379,6 +379,22 @@ export async function createBusServer(
     }
   }
 
+  /**
+   * Bridge presence reaches every connection of each Workspace the Bridge's host
+   * serves, so a remote surface learns the Bridge came up or went down by push.
+   * A Bridge that serves no Workspace yet announces itself host-wide only.
+   */
+  function broadcastBridgePresence(
+    type: "bridge_connected" | "bridge_disconnected",
+    authority: Readonly<{ bridge_id: string; host_id: string }>,
+  ): void {
+    const workspaceIds = store.workspaceIdentityStore.listLocalProjections(authority.host_id)
+      .filter((workspace) => workspace.binding !== null)
+      .map((workspace) => String(workspace.workspace_id));
+    if (workspaceIds.length === 0) broadcast(type, { bridge_id: authority.bridge_id });
+    for (const workspaceId of workspaceIds) broadcast(type, { bridge_id: authority.bridge_id, workspace_id: workspaceId });
+  }
+
   function requireLocalControl(request: object, reply: any): HostControlAuthority | null {
     if (testBypassedRequests.has(request)) {
       return {
@@ -1118,7 +1134,7 @@ export async function createBusServer(
         if (previous && previous !== client) previous.close(4409, "Bridge connection replaced");
         bridgeSockets.set(authority.bridge_id, client);
         store.reportBridgeLiveness(authority.bridge_id);
-        broadcast("bridge_connected", { bridge_id: authority.bridge_id });
+        broadcastBridgePresence("bridge_connected", authority);
       }
     });
 
@@ -1128,7 +1144,7 @@ export async function createBusServer(
       clearTimeout(sessionExpiryTimeout);
       if (connectedBridgeId !== null && bridgeSockets.get(connectedBridgeId) === client) {
         bridgeSockets.delete(connectedBridgeId);
-        broadcast("bridge_disconnected", { bridge_id: connectedBridgeId });
+        if (socketAuthority?.audience === "bridge_service") broadcastBridgePresence("bridge_disconnected", socketAuthority);
       }
     };
     client.on("close", removeSocket);
