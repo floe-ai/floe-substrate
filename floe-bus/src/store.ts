@@ -879,7 +879,10 @@ export class BusStore {
     this.scopeCompositionStore = new ScopeCompositionStore(this.db);
     this.scopeExecutionStore = new ScopeExecutionStore(this.db);
     this.artefactStore = new ArtefactStore(this.db);
-    this.actorDefinitionStore = new ActorDefinitionStore(this.db, undefined, (actorId, workspaceId, grantIds) => {
+    this.actorDefinitionStore = new ActorDefinitionStore(this.db, undefined, (actorId, workspaceId, content) => {
+      const approval = resolveActorApprovalPolicy({ workspace_id: workspaceId, content }, this.policyStore);
+      if (!approval.ok) throw new ActorDefinitionValidationError(approval.reason);
+      const grantIds = content.capability_grant_ids;
       if (grantIds.length === 0) return;
       const inspection = this.capabilityGrantStore.inspectSessionGrantIds({ principal_id: actorId,
         boundary: { kind: "workspace", workspace_id: workspaceId }, grant_ids: grantIds });

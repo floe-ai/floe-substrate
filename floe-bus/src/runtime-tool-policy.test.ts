@@ -232,16 +232,26 @@ describe("runtime tool policy", () => {
     expect(fetched.refusal).toMatchObject({ rule_id: "no-network", reason: "This Workspace does not fetch." });
   });
 
-  it("refuses when the pinned Approval Policy is not a live approval revision", async () => {
+  it("refuses a wrong Approval Policy at publish and a retired one at run time", async () => {
     const read = grant(["engine.tool.filesystem.read"]);
     const wrongCategory = publishPolicy("operation", []);
-    publishDefinition({
-      capability_grant_ids: [read.grant_id],
-      scope: { paths: ["."] },
-      policy_refs: { budget: null, trust: null, approval: { kind: "policy", id: wrongCategory.policy_id, revision: wrongCategory.policy_revision_id } },
+    const ref = (revision: { policy_id: string; policy_revision_id: string }) => ({
+      budget: null, trust: null, approval: { kind: "policy", id: revision.policy_id, revision: revision.policy_revision_id },
     });
+    expect(() => publishDefinition({ capability_grant_ids: [read.grant_id], scope: { paths: ["."] }, policy_refs: ref(wrongCategory) }))
+      .toThrow(/not an approval policy/);
+    const withLimit = publishPolicy("approval", [{
+      rule_id: "cap", priority: 1, match: {}, effect: { kind: "limit", limits: [{ metric: "calls", maximum: 1, window: "operation" }] },
+    }]);
+    expect(() => publishDefinition({ capability_grant_ids: [read.grant_id], scope: { paths: ["."] }, policy_refs: ref(withLimit) }))
+      .toThrow(/budget limits/);
+
+    const approval = publishPolicy("approval", []);
+    publishDefinition({ capability_grant_ids: [read.grant_id], scope: { paths: ["."] }, policy_refs: ref(approval) });
     const deliveryId = await runningDelivery();
-    expect(evaluate(deliveryId, call({})).refusal?.reason).toMatch(/not an approval policy/);
+    expect(evaluate(deliveryId, call({})).decision).toBe("allow");
+    handle.store.policyStore.retirePolicy({ workspace_id: WS, policy_id: approval.policy_id });
+    expect(evaluate(deliveryId, call({})).refusal?.reason).toMatch(/not published and live/);
   });
 
   it("is reachable only by the owning Bridge with well-formed facts", async () => {

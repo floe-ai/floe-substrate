@@ -252,7 +252,7 @@ export class ActorDefinitionStore {
   constructor(
     readonly db: DatabaseSync,
     private readonly now: () => string = () => new Date().toISOString(),
-    private readonly validateGrantReferences?: (actorId: string, workspaceId: string, grantIds: readonly string[]) => void,
+    private readonly validateHead?: (actorId: string, workspaceId: string, content: ActorDefinitionContent) => void,
   ) {
     applyActorDefinitionSchema(db);
   }
@@ -521,7 +521,7 @@ export class ActorDefinitionStore {
   }>): void {
     nonEmpty("changed_by_principal_id", input.changed_by_principal_id);
     const actor = this.requireActor(input.revision.actor_id);
-    this.validateGrantReferences?.(actor.actor_id, actor.workspace_id, input.revision.content.capability_grant_ids);
+    this.validateHead?.(actor.actor_id, actor.workspace_id, input.revision.content);
     if (actor.status === "retired") {
       throw new ActorDefinitionValidationError(`retired Actor '${actor.actor_id}' cannot change its current definition`);
     }

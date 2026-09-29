@@ -35,5 +35,8 @@ export function resolveActorApprovalPolicy(
   if (revision.published_at === null || revision.withdrawn_at !== null || policy.status !== "active") {
     return { ok: false, reason: `Approval policy revision '${ref.revision}' is not published and live.` };
   }
+  if (revision.content.rules.some((rule) => rule.effect.kind === "limit")) {
+    return { ok: false, reason: `Approval policy revision '${ref.revision}' has budget limits; bind budget policies instead.` };
+  }
   return { ok: true, policy_revision_id: revision.policy_revision_id };
 }

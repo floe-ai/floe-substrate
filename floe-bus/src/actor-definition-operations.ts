@@ -118,7 +118,8 @@ export const ACTOR_DEFINITION_CONTENT_SCHEMA: JsonSchema = {
       properties: {
         budget: { oneOf: [resourceRefSchema, { type: "null" }] },
         trust: { oneOf: [resourceRefSchema, { type: "null" }] },
-        approval: { oneOf: [resourceRefSchema, { type: "null" }] },
+        approval: { oneOf: [resourceRefSchema, { type: "null" }],
+          description: "Pinned Approval Policy revision { kind: 'policy', id: policy_id, revision: policy_revision_id }. It can only restrict engine tool calls; it never grants authority." },
       },
     },
     escalation_rules: { type: "array", items: escalationRuleSchema },
