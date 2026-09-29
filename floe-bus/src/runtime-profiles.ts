@@ -84,6 +84,14 @@ export class RuntimeProfileValidationError extends Error {
   }
 }
 
+export class ActorEndpointOwnedError extends Error {
+  readonly code = "E_ACTOR_ENDPOINT_OWNED" as const;
+  constructor(readonly endpoint_id: string, readonly owner_actor_id: string) {
+    super(`Endpoint '${endpoint_id}' belongs to Actor '${owner_actor_id}'`);
+    this.name = "ActorEndpointOwnedError";
+  }
+}
+
 export class RuntimeProfileNotFoundError extends Error {
   readonly code = "E_RUNTIME_PROFILE_NOT_FOUND" as const;
   constructor(readonly runtime_profile_id: string) {
@@ -440,6 +448,17 @@ export class RuntimeProfileStore {
         input.expected_current_binding_id,
         current?.actor_runtime_binding_id ?? null,
       );
+    }
+    if (input.endpoint_id) {
+      // An endpoint address is another Actor's when that Actor is currently bound to it
+      // or when it is that Actor's own ID, which is its default address.
+      const owner = this.db.prepare(`
+        SELECT actor_id FROM actor_runtime_bindings
+        WHERE endpoint_id = ? AND superseded_at IS NULL AND actor_id <> ?
+        UNION SELECT actor_id FROM actors WHERE actor_id = ? AND actor_id <> ?
+        LIMIT 1
+      `).get(input.endpoint_id, actor.actor_id, input.endpoint_id, actor.actor_id) as { actor_id: string } | undefined;
+      if (owner) throw new ActorEndpointOwnedError(input.endpoint_id, owner.actor_id);
     }
     const profile = this.requireProfile(revision.runtime_profile_id);
     const at = this.now();

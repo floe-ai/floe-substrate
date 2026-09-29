@@ -56,21 +56,26 @@ async function server() {
       expect(response.statusCode, response.body).toBe(200);
       return response.json().receipt;
     };
-    /** Create, publish and bind an Actor the way an Actor or person does: through operations only. */
-    const createBoundActor = async (actorId: string | undefined, bindInput: object = {}) => {
+    /** Create and publish an Actor the way an Actor or person does: through operations only. */
+    const createPublishedActor = async (actorId: string | undefined) => {
       const created = await invoke("actor.create", { ...(actorId ? { actor_id: actorId } : {}), definition });
       expect(created.state, JSON.stringify(created)).toBe("completed");
       const { actor, draft } = created.result;
       const published = await invoke("actor.definition.publish", { expected_current_definition_revision_id: null },
         { kind: "actor_definition_revision", id: draft.actor_definition_revision_id }, draft.semantic_digest);
       expect(published.state, JSON.stringify(published)).toBe("completed");
-      const bound = await invoke("actor.runtime-binding.create",
-        { runtime_profile_revision_id: profile.runtime_profile_revision_id, status: "resolved", ...bindInput },
-        { kind: "actor", id: actor.actor_id }, published.result.revision.actor_definition_revision_id);
+      return { actor, revisionId: published.result.revision.actor_definition_revision_id as string };
+    };
+    const bind = (actorId: string, revisionId: string, bindInput: object = {}) => invoke("actor.runtime-binding.create",
+      { runtime_profile_revision_id: profile.runtime_profile_revision_id, status: "resolved", ...bindInput },
+      { kind: "actor", id: actorId }, revisionId);
+    const createBoundActor = async (actorId: string | undefined, bindInput: object = {}) => {
+      const { actor, revisionId } = await createPublishedActor(actorId);
+      const bound = await bind(actor.actor_id, revisionId, bindInput);
       expect(bound.state, JSON.stringify(bound)).toBe("completed");
       return { actor, binding: bound.result.binding };
     };
-    return { workspaceId, invoke, createBoundActor };
+    return { workspaceId, invoke, createPublishedActor, bind, createBoundActor };
   };
   return { store, workspace };
 }
@@ -144,5 +149,67 @@ describe("Actors created through operations are reachable", () => {
       { kind: "actor_runtime_binding", id: binding.actor_runtime_binding_id }, binding.actor_runtime_binding_id);
     expect(replaced.state, JSON.stringify(replaced)).toBe("completed");
     expect(store.runtimeProfileStore.getCurrentActorBinding(actor.actor_id)?.endpoint_id).toBe(actor.actor_id);
+  });
+});
+
+describe("An Actor cannot take another Actor's address", () => {
+  it("refuses binding to another Actor's own address", async () => {
+    const { store, workspace } = await server();
+    const w = await workspace("one");
+    const greeter = await w.createBoundActor("greeter");
+    const intruder = await w.createPublishedActor("intruder");
+
+    const refused = await w.bind(intruder.actor.actor_id, intruder.revisionId, { endpoint_id: greeter.actor.actor_id });
+
+    expect(refused).toMatchObject({ state: "refused", refusal: { code: "actor_endpoint_owned_by_other_actor" } });
+    expect(store.runtimeProfileStore.getCurrentActorBinding(intruder.actor.actor_id)).toBeNull();
+  });
+
+  it("refuses the address of an Actor that is not bound yet", async () => {
+    const { workspace } = await server();
+    const w = await workspace("one");
+    const waiting = await w.createPublishedActor("waiting");
+    const intruder = await w.createPublishedActor("intruder");
+
+    const refused = await w.bind(intruder.actor.actor_id, intruder.revisionId, { endpoint_id: waiting.actor.actor_id });
+
+    expect(refused).toMatchObject({ state: "refused", refusal: { code: "actor_endpoint_owned_by_other_actor" } });
+  });
+
+  it("refuses an endpoint that another Actor is bound to", async () => {
+    const { workspace } = await server();
+    const w = await workspace("one");
+    await w.createBoundActor("greeter", { endpoint_id: "endpoint:chosen" });
+    const intruder = await w.createPublishedActor("intruder");
+
+    const refused = await w.bind(intruder.actor.actor_id, intruder.revisionId, { endpoint_id: "endpoint:chosen" });
+
+    expect(refused).toMatchObject({ state: "refused", refusal: { code: "actor_endpoint_owned_by_other_actor" } });
+  });
+
+  it("refuses replacing a binding onto another Actor's endpoint", async () => {
+    const { workspace } = await server();
+    const w = await workspace("one");
+    const greeter = await w.createBoundActor("greeter");
+    const { binding } = await w.createBoundActor("helper");
+
+    const refused = await w.invoke("actor.runtime-binding.replace",
+      { runtime_profile_revision_id: binding.runtime_profile_revision_id, status: "resolved", endpoint_id: greeter.actor.actor_id },
+      { kind: "actor_runtime_binding", id: binding.actor_runtime_binding_id }, binding.actor_runtime_binding_id);
+
+    expect(refused).toMatchObject({ state: "refused", refusal: { code: "actor_endpoint_owned_by_other_actor" } });
+  });
+
+  it("frees an endpoint once its Actor moves off it", async () => {
+    const { workspace } = await server();
+    const w = await workspace("one");
+    const { binding } = await w.createBoundActor("greeter", { endpoint_id: "endpoint:chosen" });
+    const moved = await w.invoke("actor.runtime-binding.replace",
+      { runtime_profile_revision_id: binding.runtime_profile_revision_id, status: "resolved", endpoint_id: "endpoint:other" },
+      { kind: "actor_runtime_binding", id: binding.actor_runtime_binding_id }, binding.actor_runtime_binding_id);
+    expect(moved.state, JSON.stringify(moved)).toBe("completed");
+
+    const { binding: taken } = await w.createBoundActor("helper", { endpoint_id: "endpoint:chosen" });
+    expect(taken.endpoint_id).toBe("endpoint:chosen");
   });
 });

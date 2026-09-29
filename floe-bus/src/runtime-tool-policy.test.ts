@@ -148,6 +148,44 @@ describe("runtime tool policy", () => {
     );
   }
 
+  it("still gives a turn to an Actor that holds no live permissions, without operations or tools", async () => {
+    const store = handle.store.actorDefinitionStore;
+    for (const id of store.getRevision(store.getActor(ACTOR)!.current_definition_revision_id!)!.content.capability_grant_ids) {
+      handle.store.capabilityGrantStore.revokeGrant(id);
+    }
+    await emitViaRoute(handle, {
+      type: "message", workspace_id: WS, source_endpoint_id: OPERATOR,
+      destination: { kind: "endpoint", endpoint_id: ACTOR }, thread_id: "", correlation_id: null,
+      content: { text: "say hello" }, metadata: {}, idempotency_key: null,
+    });
+    const claimed = handle.store.claimDeliveries(BRIDGE, 1, noop)[0]!;
+    const prepared = handle.store.prepareRuntimeDelivery({ bridge_id: BRIDGE, delivery_id: claimed.delivery_id }, noop);
+    expect(prepared).toMatchObject({ operation_authority_session: null, engine_tool_operation_ids: [] });
+    handle.store.reportDeliveryStatus({ bridge_id: BRIDGE, delivery_id: claimed.delivery_id, state: "injected_to_runtime" }, noop);
+
+    // A tool call is refused and recorded like any other, rather than breaking the turn.
+    expect(evaluate(claimed.delivery_id, call({})).refusal?.rule_id).toBe("authority.tool_grant_missing");
+    // Renewing mid-turn stays a turn without authority.
+    expect(handle.store.prepareRuntimeDelivery({ bridge_id: BRIDGE, delivery_id: claimed.delivery_id }, noop))
+      .toMatchObject({ operation_authority_session: null, engine_tool_operation_ids: [] });
+  });
+
+  it("drops only the permissions that were revoked from a turn", async () => {
+    const read = grant(["engine.tool.filesystem.read"]);
+    const shell = grant(["engine.tool.process.execute"]);
+    publishDefinition({ capability_grant_ids: [read.grant_id, shell.grant_id] });
+    handle.store.capabilityGrantStore.revokeGrant(shell.grant_id);
+    await emitViaRoute(handle, {
+      type: "message", workspace_id: WS, source_endpoint_id: OPERATOR,
+      destination: { kind: "endpoint", endpoint_id: ACTOR }, thread_id: "", correlation_id: null,
+      content: { text: "read" }, metadata: {}, idempotency_key: null,
+    });
+    const claimed = handle.store.claimDeliveries(BRIDGE, 1, noop)[0]!;
+    const prepared = handle.store.prepareRuntimeDelivery({ bridge_id: BRIDGE, delivery_id: claimed.delivery_id }, noop);
+    expect(prepared.operation_authority_session).not.toBeNull();
+    expect(prepared.engine_tool_operation_ids).toEqual(["engine.tool.filesystem.read"]);
+  });
+
   it("is unrestricted inside the Workspace by default, and records every call as a decision", async () => {
     const all = grant(["engine.tool.filesystem.read", "engine.tool.filesystem.write", "engine.tool.process.execute", "engine.tool.network.fetch"]);
     publishDefinition({ capability_grant_ids: [all.grant_id] });

@@ -1,4 +1,5 @@
 import {
+  ActorEndpointOwnedError,
   ActorRuntimeBindingConflictError,
   RuntimeProfileConflictError,
   RuntimeProfileImmutableError,
@@ -495,6 +496,14 @@ function runtimeOperationRefusal(error: unknown): OperationRefusal {
       "The Runtime Profile or Actor Runtime Binding changed before this operation completed.",
       true,
       requiredAction("refresh_runtime_profile", "Review current runtime state", "Refresh the exact Runtime Profile and Actor Runtime Binding before retrying."),
+    );
+  }
+  if (error instanceof ActorEndpointOwnedError) {
+    return refusal(
+      "actor_endpoint_owned_by_other_actor",
+      `Endpoint '${error.endpoint_id}' belongs to another Actor, so this Actor cannot be bound to it.`,
+      false,
+      requiredAction("use_own_endpoint", "Use this Actor's own address", "Omit endpoint_id so the Actor is bound to its own address, or choose an endpoint no other Actor uses."),
     );
   }
   if (error instanceof RuntimeProfileImmutableError) {

@@ -662,13 +662,15 @@ step("real turn completed as ${account.label}: " + JSON.stringify(turn.text.slic
 // An Actor created at runtime must be reachable like one Floe was installed with:
 // create it, publish it, bind it to the Floe Actor's runtime, send it work, and
 // see its own real turn complete. An Actor that is created but never hosted
-// silently swallows every request sent to it.
+// silently swallows every request sent to it. It is created with no tool access,
+// because an Actor without permissions must still take turns; it just cannot use tools.
 const guardActor = (await invoke({ operation_id: "actor.create", operation_version: "1", input_schema_version: "1",
-  idempotency_key: "guard-actor-create", input: { actor_id: "guard-greeter", definition: {
+  idempotency_key: "guard-actor-create", input: { actor_id: "guard-greeter", engine_tool_operation_ids: [], definition: {
     label: "Guard Greeter", charter: "Answer the release guard.", responsibilities: [],
     instructions: "Reply briefly to whatever you are asked.", knowledge_refs: [], capability_grant_ids: [],
     policy_refs: { budget: null, trust: null, approval: null }, escalation_rules: [],
   } } }));
+if (guardActor.draft.content.capability_grant_ids.length !== 0) throw new Error("the guard's created Actor was meant to hold no permissions");
 const guardDraft = guardActor.draft;
 const guardPublished = await invoke({ operation_id: "actor.definition.publish", operation_version: "1", input_schema_version: "1",
   idempotency_key: "guard-actor-publish", target: { kind: "actor_definition_revision", id: guardDraft.actor_definition_revision_id },
@@ -701,7 +703,7 @@ const guardResult = await until((push) => push.type === "event_submitted"
   && push.payload.event.content.data.cause_event_id === guardSent.event_ref.id, "the created Actor's turn result", 180000);
 const guardTurn = guardResult.payload.event.content;
 if (guardTurn.data.outcome !== "completed") throw new Error("the created Actor's turn did not complete: " + JSON.stringify(guardTurn));
-step("the created Actor completed its own real turn: " + JSON.stringify(guardTurn.text.slice(0, 80)));
+step("the created Actor, holding no permissions, completed its own real turn: " + JSON.stringify(guardTurn.text.slice(0, 80)));
 
 
 // Pause a real turn mid-flight, then resume it. The Floe Actor runs one Scope

@@ -6555,11 +6555,12 @@ export class BusStore {
   }, broadcast: Broadcast): {
     delivery: DeliveryBundle;
     processing_contract: RuntimeDispatchContract;
+    /** Null when the Actor holds no live grants: it still takes its turn, without operations or tools. */
     operation_authority_session: Readonly<{
       authority_session_id: string;
       bearer_token: string;
       expires_at: string;
-    }>;
+    }> | null;
     /** Engine tool operations the Actor's live grants cover; the Bridge offers only these. */
     engine_tool_operation_ids: string[];
   } {
@@ -6570,7 +6571,7 @@ export class BusStore {
         authority_session_id: string;
         bearer_token: string;
         expires_at: string;
-      }>;
+      }> | null;
       engine_tool_operation_ids: string[];
     };
     let claimedFromPush = false;
@@ -6612,11 +6613,6 @@ export class BusStore {
       }
 
       const canonical = this.rowToDelivery(delivery);
-      if (isAuthorityRenewal && !canonical.operation_authority_session_id) {
-        throw new Error(
-          `Injected Delivery '${input.delivery_id}' has no prepared runtime authority to renew.`,
-        );
-      }
       let processingContract: RuntimeDispatchContract;
       let executionAttemptId: string | null = canonical.execution_attempt_id;
       if (canonical.node_execution_id) {
@@ -6657,11 +6653,21 @@ export class BusStore {
       if (canonical.operation_authority_session_id) {
         this.operationAuthoritySessions.revokeSession(canonical.operation_authority_session_id);
       }
+      // An Actor always takes its turn. Revoked or expired grants simply stop
+      // contributing; with none live it runs without operations or engine tools.
+      const inspected = this.capabilityGrantStore.inspectSessionGrantIds({
+        principal_id: processingContract.operation_authority.principal_id,
+        boundary: { kind: "workspace", workspace_id: processingContract.workspace_id },
+        grant_ids: processingContract.operation_authority.capability_grant_ids,
+      });
+      const liveGrantIds = [...inspected.active_grants, ...inspected.delegable_grants].map((grant) => grant.grant_id);
+      // A turn that started without authority never gains it mid-turn.
+      const mayIssue = liveGrantIds.length > 0 && (isInitialPreparation || canonical.operation_authority_session_id !== null);
       const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
-      const issued = this.operationAuthoritySessions.issueSession({
+      const issued = !mayIssue ? null : this.operationAuthoritySessions.issueSession({
         principal_id: processingContract.operation_authority.principal_id,
         workspace_id: processingContract.workspace_id,
-        grant_ids: processingContract.operation_authority.capability_grant_ids,
+        grant_ids: liveGrantIds,
         interaction: {
           mode: "unattended",
           session_id: `runtime:${canonical.delivery_id}`,
@@ -6684,7 +6690,7 @@ export class BusStore {
               AND operation_authority_session_id IS ?
           `).run(
             executionAttemptId,
-            issued.session.authority_session_id,
+            issued?.session.authority_session_id ?? null,
             input.delivery_id,
             canonical.operation_authority_session_id,
           )
@@ -6696,7 +6702,7 @@ export class BusStore {
               AND execution_attempt_id IS ?
               AND operation_authority_session_id IS ?
           `).run(
-            issued.session.authority_session_id,
+            issued?.session.authority_session_id ?? null,
             input.delivery_id,
             executionAttemptId,
             canonical.operation_authority_session_id,
@@ -6709,16 +6715,13 @@ export class BusStore {
       prepared = {
         delivery: this.rowToDelivery(updatedDelivery),
         processing_contract: processingContract,
-        operation_authority_session: {
+        operation_authority_session: issued && {
           authority_session_id: issued.session.authority_session_id,
           bearer_token: issued.bearer_token,
           expires_at: issued.session.expires_at,
         },
-        engine_tool_operation_ids: [...new Set(this.capabilityGrantStore.inspectSessionGrantIds({
-          principal_id: issued.session.principal_id,
-          boundary: issued.session.boundary,
-          grant_ids: issued.session.grant_ids,
-        }).active_grants.flatMap((grant) => grant.operation_ids).filter(isEngineToolOperation))].sort(),
+        engine_tool_operation_ids: !issued ? [] : [...new Set(inspected.active_grants
+          .flatMap((grant) => grant.operation_ids).filter(isEngineToolOperation))].sort(),
       };
     });
     if (claimedFromPush) {
@@ -6777,9 +6780,9 @@ export class BusStore {
               },
               approvers: requirement.approvers,
             },
-            requested_by_principal_id: inputs.session.principal_id,
+            requested_by_principal_id: inputs.session!.principal_id,
             reason: requirement.reason,
-            expires_at: inputs.session.expires_at,
+            expires_at: inputs.session!.expires_at,
             maximum_uses: 1,
             idempotency_key: `tool:${evaluation.evaluation_id}:${requirement.policy_revision_id}:${requirement.rule_id}`,
           })))
@@ -6907,7 +6910,9 @@ export class BusStore {
     const session = delivery.operation_authority_session_id
       ? this.operationAuthoritySessions.getSession(delivery.operation_authority_session_id)
       : null;
-    if (!session) throw new Error(`Delivery '${deliveryId}' has no prepared runtime authority.`);
+    if (delivery.operation_authority_session_id && !session) {
+      throw new Error(`Delivery '${deliveryId}' has no prepared runtime authority.`);
+    }
     const contract = delivery.node_execution_id
       ? this.getRuntimeProcessingContract(delivery.execution_attempt_id!)
       : this.resolveDirectRuntimeProcessingContract(delivery);
@@ -6925,8 +6930,8 @@ export class BusStore {
     operationId: string,
     toolFacts: ToolCallPolicyFacts,
   ): { evaluation: PolicyEvaluationRecord; authority: ToolAuthorityDecision } {
-    const { session, contract, definition, scoped } = inputs;
-    const sessionLive = session.revoked_at === null && Date.parse(session.expires_at) > Date.now();
+    const { session, contract, definition, scoped, delivery } = inputs;
+    const sessionLive = session !== null && session.revoked_at === null && Date.parse(session.expires_at) > Date.now();
     const grants = sessionLive
       ? this.capabilityGrantStore.inspectSessionGrantIds({
           principal_id: session.principal_id,
@@ -6947,7 +6952,7 @@ export class BusStore {
     }
     const roles = this.actorRoleAuthorityStore.resolveCurrent({
       workspace_id: contract.workspace_id,
-      principal_id: session.principal_id,
+      principal_id: contract.operation_authority.principal_id,
       target: {
         scope_id: scoped?.scope_execution.scope_id ?? null,
         scope_composition_revision_id: scoped?.node_execution.revision_id ?? null,
@@ -6959,11 +6964,17 @@ export class BusStore {
     const evaluation = this.policyStore.evaluate({
       authority_boundary: { kind: "workspace", workspace_id: contract.workspace_id },
       workspace_id: contract.workspace_id,
-      principal_id: session.principal_id,
+      principal_id: contract.operation_authority.principal_id,
       principal_roles: roles.roles,
       actor_role_evidence: roles.evidence,
-      interaction_mode: session.interaction_mode,
-      provenance: session.provenance,
+      interaction_mode: session?.interaction_mode ?? "unattended",
+      provenance: session?.provenance ?? {
+        cause_event_id: delivery.trigger_event_id,
+        delivery_ids: delivery.stable_delivery_ids,
+        execution_attempt_id: delivery.execution_attempt_id,
+        node_execution_id: delivery.node_execution_id,
+        scope_execution_id: delivery.scope_execution_id,
+      },
       operation_id: operationId,
       target: null,
       effects: toolOperationEffects(operationId),

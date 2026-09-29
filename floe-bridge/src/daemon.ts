@@ -17,6 +17,7 @@ import {
   type BridgeTransportAuthorityState,
   type DeliveryBundle,
   type LocalWorkspaceProjection,
+  type RuntimeOperationAuthoritySession,
   type WorkspaceConfigurationImportResponse,
 } from "./bus-client.js";
 import {
@@ -923,7 +924,7 @@ export class BridgeDaemon {
       const runtimeConfig = endpointEntry?.config;
       const instructions = endpointEntry?.instructions;
       let preparedAttemptId: string | null = null;
-      let operationAuthoritySession: Awaited<ReturnType<BusClient["prepareRuntimeDelivery"]>>["operation_authority_session"] | undefined;
+      let operationAuthoritySession: RuntimeOperationAuthoritySession | undefined;
       let engineToolOperationIds: string[] = [];
       let effectiveRuntime: AgentRuntimeConfig;
       const hasCanonicalRuntimePins = Boolean(
@@ -956,7 +957,7 @@ export class BridgeDaemon {
           );
         }
         delivery.processing_contract = contract;
-        operationAuthoritySession = prepared.operation_authority_session;
+        operationAuthoritySession = prepared.operation_authority_session ?? undefined;
         engineToolOperationIds = prepared.engine_tool_operation_ids ?? [];
         if (contract.contract_kind === "scope_node") {
           preparedAttemptId = contract.execution_attempt.attempt_id;
