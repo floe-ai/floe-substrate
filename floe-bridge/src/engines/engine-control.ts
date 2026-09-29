@@ -115,8 +115,8 @@ export class EngineControl implements ChannelService {
         const account = this.require(engine);
         if (!account.signIn) throw new ChannelError("sign_in_unsupported", `The ${engine} engine has no sign-in.`);
         const mode = args.mode === undefined ? undefined : args.mode;
-        if (mode !== undefined && mode !== "browser" && mode !== "device") {
-          throw new ChannelError("invalid_sign_in_mode", "mode must be \"browser\" or \"device\".");
+        if (mode !== undefined && mode !== "browser") {
+          throw new ChannelError("invalid_sign_in_mode", "mode must be \"browser\"; device-code sign-in is not available.");
         }
         const { id } = await vendor(() => account.signIn!({ mode }));
         return { operation_id: id };
@@ -130,7 +130,7 @@ export class EngineControl implements ChannelService {
         return { cancelled: true };
       }
       default:
-        throw new ChannelError("unknown_operation", `Engine control has no operation '${op}'.`);
+        throw new ChannelError("unknown_op", `Engine control has no operation '${op}'.`);
     }
   }
 

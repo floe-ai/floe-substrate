@@ -272,6 +272,11 @@ function assemble(version) {
         types: `./${BIN_PACKAGE}/dist/identity/client.d.ts`,
         default: `./${BIN_PACKAGE}/dist/identity/client.js`,
       },
+      // Engine readiness and sign-in (docs/reference/engine-control-protocol.md).
+      "./engines": {
+        types: `./${BIN_PACKAGE}/dist/engines/client.d.ts`,
+        default: `./${BIN_PACKAGE}/dist/engines/client.js`,
+      },
       "./package.json": "./package.json",
     },
     engines: { node: ">=20" },
@@ -311,6 +316,10 @@ function guard(version) {
   mkdirSync(prefix, { recursive: true });
   mkdirSync(home, { recursive: true });
   mkdirSync(neutralCwd, { recursive: true });
+  // The engine's own account home, isolated like the Floe home: the guard must
+  // never read or change the operator's Copilot sign-in.
+  process.env.COPILOT_HOME = join(workRoot, "copilot-home");
+  mkdirSync(process.env.COPILOT_HOME, { recursive: true });
 
   // A config isolated from the operator's ~/.floe: its own home, and a distinct
   // port so a bus the operator is already running is not disturbed and cannot
@@ -400,8 +409,10 @@ function guard(version) {
       throw new Error("`floe status` does not show the identity agent answering after `floe start`.");
     }
     requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after `floe start`" });
+    requireCopilotCli(home);
+    log("guard", "PASS — the official Copilot CLI shipped with the artifact and runs from the install");
     guardSurface({ workRoot, tarball: join(workRoot, tarball), configPath, port, neutralCwd, home });
-    log("guard", "PASS — a surface depending on the artifact created, locked, unlocked and used a bearer via the identity agent");
+    log("guard", "PASS — a surface depending on the artifact used the identity agent and saw engine readiness");
     guardUpgradeWhileRunning({ tarball: join(workRoot, tarball), prefix, port, neutralCwd, home });
     requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after npm removed and reinstalled the package" });
     log("guard", "PASS — npm removed and reinstalled the package while Floe kept serving from its stage");
@@ -442,6 +453,27 @@ function dumpLog(home, service) {
   const log = join(home, "logs", service, `${service}.log`);
   console.error(`\n[release:guard] ${service} log (${log}):`);
   console.error(existsSync(log) ? readFileSync(log, "utf8") : `(no ${service} log written)`);
+}
+
+/**
+ * Sign-in runs the official Copilot CLI, a pinned dependency. The bridge logs
+ * the binary it resolved from its own install; that binary must exist inside
+ * the installed package and run.
+ */
+function requireCopilotCli(home) {
+  const logFile = join(home, "logs", "bridge", "bridge.log");
+  const text = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
+  const match = /\[floe-bridge\] copilot sign-in cli: (.+)$/m.exec(text);
+  if (!match || /^not found/.test(match[1])) {
+    dumpLog(home, "bridge");
+    throw new Error("the installed bridge did not find the official Copilot CLI shipped with the artifact.");
+  }
+  const cliPath = match[1].trim();
+  const version = spawnSync(cliPath, ["--version"], { encoding: "utf8", timeout: 120_000 });
+  if (version.status !== 0) {
+    throw new Error(`the shipped Copilot CLI at ${cliPath} did not run: ${version.stderr || version.error}`);
+  }
+  log("guard", `Copilot CLI ${version.stdout.trim()} at ${cliPath}`);
 }
 
 /**
@@ -526,6 +558,18 @@ const response = await fetch("http://127.0.0.1:${port}/v1/pending-responses?work
 if (response.status !== 200) throw new Error("the pushed bearer was refused by the bus: " + response.status);
 step("bearer pushed and accepted by the bus (expires " + ready.expires_at + ")");
 identity.close();
+
+const { connectEngines } = await import("${PACKAGE_NAME}/engines");
+const engines = await connectEngines({ surface: "release-guard", configPath: ${JSON.stringify(configPath)} });
+const settled = (state) => state && state.phase !== "checking";
+const copilot = settled(engines.state.copilot) ? engines.state.copilot : await new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error("engine state still checking after 60s: " + JSON.stringify(engines.state))), 60000);
+  engines.onState((_all, changed) => {
+    if (changed.engine === "copilot" && settled(changed)) { clearTimeout(timer); resolve(changed); }
+  });
+});
+step("engine copilot: " + copilot.phase + " (" + copilot.message + ")");
+engines.close();
 `, "utf8");
   const run = spawnSync(process.execPath, [join(surfaceDir, "surface.mjs")], { cwd: neutralCwd, stdio: "inherit" });
   if (run.status !== 0) {

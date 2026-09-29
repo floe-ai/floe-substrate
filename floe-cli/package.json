@@ -1,6 +1,6 @@
 {
   "name": "floe-cli",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "private": true,
   "description": "The Floe command line — the front door to the local Floe substrate.",
   "license": "UNLICENSED",

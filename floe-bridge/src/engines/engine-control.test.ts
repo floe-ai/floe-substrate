@@ -109,9 +109,10 @@ describe("engine control channel", () => {
     const { client } = await serve(account);
     await expect(client.signIn("codex")).rejects.toMatchObject({ code: "unknown_engine" });
     await expect(client.signIn("copilot", { mode: "carrier-pigeon" as never })).rejects.toMatchObject({ code: "invalid_sign_in_mode" });
+    await expect(client.signIn("copilot", { mode: "device" as never })).rejects.toMatchObject({ code: "invalid_sign_in_mode" });
     account.signInRefusal = Object.assign(new Error("A Copilot sign-in is already in progress."), { code: "sign_in_in_progress" });
     await expect(client.signIn("copilot")).rejects.toMatchObject({ code: "sign_in_in_progress", message: "A Copilot sign-in is already in progress." });
-    await expect((client as any).request("launch_missiles", {})).rejects.toMatchObject({ code: "unknown_operation" });
+    await expect((client as any).request("launch_missiles", {})).rejects.toMatchObject({ code: "unknown_op" });
   });
 });
 

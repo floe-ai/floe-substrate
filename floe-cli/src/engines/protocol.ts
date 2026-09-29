@@ -43,4 +43,6 @@ export type SignInEvent = {
   message: string;
 };
 
-export type SignInMode = "browser" | "device";
+// Device-code sign-in is not offered: the vendor CLI prints its one-time code
+// to Floe's background log, where the person can never see it.
+export type SignInMode = "browser";
