@@ -27,6 +27,8 @@ export const LOCAL_FLOE_ACTOR_OPERATIONS_V1 = Object.freeze([
   "scope.execution.inspect", "scope.execution.pause", "scope.execution.redo", "scope.execution.resume",
   "scope.execution.start", "scope.execution.stop", "scope.node-execution.retry", "scope.node-output.publish",
   "scope.plan.inspect", "workspace.inspect",
+  // Engine built-ins: read only, bounded by the Actor's own scope.
+  "engine.tool.filesystem.read",
 ]);
 
 export const localProductWorkspacePolicy: WorkspaceConfigurationPolicyProvider = input => {

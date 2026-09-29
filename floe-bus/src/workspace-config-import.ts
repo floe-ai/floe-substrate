@@ -27,6 +27,7 @@ import {
 } from "./credential-broker.js";
 import type { SemanticOperationRegistry } from "./operations.js";
 import type { WorkspaceCreationKind } from "./workspace-identities.js";
+import { isEngineToolOperation } from "./tool-policy.js";
 import {
   REFRESH_CREDENTIAL_OPERATION_ID,
   USE_CREDENTIAL_OPERATION_ID,
@@ -381,7 +382,7 @@ export class WorkspaceConfigurationImportStore {
     }));
     const unknownOperationIds = policy.actor_operation_authority
       .flatMap((entry) => entry.operation_ids)
-      .filter((operationId) => !currentOperationIds.has(operationId));
+      .filter((operationId) => !currentOperationIds.has(operationId) && !isEngineToolOperation(operationId));
     if (unknownOperationIds.length > 0) {
       throw new WorkspaceConfigurationPolicyError(
         `import policy names unregistered Workspace operation '${unknownOperationIds[0]}'`,

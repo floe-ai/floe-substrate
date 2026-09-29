@@ -350,6 +350,8 @@ describe("authenticated canonical Workspace configuration import", () => {
     const grant = handle.store.capabilityGrantStore.getGrant(floe.capability_grant_id!)!;
     expect(grant.operation_ids).toEqual(LOCAL_FLOE_ACTOR_OPERATIONS_V1.filter(id => !["credential.use", "credential.refresh"].includes(id)).sort());
     expect(grant.issuer_id).toBe("policy:local-floe-actor:v1");
+    // Useful but non-destructive: read inside its own scope, no write, shell or network.
+    expect(grant.operation_ids.filter(id => id.startsWith("engine.tool."))).toEqual(["engine.tool.filesystem.read"]);
     expect(actors.find(actor => actor.source_actor_id === "another-actor")).toMatchObject({ capability_grant_id: null, runtime_status: "unresolved", unresolved_reasons: ["operation_authority_unmapped"] });
   });
 
