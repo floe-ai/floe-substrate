@@ -103,6 +103,8 @@ type Dependencies = Readonly<{
   now?: () => string;
   /** Told after authority stops, inside the same transaction, so sessions and passes stop with it. */
   on_revoked?: (record: IdentityWorkspaceAuthorityRecord) => void;
+  /** Told after a person's authority in a Workspace starts, is replaced, or stops. */
+  on_changed?: (workspaceId: string) => void;
 }>;
 
 export class IdentityWorkspaceAuthorityStore {
@@ -125,7 +127,7 @@ export class IdentityWorkspaceAuthorityStore {
   }>): IdentityWorkspaceAuthorityRecord {
     const existing = this.getActive(input.identity_id, input.workspace_id);
     if (existing) return existing;
-    return this.inTransaction(() => this.insert(input));
+    return this.changed(this.inTransaction(() => this.insert(input)));
   }
 
   getActive(identityId: string, workspaceId: string): IdentityWorkspaceAuthorityRecord | null {
@@ -180,7 +182,7 @@ export class IdentityWorkspaceAuthorityStore {
     evidence: readonly Readonly<{ kind: string; ref: string }>[];
     may_widen: boolean;
   }>): IdentityWorkspaceAuthorityRecord {
-    return this.inTransaction(() => {
+    return this.changed(this.inTransaction(() => {
       const current = this.get(input.authority_id);
       if (!current || current.status !== "active") throw new Error("This authority is no longer active.");
       const root = this.rootGrant(current);
@@ -188,23 +190,30 @@ export class IdentityWorkspaceAuthorityStore {
       const next = this.insertWithoutActiveCheck(current, input);
       this.stop(current, "replaced", next.authority_id);
       return next;
-    });
+    }));
   }
 
   revoke(authorityId: string, reason: string): IdentityWorkspaceAuthorityRecord | null {
-    return this.inTransaction(() => {
-      const current = this.get(authorityId);
-      if (!current || current.status !== "active") return current;
+    const current = this.get(authorityId);
+    if (!current || current.status !== "active") return current;
+    return this.changed(this.inTransaction(() => {
       this.stop(current, reason, null);
-      return this.get(authorityId);
-    });
+      return this.get(authorityId)!;
+    }));
   }
 
   revokeAllForIdentity(identityId: string, reason: string): IdentityWorkspaceAuthorityRecord[] {
-    return this.inTransaction(() => this.listActiveForIdentity(identityId).map((record) => {
+    const stopped = this.inTransaction(() => this.listActiveForIdentity(identityId).map((record) => {
       this.stop(record, reason, null);
       return this.get(record.authority_id)!;
     }));
+    for (const record of stopped) this.changed(record);
+    return stopped;
+  }
+
+  private changed(record: IdentityWorkspaceAuthorityRecord): IdentityWorkspaceAuthorityRecord {
+    this.dependencies.on_changed?.(record.workspace_id);
+    return record;
   }
 
   private insert(input: Parameters<IdentityWorkspaceAuthorityStore["issue"]>[0]): IdentityWorkspaceAuthorityRecord {

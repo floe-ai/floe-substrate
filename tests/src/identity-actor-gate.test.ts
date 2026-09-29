@@ -74,7 +74,8 @@ describe("identity-actor gate [fake]", () => {
     });
     await waitFor(async () => {
       const { endpoints } = await h.get<{ endpoints: any[] }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/endpoints`);
-      return endpoints.some((e) => e.endpoint_id === askerEndpoint && e.status === "idle");
+      return endpoints.some((e) => e.endpoint_id === askerEndpoint && e.status === "idle"
+        && (e.metadata?.runtime_unresolved_reasons ?? []).length === 0);
     }, "asking Actor runtime configured");
 
     // 2. Admit a client keypair to this workspace (host_control, the trust

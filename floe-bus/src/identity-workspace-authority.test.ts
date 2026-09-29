@@ -79,7 +79,13 @@ async function fixture() {
     handle = await start(dir);
   };
 
-  return { get handle() { return handle; }, workspaceId, person, invoke, actor, grantActive, restart };
+  /** How many times the Bridge has been asked to re-read this Workspace's files. */
+  const rereads = () => (handle.store.db.prepare(`
+    SELECT COUNT(*) AS count FROM transport_push_entries
+    WHERE event_type = 'workspace_attachment_requested' AND workspace_id = ?
+  `).get(workspaceId) as { count: number }).count;
+
+  return { get handle() { return handle; }, workspaceId, person, invoke, actor, grantActive, restart, rereads };
 }
 
 describe("durable identity authority (A1)", () => {
@@ -174,7 +180,11 @@ describe("durable identity authority (A1)", () => {
   it("lets a person narrow their own authority but never widen it, and give it up", async () => {
     const f = await fixture();
     const a = f.person("A");
+    // Actors get their access from the Workspace's people, so each change to
+    // those people asks the Bridge to re-read the Workspace files.
+    let rereads = f.rereads();
     const admitted = (await a.admit({ expires_at: "2099-01-01T00:00:00.000Z" })).json();
+    expect(f.rereads()).toBe(++rereads);
     expect(admitted.authority.expires_at).toBe("2099-01-01T00:00:00.000Z");
     const session = (await a.authenticate()).json();
 
@@ -191,6 +201,7 @@ describe("durable identity authority (A1)", () => {
     });
     expect(narrowed.body.receipt.state, JSON.stringify(narrowed.body)).toBe("completed");
     expect(narrowed.body.receipt.result.replaced_authority_id).toBe(admitted.authority.authority_id);
+    expect(f.rereads()).toBe(++rereads);
     expect(f.grantActive(admitted.authority.root_grant_id, admitted.identity.principal_id)).toBe(false);
 
     // The old session referenced the old root; a new one references the narrower root.
@@ -199,6 +210,7 @@ describe("durable identity authority (A1)", () => {
     expect(listed.status === 403 || listed.body.receipt?.state === "refused", JSON.stringify(listed.body)).toBe(true);
     const gaveUp = await f.invoke(next.bearer_token, "identity.workspace-authority.revoke", {});
     expect(gaveUp.body.receipt.result.authority.status).toBe("revoked");
+    expect(f.rereads()).toBe(++rereads);
     expect((await a.authenticate()).statusCode).toBe(403);
   });
 

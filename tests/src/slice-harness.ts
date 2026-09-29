@@ -13,9 +13,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "node:net";
 import YAML from "yaml";
+import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 import type { LocalConfig } from "../../floe-cli/src/config.js";
 import { startAll } from "../../floe-cli/src/startup.js";
-import { stopService } from "../../floe-cli/src/process-manager.js";
+import { SERVICE_NAMES, stopService } from "../../floe-cli/src/process-manager.js";
 import {
   fetchHostControlToken,
   registerLocalWorkspaceViaBroker
@@ -142,8 +143,8 @@ export class SliceHarness {
   async stop(): Promise<void> {
     this.eventSocket?.close();
     if (this.configPath && this.cliConfig) {
-      stopService(this.configPath, this.cliConfig, "bridge");
-      stopService(this.configPath, this.cliConfig, "bus");
+      // Every service startAll may have started, the identity agent included.
+      for (const service of [...SERVICE_NAMES].reverse()) stopService(this.configPath, this.cliConfig, service);
     }
     if (this.temp) await removeTemp(this.temp);
   }
@@ -223,6 +224,22 @@ export class SliceHarness {
   async registerAndAuthorize(locator: string): Promise<string> {
     const { workspace_id } = await registerLocalWorkspaceViaBroker(locator, true, this.busUrl);
     this.operationSessionBearer = await this.mintOperationSession(workspace_id);
+    // A Workspace's Actors get their access from its people, as when someone
+    // signed in runs `floe start` in the folder. Admit one and wait for the
+    // Floe Actor to be given access by them.
+    const admitted = await fetch(`${this.busUrl}/v1/identities`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${this.hostControlToken}` },
+      body: JSON.stringify({ display_name: "Operator", pubkey: getPublicKey(generateSecretKey()), workspace_id, until_revoked: true }),
+    });
+    if (!admitted.ok) throw new Error(`person admission failed ${admitted.status}: ${await admitted.text()}`);
+    const floeActor = `actor:${workspace_id}:floe`;
+    await waitFor(() => this.busMessages.some((message) => {
+      const endpoint = message.type === "endpoint_registered" ? message.payload?.endpoint : null;
+      if (endpoint?.endpoint_id !== floeActor) return false;
+      const metadata = endpoint.metadata ?? JSON.parse(endpoint.metadata_json ?? "{}");
+      return (metadata.runtime_unresolved_reasons ?? []).length === 0;
+    }), "Floe Actor given access by the Workspace's person");
     return workspace_id;
   }
 

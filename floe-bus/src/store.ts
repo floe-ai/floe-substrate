@@ -1068,6 +1068,9 @@ export class BusStore {
     this.identityWorkspaceAuthorityStore = new IdentityWorkspaceAuthorityStore(this.db, {
       grants: this.capabilityGrantStore,
       on_revoked: (authority) => this.endIdentityWorkspaceAccess(authority.identity_id, authority.workspace_id),
+      // Actors get their access from the Workspace's people, so the Bridge
+      // re-reads the Workspace files whenever those people change.
+      on_changed: (workspaceId) => this.broadcastFn?.("workspace_attachment_requested", { workspace_id: workspaceId }),
     });
     this.browserPassStore = new BrowserPassStore(this.db, this.capabilityGrantStore, this.operationAuthoritySessions,
       (pass) => this.broadcastFn?.("browser_pass_changed", { pass_id: pass.pass_id, workspace_id: pass.workspace_id,
