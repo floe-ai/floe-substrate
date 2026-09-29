@@ -28,9 +28,12 @@ function bundle(id = "delivery-1") {
   } as any;
 }
 
+const TEST_ACCOUNT = { label: "tester", host: "https://github.com" };
+
 function context() {
   return {
     bridge_id: "bridge:test",
+    engine_account: TEST_ACCOUNT,
     bus: {
       async getContext() { return null; },
       async recordRuntimeTurnResult() { return { request_resolved: false, result_event: { event_id: "result-1" } }; },
@@ -57,6 +60,7 @@ describe("FloeRuntimeAdapter SDK route", () => {
         throw new Error("initial model must not be changed after session creation");
       },
       rpc: {
+        gitHubAuth: { async getStatus() { return { isAuthenticated: true, authType: "user", login: "tester", host: "https://github.com" }; } },
         permissions: {
           async configure() {},
           async setApproveAll() {},
@@ -79,7 +83,7 @@ describe("FloeRuntimeAdapter SDK route", () => {
       },
       async stop() { return []; },
     };
-    const runtime = new CopilotRuntime({ client: client as any });
+    const runtime = new CopilotRuntime({ client: client as any, clientOptions: { baseDirectory: "unused-by-stand-in" }, expectedAccount: TEST_ACCOUNT });
     const adapter = new FloeRuntimeAdapter({ runtimeFactory: () => runtime });
 
     await adapter.handleBundle(context(), bundle(), { model: "creation-model" } as any);
@@ -148,6 +152,39 @@ describe("FloeRuntimeAdapter SDK route", () => {
         session_id: "sdk-session",
       },
     });
+  });
+
+  it("runs each turn as the account readiness admitted, and never reuses a session across accounts", async () => {
+    const built: { runtime: FakeRuntime; account: unknown }[] = [];
+    const adapter = new FloeRuntimeAdapter({
+      runtimeFactory: (options) => {
+        const runtime = new FakeRuntime();
+        built.push({ runtime, account: options.expectedAccount });
+        return runtime as any;
+      },
+    });
+    const other = { label: "someone-else", host: "https://github.com" };
+
+    await adapter.handleBundle(context(), bundle(), undefined);
+    await adapter.handleBundle(context(), bundle("delivery-2"), undefined);
+    await adapter.handleBundle({ ...context(), engine_account: other }, bundle("delivery-3"), undefined);
+
+    expect(built.map(b => b.account)).toEqual([TEST_ACCOUNT, other]);
+    expect(built[0].runtime.runs).toHaveLength(2);
+    expect(built[0].runtime.close).toHaveBeenCalled();
+    expect(built[1].runtime.runs).toHaveLength(1);
+  });
+
+  it("refuses a turn when readiness admitted no account", async () => {
+    const runtimeFactory = vi.fn(() => new FakeRuntime() as any);
+    const ctx = context();
+    delete ctx.engine_account;
+    const record = vi.fn(async () => ({ request_resolved: false, result_event: { event_id: "result-1" } }));
+    ctx.bus.recordRuntimeTurnResult = record;
+    const adapter = new FloeRuntimeAdapter({ runtimeFactory });
+
+    await expect(adapter.handleBundle(ctx, bundle(), undefined)).rejects.toThrow(/did not report a signed-in account/);
+    expect(runtimeFactory).not.toHaveBeenCalled();
   });
 
   it("records a result with empty text when a turn ends without visible output", async () => {

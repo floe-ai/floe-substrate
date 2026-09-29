@@ -7,7 +7,6 @@ import {
   LIVE_TIER_MODEL,
   LIVE_TIER_DISABLED,
   announceLiveTierDisabled,
-  assertLiveRuntimeReady
 } from "./live-runtime.js";
 import { assertExactLiveToolEvidence, type LiveToolCase } from "./live-evidence.js";
 
@@ -27,10 +26,7 @@ for (const tier of [FAKE_TIER]) {
     const h = new SliceHarness(tier);
 
     beforeEach(async () => {
-      // Loud pre-flight: if the live tier cannot reach an authenticated vendor
-      // CLI (and was not deliberately disabled), fail here with an actionable
-      // message rather than starting the Bus only to time out later.
-      if (tier.live) await assertLiveRuntimeReady();
+      // A live tier's start fails loudly first if no signed-in engine is reachable.
       await h.start();
     }, tier.live ? 120_000 : 60_000);
 
@@ -149,7 +145,6 @@ declareLive("vertical slice exact Copilot SDK tools [live-copilot]", () => {
   const h = new SliceHarness(LIVE_TIER);
 
   beforeEach(async () => {
-    await assertLiveRuntimeReady();
     await h.start();
   }, 120_000);
 

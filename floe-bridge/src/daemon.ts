@@ -32,7 +32,8 @@ import { runtimeEndpointRegistration } from "./runtime-endpoint-registration.js"
 import type { EngineState } from "floe-cli/engines/protocol";
 import { thisInstallation } from "floe-cli/installation";
 import { FakeRuntimeAdapter } from "./adapters/fake-runtime-adapter.js";
-import { FloeRuntimeAdapter } from "./adapters/floe-runtime-adapter.js";
+import { FloeRuntimeAdapter, type RuntimeFactory } from "./adapters/floe-runtime-adapter.js";
+import { copilotHome } from "./engines/copilot.js";
 import { TurnFailedError } from "./adapters/turn-failed-error.js";
 import { HookRegistry } from "./hooks.js";
 import { watchFolder } from "./folder-watcher.js";
@@ -74,6 +75,11 @@ export type BridgeDaemonOptions = Readonly<{
   bridge_id?: string;
   transport_authority?: BridgeTransportAuthority | null;
   engines?: EngineControl;
+  /**
+   * A stand-in engine for tests that prove Floe's side of a turn. It can only
+   * wrap a stand-in SDK client; copilot-construction.test.ts refuses any other.
+   */
+  stand_in_engine?: RuntimeFactory;
 }>;
 
 export class BridgeDaemon {
@@ -131,7 +137,9 @@ export class BridgeDaemon {
     if (!isCredentialTransportSecure(bridgeWsBase(config))) {
       this.bus.markAuthorityUnavailable("insecure_transport");
     }
-    this.adapter = chooseAdapter(configPath, config);
+    this.adapter = options.stand_in_engine
+      ? new FloeRuntimeAdapter({ runtimeFactory: options.stand_in_engine })
+      : chooseAdapter(configPath, config);
     const accounts = new Map<string, EngineAccount>();
     if (this.adapter.engine && this.adapter.createEngineAccount) {
       accounts.set(this.adapter.engine, this.adapter.createEngineAccount());
@@ -888,7 +896,12 @@ export class BridgeDaemon {
       return;
     }
 
-    if (this.adapter.engine && !(await this.engineAdmits(delivery, this.adapter.engine))) return;
+    let engineAccount: EngineState["account"];
+    if (this.adapter.engine) {
+      const admitted = await this.engineAdmits(delivery, this.adapter.engine);
+      if (!admitted) return;
+      engineAccount = admitted.account;
+    }
 
     console.log("[bridge] delivery claimed", {
       delivery_id: delivery.delivery_id,
@@ -997,6 +1010,7 @@ export class BridgeDaemon {
         hooks: hookRegistry,
         operation_authority_session: operationAuthoritySession,
         engine_tool_operation_ids: engineToolOperationIds,
+        ...(engineAccount ? { engine_account: engineAccount } : {}),
       }, delivery, effectiveRuntime);
       if (this.cancelledDeliveries.delete(delivery.delivery_id)) {
         await this.reportTurnEndSafely(delivery.endpoint_id);
@@ -1148,7 +1162,7 @@ export class BridgeDaemon {
    * paused until the engine becomes ready (releaseHeldWork) or the Bridge
    * restarts and re-registers it.
    */
-  private async engineAdmits(delivery: DeliveryBundle, engine: string): Promise<boolean> {
+  private async engineAdmits(delivery: DeliveryBundle, engine: string): Promise<EngineState | null> {
     let state: EngineState;
     try {
       state = await this.engines.gate(engine);
@@ -1159,7 +1173,7 @@ export class BridgeDaemon {
         message: error instanceof Error ? error.message : String(error),
       };
     }
-    if (state.phase === "ready") return true;
+    if (state.phase === "ready") return state;
 
     this.heldForEngine.set(delivery.endpoint_id, engine);
     console.log("[bridge] delivery held until engine is ready", {
@@ -1185,7 +1199,7 @@ export class BridgeDaemon {
     }
     // The engine may have become ready while the hold was being reported.
     if (this.engines.state().engines[engine]?.phase === "ready") this.releaseHeldWork(engine);
-    return false;
+    return null;
   }
 
   private releaseHeldWork(engine: string): void {
@@ -1264,12 +1278,13 @@ export class BridgeDaemon {
   }
 }
 
-export function chooseAdapter(_configPath: string, config: LocalConfig): RuntimeAdapter {
+export function chooseAdapter(configPath: string, config: LocalConfig): RuntimeAdapter {
   const configured = config.bridge.runtime_adapter;
-  if (!configured) return new FloeRuntimeAdapter();
+  const production = () => new FloeRuntimeAdapter({ copilotHome: copilotHome(configPath, config) });
+  if (!configured) return production();
   const selected = configured.trim().toLowerCase();
   if (selected === "fake") return new FakeRuntimeAdapter();
-  if (selected === "floe-runtime") return new FloeRuntimeAdapter();
+  if (selected === "floe-runtime") return production();
   throw new Error(`Unsupported bridge.runtime_adapter "${selected}" in the Floe config. Use "fake" or "floe-runtime".`);
 }
 
