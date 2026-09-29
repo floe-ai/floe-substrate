@@ -330,6 +330,8 @@ export const PORTABLE_WORKSPACE_TABLES = new Set([
 export const NON_PORTABLE_HOST_TABLES = new Set([
   "actor_lifecycle_push_outbox",
   "bridges",
+  // A browser pass is a cookie held by one browser on this machine.
+  "browser_passes",
   "client_identities",
   "client_identity_challenges",
   "client_identity_sessions",

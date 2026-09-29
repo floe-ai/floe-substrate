@@ -208,6 +208,8 @@ import {
   type IdentityWorkspaceAuthorityRecord,
 } from "./identity-workspace-authority.js";
 import { identityWorkspaceAuthorityOperations } from "./identity-workspace-authority-operations.js";
+import { applyBrowserPassSchema, BrowserPassStore } from "./browser-pass.js";
+import { browserPassOperations, type BrowserPairing } from "./browser-pass-operations.js";
 import {
   SqliteCapabilityGrantStore,
   applyCapabilityGrantSchema,
@@ -841,6 +843,9 @@ export class BusStore {
   readonly operationAuthorityVerifier: OperationAuthorityVerifier;
   readonly clientIdentityStore: SqliteClientIdentityStore;
   readonly identityWorkspaceAuthorityStore: IdentityWorkspaceAuthorityStore;
+  readonly browserPassStore: BrowserPassStore;
+  private browserPairing: BrowserPairing | null = null;
+  private readonly authorityLostListeners = new Set<(authoritySessionId: string | null) => void>();
   readonly operationRegistry: SemanticOperationRegistry;
   readonly workspaceConfigurationImportStore: WorkspaceConfigurationImportStore;
   readonly contextOperationBackend: BusContextOperationBackend;
@@ -1025,6 +1030,8 @@ export class BusStore {
       on_revoked: (grant) => {
         this.settleApprovalsAfterRevocation(grant);
         this.actorAccessAdoption?.noteLapse(grant.principal_id);
+        this.browserPassStore?.revokeWhereAuthorityEnded();
+        this.authorityLost();
       },
       on_issued: (grant) => this.actorAccessAdoption?.noteLapse(grant.principal_id),
     });
@@ -1046,6 +1053,7 @@ export class BusStore {
     this.operationAuthoritySessions = new SqliteOperationAuthoritySessionStore(
       this.db,
       this.capabilityGrantStore,
+      { on_revoked: (authoritySessionId) => this.authorityLost(authoritySessionId) },
     );
     this.operationAuthorityVerifier = new OperationAuthorityVerifier(
       this.operationAuthoritySessions,
@@ -1056,6 +1064,11 @@ export class BusStore {
       grants: this.capabilityGrantStore,
       on_revoked: (authority) => this.endIdentityWorkspaceAccess(authority.identity_id, authority.workspace_id),
     });
+    this.browserPassStore = new BrowserPassStore(this.db, this.capabilityGrantStore, this.operationAuthoritySessions,
+      (pass) => this.broadcastFn?.("browser_pass_changed", { pass_id: pass.pass_id, workspace_id: pass.workspace_id,
+        status: pass.status, revocation_reason: pass.revocation_reason }));
+    // An approved pass that was never claimed has no cookie that survived the last process.
+    this.browserPassStore.revokeUnclaimed();
     let operationRegistry = registerArtefactOperations(
       new SemanticOperationRegistry(
         new AjvOperationSchemaValidator(),
@@ -1072,6 +1085,9 @@ export class BusStore {
       grants: this.capabilityGrantStore, refs: this.secretRefStore })) operationRegistry.register(operation);
     for (const operation of identityWorkspaceAuthorityOperations({ authorities: this.identityWorkspaceAuthorityStore,
       identities: this.clientIdentityStore, adoption: () => this.actorAccessAdoption })) operationRegistry.register(operation);
+    for (const operation of browserPassOperations({ passes: this.browserPassStore, authorities: this.identityWorkspaceAuthorityStore,
+      identities: this.clientIdentityStore, grants: this.capabilityGrantStore, pairing: () => this.browserPairing,
+    })) operationRegistry.register(operation);
     operationRegistry = registerCommandOperations(operationRegistry, this.commandDefinitionStore);
     operationRegistry = registerActorRoleOperations(operationRegistry, this.actorRoleAuthorityStore);
     this.contextOperationBackend = new BusContextOperationBackend(
@@ -1332,6 +1348,24 @@ export class BusStore {
    * Inject the broadcast function so the store can drive lease-expiry requeue
    * without being handed `broadcast` on every call (D5).
    */
+  /** The server's in-memory browser pairing, so a person's session can list and approve waiting browsers. */
+  setBrowserPairing(pairing: BrowserPairing | null): void {
+    this.browserPairing = pairing;
+  }
+
+  /**
+   * Called after a grant is revoked (null: any session may be affected) or one
+   * session is revoked, so live connections can drop authority they no longer hold.
+   */
+  onAuthorityLost(listener: (authoritySessionId: string | null) => void): () => void {
+    this.authorityLostListeners.add(listener);
+    return () => this.authorityLostListeners.delete(listener);
+  }
+
+  private authorityLost(authoritySessionId: string | null = null): void {
+    for (const listener of this.authorityLostListeners) listener(authoritySessionId);
+  }
+
   setBroadcast(fn: Broadcast): void {
     if (this.closed) return;
     this.broadcastFn = fn;
@@ -1697,6 +1731,7 @@ export class BusStore {
     applyTransportPushStreamSchema(this.db);
     applyLocalOperatorPrincipalSchema(this.db);
     applyOperationAuthoritySessionSchema(this.db);
+    applyBrowserPassSchema(this.db);
     applyClientIdentitySchema(this.db);
     applyDeliveryOperationAuthoritySchema(this.db);
     applyWorkspaceConfigurationImportSchema(this.db);

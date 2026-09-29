@@ -1,5 +1,8 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { FastifyRequest } from "fastify";
+
+import { isLoopbackBrowserOrigin, normalizeBrowserOrigin } from "./browser-origin.js";
+import type { BrowserPassRecord, BrowserPassStore } from "./browser-pass.js";
 
 export type BrowserWorkspaceSession = Readonly<{
   bearer_token: string;
@@ -10,15 +13,14 @@ export type BrowserWorkspaceSession = Readonly<{
 }>;
 
 type Connection = {
+  connection_id: string;
   code: string;
   origin: string;
   expires_at: string;
-  approved?: BrowserWorkspaceSession;
-  claimed_cookie?: string;
+  approved?: { pass_id: string; token: string; credential_expires_at: string };
 };
 type BrowserSession = {
   origin: string;
-  mode: "local" | "remote";
   session: BrowserWorkspaceSession | null;
   workspaces: Map<string, BrowserWorkspaceSession>;
   expires_at: string;
@@ -58,6 +60,7 @@ export function loopbackBrowserOrigins(origins: Iterable<string>): ReadonlySet<s
 }
 const PENDING_COOKIE = "floe_browser_pending";
 const SESSION_COOKIE = "floe_browser_session";
+const PASS_COOKIE = "floe_browser_pass";
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const secret = () => randomBytes(32).toString("base64url");
 
@@ -65,10 +68,13 @@ export class BrowserConnectionError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
 
+export type PendingBrowserConnection = Readonly<{ connection_id: string; code: string; origin: string; expires_at: string }>;
+
 /**
- * Ephemeral browser transport, not another authority store. Cookies reference
- * canonical Workspace sessions; their current grants are verified on every use.
- * No host credential, session bearer, or local path reaches browser JavaScript.
+ * Browser transport. A paired browser holds a durable pass (see BrowserPassStore);
+ * a local browser holds an in-memory session for this process. Either way the
+ * cookie only references canonical authority, verified on every use. No host
+ * credential, session bearer, or local path reaches browser JavaScript.
  */
 export class BrowserConnections {
   private readonly pending = new Map<string, Connection>();
@@ -77,14 +83,15 @@ export class BrowserConnections {
   constructor(
     private readonly origins: ReadonlySet<string>,
     private readonly revoke: (id: string) => void,
-    private readonly now: () => number = Date.now,
+    private readonly passes: BrowserPassStore,
+    private readonly now: () => number = () => Date.now(),
     private readonly local?: LocalBrowserAccess,
   ) {}
 
   private prune(): void {
     for (const [key, connection] of this.pending) {
       if (Date.parse(connection.expires_at) > this.now()) continue;
-      if (connection.approved && !connection.claimed_cookie) this.revoke(connection.approved.authority_session_id);
+      if (connection.approved) this.passes.revoke(connection.approved.pass_id, "never_claimed");
       this.pending.delete(key);
     }
     for (const [key, entry] of this.sessions) {
@@ -94,13 +101,39 @@ export class BrowserConnections {
     }
   }
 
-  origin(request: Pick<FastifyRequest, "headers">): string {
+  private rawOrigin(request: Pick<FastifyRequest, "headers">): string {
     let origin = request.headers.origin;
     if (!origin && request.headers.referer) {
-      try { origin = new URL(request.headers.referer).origin; } catch { /* denied below */ }
+      try { origin = new URL(request.headers.referer).origin; } catch { /* denied by callers */ }
     }
-    if (!origin || !this.origins.has(origin)) throw new BrowserConnectionError(403, "This browser origin is not allowed to connect to Floe.");
-    return origin;
+    return origin ?? "";
+  }
+
+  /** A built-in trusted origin, or the exact origin an active pass is bound to. */
+  origin(request: Pick<FastifyRequest, "headers">): string {
+    const origin = this.rawOrigin(request);
+    if (this.origins.has(origin)) return origin;
+    const exact = normalizeBrowserOrigin(origin);
+    if (exact && this.passes.hasActiveOrigin(exact)) return exact;
+    throw new BrowserConnectionError(403, "This browser origin is not allowed to connect to Floe.");
+  }
+
+  /** Pairing also accepts a loopback origin that has no pass yet, long enough to ask for one. */
+  private pairingOrigin(request: Pick<FastifyRequest, "headers">): string {
+    const origin = this.rawOrigin(request);
+    if (this.origins.has(origin)) return origin;
+    const exact = normalizeBrowserOrigin(origin);
+    if (exact && isLoopbackBrowserOrigin(exact)) return exact;
+    throw new BrowserConnectionError(403, "This browser origin is not allowed to connect to Floe.");
+  }
+
+  /** True when CORS may answer this origin on this path. CORS never grants authority by itself. */
+  corsAllows(origin: string, path: string): boolean {
+    if (this.origins.has(origin)) return true;
+    const exact = normalizeBrowserOrigin(origin);
+    if (!exact) return false;
+    if (isLoopbackBrowserOrigin(exact) && PAIRING_PATHS.has(path)) return true;
+    return this.passes.hasActiveOrigin(exact);
   }
 
   private cookie(request: Pick<FastifyRequest, "headers">, name: string): string {
@@ -112,6 +145,10 @@ export class BrowserConnections {
 
   private setCookie(name: string, value: string, origin: string, maxAge: number): string {
     return `${name}=${value}; Path=/v1; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${origin.startsWith("https:") ? "; Secure" : ""}`;
+  }
+
+  private passCookie(token: string, origin: string, expiresAt: string): string {
+    return this.setCookie(PASS_COOKIE, token, origin, Math.max(0, Math.floor((Date.parse(expiresAt) - this.now()) / 1_000)));
   }
 
   private localOrigin(request: BrowserRequest): string {
@@ -133,7 +170,7 @@ export class BrowserConnections {
     const origin = this.localOrigin(request);
     const existingToken = this.cookie(request, SESSION_COOKIE);
     const existing = this.sessions.get(digest(existingToken));
-    if (existing?.mode === "local" && existing.origin === origin) {
+    if (existing?.origin === origin) {
       existing.expires_at = new Date(this.now() + 86_400_000).toISOString();
       return this.setCookie(SESSION_COOKIE, existingToken, origin, 86_400);
     }
@@ -141,7 +178,7 @@ export class BrowserConnections {
     const session = this.local!.issueSession();
     const token = secret();
     this.sessions.set(digest(token), {
-      origin, mode: "local", session,
+      origin, session,
       workspaces: new Map(session ? [[session.workspace_id, session]] : []),
       expires_at: new Date(this.now() + 86_400_000).toISOString(),
     });
@@ -150,10 +187,13 @@ export class BrowserConnections {
 
   mode(request: BrowserRequest): "local" | "remote" | null {
     this.prune();
-    const entry = this.sessions.get(digest(this.cookie(request, SESSION_COOKIE)));
-    if (!entry || entry.origin !== this.origin(request)) return null;
-    if (entry.mode === "local") this.localOrigin(request);
-    return entry.mode;
+    const local = this.sessions.get(digest(this.cookie(request, SESSION_COOKIE)));
+    if (local && local.origin === this.origin(request)) {
+      this.localOrigin(request);
+      return "local";
+    }
+    const token = this.cookie(request, PASS_COOKIE);
+    return token && this.passes.use(token, this.origin(request), undefined) ? "remote" : null;
   }
 
   localOwner(request: BrowserRequest): string {
@@ -161,61 +201,78 @@ export class BrowserConnections {
     return digest(this.cookie(request, SESSION_COOKIE));
   }
 
-  start(request: Pick<FastifyRequest, "headers">) {
+  start(request: Pick<FastifyRequest, "headers">): { connection: PendingBrowserConnection; cookie: string | null } {
     this.prune();
-    const origin = this.origin(request);
+    const origin = this.pairingOrigin(request);
     const previous = this.pending.get(digest(this.cookie(request, PENDING_COOKIE)));
-    if (previous?.origin === origin) return { connection: this.project(previous), cookie: null };
-    if (this.pending.size >= 32 || this.sessions.size >= 64) throw new BrowserConnectionError(429, "Floe has too many browser connections. Close an unused connection and try again.");
+    if (previous?.origin === origin && !previous.approved) return { connection: this.project(previous), cookie: null };
+    if (this.pending.size >= 32) throw new BrowserConnectionError(429, "Floe has too many browser connections. Close an unused connection and try again.");
     const token = secret();
     let code: string;
     do { code = randomBytes(4).toString("hex").toUpperCase(); }
     while ([...this.pending.values()].some(item => item.code === code));
-    const entry = { code, origin, expires_at: new Date(this.now() + 300_000).toISOString() };
+    const entry: Connection = { connection_id: `browserconn_${randomUUID()}`, code, origin,
+      expires_at: new Date(this.now() + 300_000).toISOString() };
     this.pending.set(digest(token), entry);
     return { connection: this.project(entry), cookie: this.setCookie(PENDING_COOKIE, token, origin, 300) };
   }
 
-  list() {
+  list(): PendingBrowserConnection[] {
     this.prune();
     return [...this.pending.values()].filter(entry => !entry.approved).map(entry => this.project(entry));
   }
 
-  approve(code: string, issue: () => BrowserWorkspaceSession): void {
+  /** Approves a waiting browser by issuing its pass; the browser collects it by claiming. */
+  approve(connectionId: string, issue: (origin: string) => { pass: BrowserPassRecord; token: string }): BrowserPassRecord {
     this.prune();
-    const entry = [...this.pending.values()].find(item => item.code === code);
+    const entry = [...this.pending.values()].find(item => item.connection_id === connectionId);
     if (!entry) throw new BrowserConnectionError(404, "This browser connection expired. Start a new connection in the browser.");
     if (entry.approved) throw new BrowserConnectionError(409, "This browser connection has already been approved.");
-    if (this.sessions.size >= 64) throw new BrowserConnectionError(429, "Floe has too many browser connections.");
-    entry.approved = issue();
+    const { pass, token } = issue(entry.origin);
+    entry.approved = { pass_id: pass.pass_id, token, credential_expires_at: pass.credential_expires_at };
+    return pass;
   }
 
-  claim(request: Pick<FastifyRequest, "headers">) {
+  claim(request: Pick<FastifyRequest, "headers">): string[] {
     this.prune();
-    const origin = this.origin(request);
-    const entry = this.pending.get(digest(this.cookie(request, PENDING_COOKIE)));
+    const origin = this.pairingOrigin(request);
+    const key = digest(this.cookie(request, PENDING_COOKIE));
+    const entry = this.pending.get(key);
     if (!entry || entry.origin !== origin) throw new BrowserConnectionError(401, "Start a new connection to Floe.");
-    if (!entry.approved) throw new BrowserConnectionError(409, "Allow this connection in the Floe app first.");
-    if (Date.parse(entry.approved.expires_at) <= this.now()) throw new BrowserConnectionError(401, "This connection expired.");
-    if (!entry.claimed_cookie) {
-      if (this.sessions.size >= 64) throw new BrowserConnectionError(429, "Floe has too many browser connections.");
-      entry.claimed_cookie = secret();
-      this.sessions.set(digest(entry.claimed_cookie), {
-        origin, mode: "remote", session: entry.approved,
-        workspaces: new Map([[entry.approved.workspace_id, entry.approved]]), expires_at: entry.approved.expires_at,
-      });
+    if (!entry.approved) throw new BrowserConnectionError(409, "Allow this connection in Floe first.");
+    // The pending secret is spent: the pass cookie is the only credential from here.
+    this.pending.delete(key);
+    this.passes.markClaimed(entry.approved.pass_id);
+    return [this.passCookie(entry.approved.token, origin, entry.approved.credential_expires_at),
+      this.setCookie(PENDING_COOKIE, "", origin, 0)];
+  }
+
+  /**
+   * The Workspace session behind this request's cookie, plus a replacement
+   * cookie when a pass was renewed. Null when the cookie does not apply here.
+   */
+  resolve(request: BrowserRequest, workspaceId?: string, renew = false): { session: BrowserWorkspaceSession; cookie: string | null } | null {
+    this.prune();
+    const localToken = this.cookie(request, SESSION_COOKIE);
+    const passToken = this.cookie(request, PASS_COOKIE);
+    if (!localToken && !passToken) return null;
+    const origin = this.origin(request);
+    const entry = localToken ? this.sessions.get(digest(localToken)) : undefined;
+    if (entry?.origin === origin) {
+      const session = this.localSession(request, entry, workspaceId);
+      return session ? { session, cookie: null } : null;
     }
-    return this.setCookie(SESSION_COOKIE, entry.claimed_cookie, origin, Math.max(0, Math.floor((Date.parse(entry.approved.expires_at) - this.now()) / 1_000)));
+    const used = this.passes.use(passToken, origin, workspaceId, renew);
+    if (!used) return null;
+    return { session: used.session,
+      cookie: used.renewed_token ? this.passCookie(used.renewed_token, origin, used.pass.credential_expires_at) : null };
   }
 
   session(request: BrowserRequest, workspaceId?: string): BrowserWorkspaceSession | null {
-    this.prune();
-    const token = this.cookie(request, SESSION_COOKIE);
-    if (!token) return null;
-    const origin = this.origin(request);
-    const entry = this.sessions.get(digest(token));
-    if (entry?.origin !== origin) return null;
-    if (entry.mode === "remote") return !workspaceId || workspaceId === entry.session?.workspace_id ? entry.session : null;
+    return this.resolve(request, workspaceId)?.session ?? null;
+  }
+
+  private localSession(request: BrowserRequest, entry: BrowserSession, workspaceId?: string): BrowserWorkspaceSession | null {
     this.localOrigin(request);
     const requested = workspaceId ?? entry.session?.workspace_id;
     let session = requested ? entry.workspaces.get(requested) : undefined;
@@ -237,29 +294,35 @@ export class BrowserConnections {
     return session ?? null;
   }
 
+  /** Disconnecting a paired browser revokes its pass, not just this process's memory of it. */
   disconnect(request: BrowserRequest): string[] {
     const origin = this.origin(request);
     const sessionKey = digest(this.cookie(request, SESSION_COOKIE));
     const entry = this.sessions.get(sessionKey);
     if (entry?.origin === origin) for (const session of entry.workspaces.values()) this.revoke(session.authority_session_id);
     this.sessions.delete(sessionKey);
+    this.passes.revokeByToken(this.cookie(request, PASS_COOKIE), origin, "disconnected");
     const pendingKey = digest(this.cookie(request, PENDING_COOKIE));
     const pending = this.pending.get(pendingKey);
     if (pending?.origin === origin) {
-      if (pending.approved) this.revoke(pending.approved.authority_session_id);
+      if (pending.approved) this.passes.revoke(pending.approved.pass_id, "disconnected");
       this.pending.delete(pendingKey);
     }
-    return [this.setCookie(SESSION_COOKIE, "", origin, 0), this.setCookie(PENDING_COOKIE, "", origin, 0)];
+    return [this.setCookie(SESSION_COOKIE, "", origin, 0), this.setCookie(PASS_COOKIE, "", origin, 0),
+      this.setCookie(PENDING_COOKIE, "", origin, 0)];
   }
 
   close(): void {
     for (const entry of this.sessions.values()) for (const session of entry.workspaces.values()) this.revoke(session.authority_session_id);
-    for (const entry of this.pending.values()) if (entry.approved) this.revoke(entry.approved.authority_session_id);
     this.sessions.clear();
+    // An approved pass not yet claimed has no reachable cookie after this process ends.
+    for (const entry of this.pending.values()) if (entry.approved) this.passes.revoke(entry.approved.pass_id, "never_claimed");
     this.pending.clear();
   }
 
-  private project(entry: Connection) {
-    return { code: entry.code, origin: entry.origin, expires_at: entry.expires_at };
+  private project(entry: Connection): PendingBrowserConnection {
+    return { connection_id: entry.connection_id, code: entry.code, origin: entry.origin, expires_at: entry.expires_at };
   }
 }
+
+const PAIRING_PATHS = new Set(["/v1/browser/connections", "/v1/browser/connections/claim", "/v1/browser/session"]);

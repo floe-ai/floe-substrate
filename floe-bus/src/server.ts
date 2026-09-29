@@ -3,7 +3,7 @@
  * API handlers must expose bus-owned truth without bypassing BusStore precedence,
  * bridge-reported runtime state, or the shared auth/model registry.
  */
-import Fastify from "fastify";
+import Fastify, { type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import { createHash, randomUUID } from "node:crypto";
@@ -45,7 +45,7 @@ import { browseDir } from "./fs/browseDir.js";
 import { listAgentFiles } from "./fs/agentFiles.js";
 import { PathEscapesRootError, resolveWithinRoot, RootNotFoundError } from "./fs/resolveWithinRoot.js";
 import { registerContextDiagnosticRoutes } from "./context-diagnostics.js";
-import { createCorsOriginPolicy, trustedBrowserOrigins } from "./cors-policy.js";
+import { createCorsDelegator, trustedBrowserOrigins } from "./cors-policy.js";
 import { BrowserConnections, BrowserConnectionError, loopbackBrowserOrigins } from "./browser-connections.js";
 import {
   ArtefactContentMismatchError,
@@ -346,7 +346,7 @@ export async function createBusServer(
   const localOrigins = options.local_browser_access ? loopbackBrowserOrigins(browserOrigins) : new Set<string>();
   const browserConnections = new BrowserConnections(browserOrigins, id => {
     store.operationAuthoritySessions.revokeSession(id);
-  }, Date.now, options.local_browser_access ? {
+  }, store.browserPassStore, Date.now, options.local_browser_access ? {
     origins: localOrigins,
     issueSession: workspaceId => {
       const host = transportAuthenticator.authenticateHostControl(localControlToken);
@@ -362,6 +362,40 @@ export async function createBusServer(
       }, "floe-local-browser-session");
     },
   } : undefined);
+  function renewBrowserSocketAuthority(request: FastifyRequest, workspaceId: string) {
+    try {
+      const session = browserConnections.session(request, workspaceId);
+      if (!session) return null;
+      const verified = transportAuthenticator.authenticateWorkspaceOperation(session.bearer_token, workspaceId);
+      return verified.verified && verified.authority.audience === "workspace_operation" ? verified.authority : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * A live Workspace socket keeps authority only while its session does. After a
+   * revocation each affected socket is checked now and closed if its session
+   * was revoked or every grant it rests on has ended.
+   */
+  function closeSocketsWithoutAuthority(authoritySessionId: string | null): void {
+    for (const [socket, authority] of socketAuthorities) {
+      if (authority.audience !== "workspace_operation") continue;
+      if (authoritySessionId !== null && authority.authority_session_id !== authoritySessionId) continue;
+      const session = store.operationAuthoritySessions.getSession(authority.authority_session_id);
+      const active = session !== null && session.revoked_at === null
+        && store.capabilityGrantStore.inspectSessionGrantIds(session).active_grants.length > 0;
+      if (active) continue;
+      socketAuthorities.delete(socket);
+      socket.close(4401, "Authority revoked");
+    }
+  }
+  const stopWatchingAuthority = store.onAuthorityLost(closeSocketsWithoutAuthority);
+
+  store.setBrowserPairing({
+    list: () => browserConnections.list(),
+    approve: (connectionId, issue) => browserConnections.approve(connectionId, issue),
+  });
   const pushStream = new TransportPushStreamStore(store.db);
   const socketAuthorities = new Map<SocketLike, BusTransportAuthority>();
   const requestAuthorities = new WeakMap<object, BusTransportAuthority>();
@@ -761,7 +795,7 @@ export async function createBusServer(
   // Inject broadcast into the store so lease-expiry requeue can self-schedule (D5).
   store.setBroadcast(broadcast);
 
-  await app.register(cors, { origin: createCorsOriginPolicy(browserOrigins) });
+  await app.register(cors, { delegator: createCorsDelegator((origin, path) => browserConnections.corsAllows(origin, path)) });
   await app.register(websocket);
   app.addHook("preHandler", async (request, reply) => {
     // Static sandbox bootstrap only: no Workspace, content or authority. An
@@ -771,7 +805,9 @@ export async function createBusServer(
     // bearer. The same verifier and operation routes still decide authority.
     try {
       const workspace = resolveRequestWorkspace(request, store);
-      const session = workspace.conflicted ? null : browserConnections.session(request, workspace.workspace_id ?? undefined);
+      const resolved = workspace.conflicted ? null : browserConnections.resolve(request, workspace.workspace_id ?? undefined, true);
+      if (resolved?.cookie) reply.header("set-cookie", resolved.cookie);
+      const session = resolved?.session;
       if (session && !request.headers.authorization) request.headers.authorization = `Bearer ${session.bearer_token}`;
     } catch (error) {
       if (error instanceof BrowserConnectionError) return reply.code(error.status).send({ error: "browser_origin_refused", message: error.message });
@@ -881,6 +917,8 @@ export async function createBusServer(
     socketAuthorities.clear();
     bridgeSockets.clear();
     browserConnections.close();
+    store.setBrowserPairing(null);
+    stopWatchingAuthority();
     store.close();
   });
 
@@ -968,7 +1006,13 @@ export async function createBusServer(
       if (!z.object({}).strict().safeParse(request.body ?? {}).success) return reply.code(400).send({ error: "browser_connection_request_invalid" });
       const started = browserConnections.start(request);
       reply.header("cache-control", "no-store");
-      if (started.cookie) reply.header("set-cookie", started.cookie);
+      if (started.cookie) {
+        reply.header("set-cookie", started.cookie);
+        // Every Workspace's connections hear of it, since any person there may allow it.
+        for (const workspace of store.listWorkspaces()) {
+          broadcast("browser_connection_requested", { ...started.connection, workspace_id: workspace.workspace_id });
+        }
+      }
       return reply.code(201).send(started.connection);
     } catch (error) { return browserFailure(error, reply); }
   });
@@ -1000,10 +1044,6 @@ export async function createBusServer(
       return { mode, workspaces, profiles, bindings, runtime: getRuntimeStatus(), expires_at: session?.expires_at ?? null };
     } catch (error) { return browserFailure(error, reply); }
   });
-  app.get("/v1/local/browser-connections", async (request, reply) => {
-    if (!requireLocalControl(request, reply)) return reply;
-    return { connections: browserConnections.list() };
-  });
   app.get("/v1/browser/session/models", async (request, reply) => {
     try {
       const session = browserConnections.session(request);
@@ -1016,23 +1056,6 @@ export async function createBusServer(
       return { models: await listAuthModels(configPath, config, query.data.provider) };
     } catch (error) { return browserFailure(error, reply); }
   });
-  app.post("/v1/local/browser-connections/:code/approve", async (request, reply) => {
-    const authority = requireLocalControl(request, reply);
-    if (!authority) return reply;
-    const params = z.object({ code: z.string().regex(/^[A-F0-9]{8}$/) }).safeParse(request.params);
-    const body = z.object({ workspace_id: z.string().min(1) }).strict().safeParse(request.body);
-    if (!params.success || !body.success) return reply.code(400).send({ error: "browser_connection_request_invalid" });
-    if (!store.getWorkspace(body.data.workspace_id)) return reply.code(404).send({ error: "workspace_not_found" });
-    try {
-      browserConnections.approve(params.data.code, () => issueWorkspaceOperationSession(
-        authority, body.data.workspace_id,
-        { interaction_session_id: `browser:${params.data.code}`, expires_in_seconds: 3_600 },
-        "floe-browser-session",
-      ));
-      return { approved: true };
-    } catch (error) { return browserFailure(error, reply); }
-  });
-
   app.get("/v1/events/stream", { websocket: true }, (socket, request) => {
     const client = socket as unknown as SocketLike;
     let connectedBridgeId: string | null = null;
@@ -1145,9 +1168,21 @@ export async function createBusServer(
 
       authenticated = true;
       socketAuthority = authority;
-      if (authority.audience === "workspace_operation") {
-        sessionExpiryTimeout = setTimeout(() => client.close(4401, "Session expired"), Math.max(0, Date.parse(authority.verification.expires_at) - Date.now()));
-      }
+      // A browser-pass socket moves onto the pass's next short session at expiry;
+      // any other Workspace socket closes, and its client authenticates again.
+      const armSessionExpiry = (current: Extract<BusTransportAuthority, { audience: "workspace_operation" }>) => {
+        sessionExpiryTimeout = setTimeout(() => {
+          const renewed = parsed.data.browser_session ? renewBrowserSocketAuthority(request, current.workspace_id) : null;
+          if (!renewed) {
+            client.close(4401, "Session expired");
+            return;
+          }
+          socketAuthority = renewed;
+          if (socketAuthorities.has(client)) socketAuthorities.set(client, renewed);
+          armSessionExpiry(renewed);
+        }, Math.max(0, Date.parse(current.verification.expires_at) - Date.now()) + 50);
+      };
+      if (authority.audience === "workspace_operation") armSessionExpiry(authority);
       clearTimeout(authenticationTimeout);
       client.send(JSON.stringify({
         type: "authenticated",

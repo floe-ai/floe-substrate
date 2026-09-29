@@ -97,6 +97,8 @@ export type OperationAuthoritySessionDependencies = Readonly<{
   now?: () => string;
   token_factory?: () => string;
   session_id_factory?: () => string;
+  /** Told after a session is revoked, so live connections using it can close. */
+  on_revoked?: (authoritySessionId: string) => void;
 }>;
 
 /** Installs the authentication state used to derive operation authority. */
@@ -160,6 +162,7 @@ export class SqliteOperationAuthoritySessionStore {
   private readonly now: () => string;
   private readonly tokenFactory: () => string;
   private readonly sessionIdFactory: () => string;
+  private readonly onRevoked: ((authoritySessionId: string) => void) | null;
 
   constructor(
     readonly db: DatabaseSync,
@@ -172,6 +175,7 @@ export class SqliteOperationAuthoritySessionStore {
     this.now = dependencies.now ?? isoNow;
     this.tokenFactory = dependencies.token_factory ?? createBearerToken;
     this.sessionIdFactory = dependencies.session_id_factory ?? (() => `authsession_${randomUUID()}`);
+    this.onRevoked = dependencies.on_revoked ?? null;
   }
 
   issueSession(input: IssueOperationAuthoritySession): IssuedOperationAuthoritySession {
@@ -243,10 +247,23 @@ export class SqliteOperationAuthoritySessionStore {
     parseTimestamp("revoked_at", revokedAt);
     const result = this.db.prepare(`
       UPDATE operation_authority_sessions
-      SET revoked_at = COALESCE(revoked_at, ?)
-      WHERE authority_session_id = ?
+      SET revoked_at = ?
+      WHERE authority_session_id = ? AND revoked_at IS NULL
     `).run(revokedAt, authoritySessionId);
-    return Number(result.changes) === 1;
+    const revoked = Number(result.changes) === 1;
+    if (revoked) this.onRevoked?.(authoritySessionId);
+    return revoked;
+  }
+
+  /** Revokes every live session minted for one interaction, such as one browser pass. */
+  revokeSessionsForInteraction(interactionSessionId: string, revokedAt = this.now()): string[] {
+    parseTimestamp("revoked_at", revokedAt);
+    const rows = this.db.prepare(`
+      SELECT authority_session_id FROM operation_authority_sessions
+      WHERE interaction_session_id = ? AND revoked_at IS NULL
+    `).all(interactionSessionId) as Array<{ authority_session_id: string }>;
+    for (const row of rows) this.revokeSession(row.authority_session_id, revokedAt);
+    return rows.map(row => row.authority_session_id);
   }
 
   getSession(authoritySessionId: string): OperationAuthoritySessionRecord | null {

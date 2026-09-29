@@ -5,6 +5,7 @@ import YAML from "yaml";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultConfig } from "./config.js";
 import { createBusServer } from "./server.js";
+import { admitPerson, pairBrowser } from "./test-support/browser-pass.js";
 
 const HOST_TOKEN = `test-browser-host-${"h".repeat(48)}`;
 const ORIGIN = "http://localhost:5379";
@@ -30,15 +31,8 @@ async function fixture(local = false, existingWorkspaces = true) {
 }
 
 async function connect(handle: Awaited<ReturnType<typeof fixture>>) {
-  const start = await handle.app.inject({ method: "POST", url: "/v1/browser/connections", headers: { origin: ORIGIN } });
-  expect(start.statusCode, start.body).toBe(201);
-  const pending = cookieHeader(start.headers["set-cookie"]);
-  const approve = await handle.app.inject({ method: "POST", url: `/v1/local/browser-connections/${start.json().code}/approve`, headers: hostHeaders, payload: { workspace_id: "workspace:one" } });
-  expect(approve.statusCode, approve.body).toBe(200);
-  expect(approve.body).not.toMatch(/bearer|token/);
-  const claim = await handle.app.inject({ method: "POST", url: "/v1/browser/connections/claim", headers: { origin: ORIGIN, cookie: pending } });
-  expect(claim.statusCode, claim.body).toBe(200);
-  return { origin: ORIGIN, cookie: `${pending}; ${cookieHeader(claim.headers["set-cookie"])}` };
+  const person = await admitPerson(handle, HOST_TOKEN, "workspace:one");
+  return (await pairBrowser(handle, person.token, "workspace:one", ORIGIN)).headers;
 }
 
 describe("browser authority through the canonical contract", () => {
@@ -135,7 +129,6 @@ describe("browser authority through the canonical contract", () => {
       expect(result.statusCode, result.body).toBe(200);
     }
     expect((await handle.app.inject({ url: "/v1/local/workspaces", headers: connected })).statusCode).toBe(401);
-    expect((await handle.app.inject({ url: "/v1/local/browser-connections", headers: hostHeaders })).json().connections).toEqual([]);
     const reload = await handle.app.inject({ method: "POST", url: "/v1/browser/session/local", headers: connected });
     expect(cookieHeader(reload.headers["set-cookie"])).toBe(connected.cookie);
   });
@@ -178,12 +171,12 @@ describe("browser authority through the canonical contract", () => {
     expect(own.statusCode, own.body).toBe(200);
     const other = await handle.app.inject({ url: "/v1/workspaces/workspace%3Atwo/operations", headers });
     expect(other.statusCode).toBe(401);
-    for (const url of ["/v1/local/workspaces", "/v1/local/browser-connections", "/v1/auth/profiles"]) {
+    for (const url of ["/v1/local/workspaces", "/v1/auth/profiles"]) {
       expect((await handle.app.inject({ url, headers })).statusCode).toBe(401);
     }
     const crossOrigin = await handle.app.inject({ url: "/v1/workspaces/workspace%3Aone/operations", headers: { ...headers, origin: "https://attacker.example" } });
     expect(crossOrigin.statusCode).toBe(403);
-    const sessions = handle.store.db.prepare("SELECT authority_session_id FROM operation_authority_sessions WHERE interaction_session_id LIKE 'browser:%'").all() as { authority_session_id: string }[];
+    const sessions = handle.store.db.prepare("SELECT authority_session_id FROM operation_authority_sessions WHERE interaction_session_id LIKE 'browser:pass:%'").all() as { authority_session_id: string }[];
     expect(sessions).toHaveLength(1);
     handle.store.operationAuthoritySessions.revokeSession(sessions[0]!.authority_session_id);
     expect((await handle.app.inject({ url: "/v1/browser/session", headers })).statusCode).toBe(401);

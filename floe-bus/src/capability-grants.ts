@@ -535,8 +535,9 @@ export class SqliteCapabilityGrantStore {
   /**
    * Issue a grant that depends on a source grant the Bus already trusts, such
    * as a person's root, without a session. It is issued by the source's
-   * principal, lasts until revoked, and stops with its source. It can only
-   * narrow: operations and targets must sit inside the source.
+   * principal, lasts until revoked unless an earlier expiry is given, and
+   * stops with its source. It can only narrow: operations, targets and
+   * lifetime must sit inside the source.
    */
   issueDependentGrant(input: Readonly<{
     grant_id?: string;
@@ -545,6 +546,7 @@ export class SqliteCapabilityGrantStore {
     operation_ids: readonly string[];
     targets?: readonly CapabilityGrantTarget[];
     evidence: readonly CapabilityGrantEvidence[];
+    expires_at?: string | null;
   }>): CapabilityGrantRecord {
     const source = this.requireGrant(input.source_grant_id);
     if (!this.isActiveGrant(source, parseTimestamp("now", this.now()))) {
@@ -559,9 +561,13 @@ export class SqliteCapabilityGrantStore {
       !source.targets.some(allowed => targetContains(allowed, target))))) {
       throw new Error("Dependent targets must be contained in the source grant.");
     }
+    const expiry = input.expires_at ?? null;
+    if (expiry !== null && parseTimestamp("expires_at", expiry) > expiryMs(this.effectiveExpiry(source.grant_id))) {
+      throw new Error("Dependent access cannot outlive its source grant.");
+    }
     return inSavepoint(this.db, () => {
       const grant = this.issueGrant({ grant_id: input.grant_id, principal_id: input.principal_id,
-        boundary: source.boundary, operation_ids: operations, targets, expires_at: null,
+        boundary: source.boundary, operation_ids: operations, targets, expires_at: expiry,
         issuer_id: source.principal_id, evidence: input.evidence });
       this.db.prepare(`INSERT INTO capability_grant_delegations (grant_id, source_grant_id, authority_grant_id)
         VALUES (?, ?, ?)`).run(grant.grant_id, source.grant_id, source.grant_id);
