@@ -864,6 +864,72 @@ const current = async ({ executionId, idempotencyKey }) => (await invokeAs("comp
   operation_id: "scope.execution.inspect", idempotency_key: idempotencyKey,
   target: { kind: "scope_execution", id: executionId }, input: {},
 })).execution;
+// A step whose attempt fails without handing anything on must still say so:
+// its NodeExecution moves to failed, and the failure is pushed with a safe
+// reason. The failing Actor runs on a copy of the Floe Actor's runtime with a
+// setting the Bridge refuses, so its attempt fails on the production path
+// after the step has started. (An unknown model is not a failure: the engine
+// silently answers with its default model.)
+const floeRuntime = (await invokeAs("completed", { operation_id: "runtime-profile.revision.get", idempotency_key: "guard-floe-runtime",
+  target: { kind: "runtime_profile_revision", id: floeBinding.runtime_profile_revision_id }, input: {} })).revision;
+const failingDraft = (await invokeAs("completed", { operation_id: "runtime-profile.create", idempotency_key: "guard-failing-runtime",
+  input: { content: { ...floeRuntime.content, label: "Release guard: a setting the Bridge refuses",
+    configuration: { ...floeRuntime.content.configuration, thinking_level: "floe-release-guard-unsupported" } } } })).draft;
+const failingRuntime = (await invokeAs("completed", { operation_id: "runtime-profile.publish", idempotency_key: "guard-failing-runtime-publish",
+  target: { kind: "runtime_profile_revision", id: failingDraft.runtime_profile_revision_id },
+  expected_resource_revision: failingDraft.semantic_digest, input: { expected_current_revision_id: null } })).revision;
+const failingActor = (await invokeAs("completed", { operation_id: "actor.setup", idempotency_key: "guard-failing-setup",
+  input: { actor_id: "guard-failing", engine_tool_operation_ids: [],
+    runtime_profile_revision_id: failingRuntime.runtime_profile_revision_id, definition: {
+    label: "Guard Failing Step", charter: "Fail inside the engine for the release guard.", responsibilities: [],
+    instructions: "Reply briefly.", knowledge_refs: [], capability_grant_ids: [],
+    policy_refs: { budget: null, trust: null, approval: null }, escalation_rules: [],
+  } } })).actor;
+await until((push) => push.type === "endpoint_registered" && push.payload?.endpoint?.endpoint_id === failingActor.actor_id,
+  "the Bridge hosting the failing Actor", 30000);
+const failScope = (await invokeAs("completed", { operation_id: "scope.create", idempotency_key: "guard-fail-scope", input: { title: "Release guard failure" } })).scope;
+const failIngress = (await invokeAs("completed", { operation_id: "context.create", idempotency_key: "guard-fail-ingress",
+  input: { scope_id: failScope.scope_id, title: "Release guard failure input", participants: [] } })).context;
+const failDraft = (await invokeAs("completed", { operation_id: "scope.composition.draft.create", idempotency_key: "guard-fail-draft",
+  target: { kind: "scope", id: failScope.scope_id }, expected_resource_revision: "none",
+  input: { content: {
+    nodes: [
+      { node_id: "ingress", kind: "event", config: { event_type: "work.requested" }, context_policy: { mode: "fixed", context_id: failIngress.context_id } },
+      { node_id: "worker", kind: "actor", resource_id: failingActor.actor_id, activation: { mode: "per_delivery" }, context_policy: { mode: "new_per_execution" } },
+    ],
+    ports: [
+      { port_id: "ingress:out", node_id: "ingress", name: "work", direction: "output", event_types: ["work.requested"] },
+      { port_id: "worker:in", node_id: "worker", name: "work", direction: "input", event_types: ["work.requested"], min_count: 1 },
+      { port_id: "worker:out", node_id: "worker", name: "result", direction: "output", event_types: ["work.completed"], min_count: 1 },
+    ],
+    edges: [{ edge_id: "ingress-to-worker", source_port_id: "ingress:out", target_port_id: "worker:in" }],
+  } } })).revision;
+const failDraftTarget = { kind: "scope_composition_revision", id: failDraft.revision_id };
+const failImpact = await invokeAs("completed", { operation_id: "scope.composition.impact.inspect", idempotency_key: "guard-fail-impact",
+  target: failDraftTarget, expected_resource_revision: failDraft.semantic_digest, input: {} });
+await invokeAs("completed", { operation_id: "scope.composition.publish", idempotency_key: "guard-fail-publish",
+  target: failDraftTarget, expected_resource_revision: failDraft.semantic_digest,
+  input: { expected_current_published_revision_id: null, expected_impact_digest: failImpact.impact_digest } });
+const failRun = (await invokeAs("accepted", { operation_id: "scope.execution.start", idempotency_key: "guard-fail-run",
+  target: { kind: "scope", id: failScope.scope_id }, expected_resource_revision: failDraft.revision_id,
+  input: { ingress_node_id: "ingress", output_port_id: "ingress:out", content: { request: "Reply with the single word: done" } } })).execution;
+const failedPush = await until((push) => push.type === "node_execution_state_changed"
+  && push.payload.scope_execution_id === failRun.execution_id && push.payload.node_id === "worker"
+  && ["failed", "completed", "waiting_external", "blocked"].includes(push.payload.to_status), "the failing step settling", 180000);
+const failure = failedPush.payload.failure;
+if (failedPush.payload.to_status !== "failed") {
+  throw new Error("a step whose attempt failed was reported as " + failedPush.payload.to_status + ", not failed: " + JSON.stringify(failedPush.payload));
+}
+if (!failure || typeof failure.code !== "string" || typeof failure.message !== "string" || failure.message.trim() === "") {
+  throw new Error("the failed step's push carries no failure reason: " + JSON.stringify(failedPush.payload));
+}
+if (/[\\r\\n]/.test(failure.message) || /\\bat .+:\\d+:\\d+/.test(failure.message) || failure.message.length > 500) {
+  throw new Error("the failed step's pushed reason is not safe to show: " + JSON.stringify(failure.message));
+}
+const failedExecution = await current({ executionId: failRun.execution_id, idempotencyKey: "guard-fail-inspect" });
+if (failedExecution.status !== "failed") throw new Error("the route with a failed step is " + failedExecution.status + ", not failed");
+step("a step whose attempt failed without handing anything on was pushed as failed (" + failure.code + "): " + JSON.stringify(failure.message));
+
 for (let pauseRun = 1; pauseRun <= PAUSE_RUNS; pauseRun += 1) {
   const suffix = String(pauseRun).padStart(2, "0");
   const started = join(${JSON.stringify(folder)}, "guard-pause-started-" + suffix + ".txt");

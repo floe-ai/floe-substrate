@@ -8,6 +8,7 @@ import { defaultConfig, type LocalConfig } from "./config.js";
 import type { ScopeCompositionContent } from "./scope-compositions.js";
 import { registerExecutableActorFixture } from "./executable-actor-test-fixture.js";
 import type { DeliveryBundle } from "./store.js";
+import { TransportPushStreamStore } from "./transport-push-stream.js";
 
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
 
@@ -480,5 +481,51 @@ describe("canonical Delivery and ExecutionAttempt lifecycle", () => {
     expect(nextPrepared.processing_contract.contract_kind).toBe("scope_node");
     expect(handle.store.scopeExecutionStore.listAttempts(started.nodeExecutionId).map(entry=>entry.status))
       .toEqual(["failed", "pending"]);
+  });
+
+  function failedNodePushes(nodeExecutionId: string): Array<Record<string, any>> {
+    new TransportPushStreamStore(handle.store.db).drainNodeExecutionStateOutbox();
+    return (handle.store.db.prepare(`
+      SELECT payload_json FROM transport_push_entries WHERE event_type = 'node_execution_state_changed'
+    `).all() as Array<{ payload_json: string }>)
+      .map((row) => JSON.parse(row.payload_json))
+      .filter((payload) => payload.node_execution_id === nodeExecutionId && payload.to_status === "failed");
+  }
+
+  it("fails the step and pushes a safe reason when its attempt fails before handing anything on", () => {
+    const started = start();
+    handle.store.prepareRuntimeDelivery({ bridge_id: BRIDGE, delivery_id: started.deliveryId }, handle.broadcast);
+    const rawReason = `configuration.thinking_level is unsupported\n    at selectPinnedRuntime (runtime.ts:1:1)\n    at deliver (daemon.ts:2:2)`;
+    handle.store.reportDeliveryStatus({
+      bridge_id: BRIDGE, delivery_id: started.deliveryId, state: "dead_lettered", error: rawReason,
+    }, handle.broadcast);
+
+    const projection = handle.store.getScopeExecutionProjection(started.executionId)!;
+    expect(projection.execution.status).toBe("failed");
+    expect(projection.node_executions.find((node) => node.node_execution_id === started.nodeExecutionId)!.status)
+      .toBe("failed");
+    const [push] = failedNodePushes(started.nodeExecutionId);
+    expect(push!.failure).toEqual({
+      code: "runtime_failed",
+      message: "configuration.thinking_level is unsupported",
+      safe_to_retry_automatically: false,
+    });
+  });
+
+  it("fails the step when its delivery runs out of retries before any attempt started", () => {
+    const started = start();
+    handle.store.db.prepare("UPDATE delivery_bundles SET attempt_count = 3 WHERE delivery_id = ?").run(started.deliveryId);
+    handle.store.reportDeliveryStatus({
+      bridge_id: BRIDGE, delivery_id: started.deliveryId, state: "failed", error: "the Bridge could not reach its engine",
+    }, handle.broadcast);
+
+    expect(handle.store.scopeExecutionStore.listAttempts(started.nodeExecutionId)).toHaveLength(0);
+    expect(handle.store.getScopeExecutionProjection(started.executionId)!.execution.status).toBe("failed");
+    const [push] = failedNodePushes(started.nodeExecutionId);
+    expect(push!.failure).toEqual({
+      code: "runtime_failed_before_turn",
+      message: "the Bridge could not reach its engine",
+      safe_to_retry_automatically: false,
+    });
   });
 });

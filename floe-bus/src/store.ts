@@ -7115,14 +7115,20 @@ export class BusStore {
       const attempts = Number(delivery.attempt_count ?? 1);
       const queueState = attempts >= 3 ? "dead_lettered" : "queued";
       const bundleState = attempts >= 3 ? "dead_lettered" : "failed";
-      this.db.prepare("UPDATE delivery_bundles SET state = ?, lease_expires_at = NULL, last_error = ? WHERE delivery_id = ?")
-        .run(bundleState, input.error ?? null, input.delivery_id);
-      this.db.prepare(`
-        UPDATE event_queue
-        SET state = ?, delivery_id = CASE WHEN ? = 'queued' THEN NULL ELSE delivery_id END,
-            lease_expires_at = NULL, last_error = ?
-        WHERE delivery_id = ?
-      `).run(queueState, queueState, input.error ?? null, input.delivery_id);
+      this.transaction(() => {
+        this.db.prepare("UPDATE delivery_bundles SET state = ?, lease_expires_at = NULL, last_error = ? WHERE delivery_id = ?")
+          .run(bundleState, input.error ?? null, input.delivery_id);
+        this.db.prepare(`
+          UPDATE event_queue
+          SET state = ?, delivery_id = CASE WHEN ? = 'queued' THEN NULL ELSE delivery_id END,
+              lease_expires_at = NULL, last_error = ?
+          WHERE delivery_id = ?
+        `).run(queueState, queueState, input.error ?? null, input.delivery_id);
+        // Out of retries: the step this delivery served has failed, and says so.
+        if (bundleState === "dead_lettered") {
+          this.finishCanonicalAttempt(delivery, "failed", input.error ?? "delivery failed before its turn started");
+        }
+      });
       broadcast(bundleState === "dead_lettered" ? "delivery_dead_lettered" : "delivery_failed", {
         bridge_id: input.bridge_id,
         delivery_id: input.delivery_id,
@@ -9605,9 +9611,14 @@ export class BusStore {
     const attemptId = delivery.execution_attempt_id
       ?? this.scopeExecutionStore.getAttemptForBundle(String(delivery.delivery_id))?.attempt_id
       ?? null;
-    if (!attemptId) return;
-    const attempt = this.scopeExecutionStore.getAttempt(String(attemptId));
-    if (!attempt || !["pending", "running"].includes(attempt.status)) return;
+    const attempt = attemptId ? this.scopeExecutionStore.getAttempt(String(attemptId)) : null;
+    if (!attempt) {
+      // Work refused before its turn could start has no attempt, but its step
+      // has still failed and must say so.
+      if (status === "failed" || status === "outcome_unknown") this.failStepWithoutAttempt(delivery, reason);
+      return;
+    }
+    if (!["pending", "running"].includes(attempt.status)) return;
     this.scopeExecutionStore.finishAttempt({
       attempt_id: attempt.attempt_id,
       status,
@@ -9634,6 +9645,18 @@ export class BusStore {
       return;
     }
     this.settleCanonicalNodeAfterAttempt(node);
+    this.reconcileScopeExecutionStatus(node.execution_id);
+  }
+
+  private failStepWithoutAttempt(delivery: any, reason: string | null): void {
+    const nodeExecutionId = this.rowToDelivery(delivery).node_execution_id;
+    const node = nodeExecutionId ? this.scopeExecutionStore.getNodeExecution(nodeExecutionId) : null;
+    if (!node || ["completed", "failed", "cancelled", "superseded", "paused"].includes(node.status)) return;
+    this.scopeExecutionStore.setNodeExecutionStatus(node.node_execution_id, "failed", {
+      code: "runtime_failed_before_turn",
+      message: reason,
+      safe_to_retry_automatically: false,
+    });
     this.reconcileScopeExecutionStatus(node.execution_id);
   }
 
