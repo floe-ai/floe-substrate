@@ -1,8 +1,8 @@
 import type { ActorDefinitionStore } from "./actor-definitions.js";
 import { NO_ACTOR_DEFINITION_REVISION } from "./actor-definition-operations.js";
-import type { SqliteCapabilityGrantStore } from "./capability-grants.js";
+import type { CapabilityGrantRecord, SqliteCapabilityGrantStore } from "./capability-grants.js";
 import type { SqliteSecretRefStore } from "./credential-broker.js";
-import { refusal, requireWorkspaceAuthorityId, type SemanticOperationDefinition } from "./operations.js";
+import { refusal, requireWorkspaceAuthorityId, type OperationExecutionContext, type OperationRefusal, type SemanticOperationDefinition } from "./operations.js";
 
 export const CAPABILITY_GRANT_OPERATION_IDS = ["capability.grant.list", "capability.grant.delegate", "capability.grant.revoke"] as const;
 const text = { type: "string", minLength: 1 } as const;
@@ -22,7 +22,66 @@ const grantSchema = { type: "object", additionalProperties: false,
 const resultSchema = (properties: Record<string, unknown>) => ({ version: "1", schema: {
   type: "object", additionalProperties: false, required: Object.keys(properties), properties,
 } });
+/** The shape of one delegation request; shared with operations that delegate as one of their steps. */
+export const delegationRequestSchema = { type: "object", additionalProperties: false,
+  required: ["source_grant_id", "operation_ids"], properties: {
+    source_grant_id: text,
+    operation_ids: { type: "array", minItems: 1, uniqueItems: true, items: text },
+    targets: { ...targets, description: "Omit to preserve the source targets. Supplied targets may only narrow them." },
+    until_revoked: { const: true, description: "The delegated access lasts until it, its source, or the delegation permission is revoked." },
+    expires_at: { ...text, description: "When the delegated access ends. Use instead of until_revoked." },
+    delegation_only: { type: "boolean", description: "When true, the recipient may only delegate this access onward and can never exercise it itself." },
+  } } as const;
+export const capabilityGrantSchema = grantSchema;
 type Dependencies = { actors: ActorDefinitionStore; grants: SqliteCapabilityGrantStore; refs: SqliteSecretRefStore };
+
+/** A request to give one Actor a subset of one of the caller's session grants. */
+export type DelegationRequest = Readonly<{
+  source_grant_id: string;
+  operation_ids: readonly string[];
+  targets?: readonly { kind: string; id: string | null }[];
+  until_revoked?: true;
+  expires_at?: string;
+  delegation_only?: boolean;
+}>;
+
+/** One delegation, synchronous so a caller can hold it inside a larger savepoint. */
+export function delegateAccessToActor(
+  deps: Dependencies,
+  context: OperationExecutionContext,
+  actorId: string,
+  expectedActorRevision: string | null,
+  input: DelegationRequest,
+): { refusal: OperationRefusal } | { grant: CapabilityGrantRecord; delegation: ReturnType<SqliteCapabilityGrantStore["getDelegation"]> } {
+  const workspaceId = requireWorkspaceAuthorityId(context.authority);
+  const actor = deps.actors.getActor(actorId);
+  if (!actor || actor.workspace_id !== workspaceId || actor.status !== "active") {
+    return { refusal: refusal("delegation_actor_unavailable", "Select an active Actor in this Workspace.", false, null) };
+  }
+  const expected = expectedActorRevision === NO_ACTOR_DEFINITION_REVISION ? null : expectedActorRevision;
+  if (expected !== actor.current_definition_revision_id) {
+    return { refusal: refusal("delegation_actor_changed", "The Actor changed. Inspect it before delegating access.", true, null) };
+  }
+  if ((input.until_revoked === true) === (input.expires_at !== undefined)) {
+    return { refusal: refusal("delegation_lifetime_required", "Choose exactly one lifetime: until_revoked, or expires_at.", false, null) };
+  }
+  const { until_revoked: _untilRevoked, ...request } = input;
+  deps.actors.db.exec("SAVEPOINT delegate_capability");
+  try {
+    const grant = deps.grants.delegateGrant({ ...request, targets: request.targets as never, expires_at: input.expires_at ?? null,
+      authority: context.authority, principal_id: actor.actor_id, recipient: { kind: "actor", id: actor.actor_id },
+      invocation_id: context.invocation_id });
+    const constraint = deps.refs.getGrantConstraint(input.source_grant_id);
+    if (constraint) deps.refs.attachGrantConstraint({ grant_id: grant.grant_id,
+      authority_boundary: context.authority.boundary, secret_ref_id: constraint.secret_ref_id,
+      purposes: constraint.purposes }, deps.grants);
+    deps.actors.db.exec("RELEASE delegate_capability");
+    return { grant, delegation: deps.grants.getDelegation(grant.grant_id) };
+  } catch (error) {
+    deps.actors.db.exec("ROLLBACK TO delegate_capability"); deps.actors.db.exec("RELEASE delegate_capability");
+    return { refusal: refusal("capability_delegation_refused", (error as Error).message, false, null) };
+  }
+}
 
 /** Existing grant lifecycle, exposed through the shared semantic operation boundary. */
 export function capabilityGrantOperations(deps: Dependencies): SemanticOperationDefinition<any, any>[] {
@@ -38,45 +97,13 @@ export function capabilityGrantOperations(deps: Dependencies): SemanticOperation
     target: { resource_kinds: ["actor"], expected_revision: "optional" },
     result: resultSchema({ grant: grantSchema, delegation: { type: "object", additionalProperties: false,
       required: ["source_grant_id", "authority_grant_id"], properties: { source_grant_id: text, authority_grant_id: text } } }),
-    input: { version: "1", schema: { type: "object", additionalProperties: false,
-      required: ["source_grant_id", "operation_ids"], properties: {
-        source_grant_id: text,
-        operation_ids: { type: "array", minItems: 1, uniqueItems: true, items: text },
-        targets: { ...targets, description: "Omit to preserve the source targets. Supplied targets may only narrow them." },
-        until_revoked: { const: true, description: "The delegated access lasts until it, its source, or the delegation permission is revoked." },
-        expires_at: { ...text, description: "When the delegated access ends. Use instead of until_revoked." },
-        delegation_only: { type: "boolean", description: "When true, the recipient may only delegate this access onward and can never exercise it itself." },
-      } } },
+    input: { version: "1", schema: delegationRequestSchema },
     handler: (context, input) => {
-      const workspaceId = requireWorkspaceAuthorityId(context.authority);
-      const actor = deps.actors.getActor(context.target?.ref.id ?? "");
-      if (!actor || actor.workspace_id !== workspaceId || actor.status !== "active") {
-        return { state: "refused", refusal: refusal("delegation_actor_unavailable", "Select an active Actor in this Workspace.", false, null) };
-      }
-      const expected = context.expected_resource_revision === NO_ACTOR_DEFINITION_REVISION ? null : context.expected_resource_revision;
-      if (expected !== actor.current_definition_revision_id) {
-        return { state: "refused", refusal: refusal("delegation_actor_changed", "The Actor changed. Inspect it before delegating access.", true, null) };
-      }
-      if ((input.until_revoked === true) === (input.expires_at !== undefined)) {
-        return { state: "refused", refusal: refusal("delegation_lifetime_required", "Choose exactly one lifetime: until_revoked, or expires_at.", false, null) };
-      }
-      const { until_revoked: _untilRevoked, ...request } = input;
-      deps.actors.db.exec("SAVEPOINT delegate_capability");
-      try {
-        const grant = deps.grants.delegateGrant({ ...request, expires_at: input.expires_at ?? null, authority: context.authority,
-          principal_id: actor.actor_id, recipient: { kind: "actor", id: actor.actor_id }, invocation_id: context.invocation_id });
-        const constraint = deps.refs.getGrantConstraint(input.source_grant_id);
-        if (constraint) deps.refs.attachGrantConstraint({ grant_id: grant.grant_id,
-          authority_boundary: context.authority.boundary, secret_ref_id: constraint.secret_ref_id,
-          purposes: constraint.purposes }, deps.grants);
-        deps.actors.db.exec("RELEASE delegate_capability");
-        return { state: "completed", result: { grant, delegation: deps.grants.getDelegation(grant.grant_id) },
-          changed_refs: [{ kind: "capability_grant", id: grant.grant_id, revision: null }],
-          audit_ref: { kind: "operation_invocation", id: context.invocation_id, revision: null } };
-      } catch (error) {
-        deps.actors.db.exec("ROLLBACK TO delegate_capability"); deps.actors.db.exec("RELEASE delegate_capability");
-        return { state: "refused", refusal: refusal("capability_delegation_refused", (error as Error).message, false, null) };
-      }
+      const delegated = delegateAccessToActor(deps, context, context.target?.ref.id ?? "", context.expected_resource_revision, input);
+      if ("refusal" in delegated) return { state: "refused", refusal: delegated.refusal };
+      return { state: "completed", result: delegated,
+        changed_refs: [{ kind: "capability_grant", id: delegated.grant.grant_id, revision: null }],
+        audit_ref: { kind: "operation_invocation", id: context.invocation_id, revision: null } };
     },
   };
   return [{

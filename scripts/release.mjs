@@ -776,29 +776,26 @@ if (dirty !== "") throw new Error("a full Actor turn changed the person's tracke
 step("the turn's work log is in .floe/state and git status is clean");
 
 // An Actor created at runtime must be reachable like one Floe was installed with:
-// create it, publish it, bind it to the Floe Actor's runtime, send it work, and
-// see its own real turn complete. An Actor that is created but never hosted
-// silently swallows every request sent to it. It is created with no tool access,
-// because an Actor without permissions must still take turns; it just cannot use tools.
-const guardActor = (await invoke({ operation_id: "actor.create", operation_version: "1", input_schema_version: "1",
-  idempotency_key: "guard-actor-create", input: { actor_id: "guard-greeter", engine_tool_operation_ids: [], definition: {
-    label: "Guard Greeter", charter: "Answer the release guard.", responsibilities: [],
-    instructions: "Reply briefly to whatever you are asked.", knowledge_refs: [], capability_grant_ids: [],
-    policy_refs: { budget: null, trust: null, approval: null }, escalation_rules: [],
-  } } }));
-if (guardActor.draft.content.capability_grant_ids.length !== 0) throw new Error("the guard's created Actor was meant to hold no permissions");
-const guardDraft = guardActor.draft;
-const guardPublished = await invoke({ operation_id: "actor.definition.publish", operation_version: "1", input_schema_version: "1",
-  idempotency_key: "guard-actor-publish", target: { kind: "actor_definition_revision", id: guardDraft.actor_definition_revision_id },
-  expected_resource_revision: guardDraft.semantic_digest, input: { expected_current_definition_revision_id: null } });
+// set it up in one step (create, bind to the Floe Actor's runtime, publish), send
+// it work, and see its own real turn complete. An Actor that is created but never
+// hosted silently swallows every request sent to it. It is set up with no tool
+// access, because an Actor without permissions must still take turns; it just
+// cannot use tools.
 const floeBinding = (await invoke({ operation_id: "actor.runtime-binding.inspect", operation_version: "1", input_schema_version: "1",
   idempotency_key: "guard-floe-binding", target: { kind: "actor", id: floe }, input: {} })).current_binding;
 if (!floeBinding) throw new Error("the Floe Actor has no runtime binding to reuse");
-await invoke({ operation_id: "actor.runtime-binding.create", operation_version: "1", input_schema_version: "1",
-  idempotency_key: "guard-actor-bind", target: { kind: "actor", id: guardActor.actor.actor_id },
-  expected_resource_revision: guardPublished.revision.actor_definition_revision_id,
-  input: { runtime_profile_revision_id: floeBinding.runtime_profile_revision_id, status: "resolved" } });
-step("created, published and bound " + guardActor.actor.actor_id);
+const guardActor = await invoke({ operation_id: "actor.setup", operation_version: "1", input_schema_version: "1",
+  idempotency_key: "guard-actor-setup", input: { actor_id: "guard-greeter", engine_tool_operation_ids: [],
+    runtime_profile_revision_id: floeBinding.runtime_profile_revision_id, definition: {
+    label: "Guard Greeter", charter: "Answer the release guard.", responsibilities: [],
+    instructions: "Reply briefly to whatever you are asked.", knowledge_refs: [], capability_grant_ids: [],
+    policy_refs: { budget: null, trust: null, approval: null }, escalation_rules: [],
+  } } });
+if (guardActor.revision.content.capability_grant_ids.length !== 0) throw new Error("the guard's created Actor was meant to hold no permissions");
+if (!guardActor.revision.published_at || guardActor.binding.runtime_profile_revision_id !== floeBinding.runtime_profile_revision_id) {
+  throw new Error("actor.setup did not leave a published Actor bound to the Floe Actor's runtime: " + JSON.stringify(guardActor));
+}
+step("set up " + guardActor.actor.actor_id + " in one operation: created, bound and published");
 // The Bridge hosts the new Actor in response to the binding; its endpoint is pushed when it is addressable.
 await until((push) => push.type === "endpoint_registered" && push.payload?.endpoint?.endpoint_id === guardActor.actor.actor_id,
   "the Bridge hosting the created Actor", 30000);

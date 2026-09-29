@@ -147,7 +147,7 @@ export const ACTOR_DEFINITION_CONTENT_SCHEMA: JsonSchema = {
     },
   },
 };
-const actorSchema: JsonSchema = {
+export const actorSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
   required: [
@@ -167,7 +167,7 @@ const actorSchema: JsonSchema = {
     retired_at: nullableString,
   },
 };
-const actorDefinitionRevisionSchema: JsonSchema = {
+export const actorDefinitionRevisionSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
   required: [
@@ -240,6 +240,21 @@ const actorAndDraftSchema: JsonSchema = {
   required: ["actor", "draft"],
   properties: { actor: actorSchema, draft: actorDefinitionRevisionSchema },
 };
+export const newActorToolAccessSchema: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["limited_by_creator", "granted_operation_ids", "grant_ids", "not_granted"],
+  description: "Engine tool access the new Actor received from you, and anything you could not pass on.",
+  properties: {
+    limited_by_creator: { type: "boolean" },
+    granted_operation_ids: { type: "array", items: nonEmptyString },
+    grant_ids: { type: "array", items: nonEmptyString },
+    not_granted: { type: "array", items: {
+      type: "object", additionalProperties: false, required: ["operation_id", "reason"],
+      properties: { operation_id: nonEmptyString, reason: nonEmptyString },
+    } },
+  },
+};
 const createdActorSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
@@ -247,21 +262,7 @@ const createdActorSchema: JsonSchema = {
   properties: {
     actor: actorSchema,
     draft: actorDefinitionRevisionSchema,
-    tool_access: {
-      type: "object",
-      additionalProperties: false,
-      required: ["limited_by_creator", "granted_operation_ids", "grant_ids", "not_granted"],
-      description: "Engine tool access the new Actor received from you, and anything you could not pass on.",
-      properties: {
-        limited_by_creator: { type: "boolean" },
-        granted_operation_ids: { type: "array", items: nonEmptyString },
-        grant_ids: { type: "array", items: nonEmptyString },
-        not_granted: { type: "array", items: {
-          type: "object", additionalProperties: false, required: ["operation_id", "reason"],
-          properties: { operation_id: nonEmptyString, reason: nonEmptyString },
-        } },
-      },
-    },
+    tool_access: newActorToolAccessSchema,
   },
 };
 const actorAndRevisionSchema: JsonSchema = {
@@ -290,7 +291,7 @@ const inspectInputSchema: JsonSchema = {
   additionalProperties: false,
   properties: { include_history: { type: "boolean" } },
 };
-const createActorInputSchema: JsonSchema = {
+export const createActorInputSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
   required: ["definition"],
@@ -334,7 +335,7 @@ const rollbackInputSchema: JsonSchema = {
   properties: { to_published_revision_id: nonEmptyString },
 };
 
-function actorRef(actor: ActorRecord) {
+export function actorRef(actor: ActorRecord) {
   return {
     kind: "actor",
     id: actor.actor_id,
@@ -342,7 +343,7 @@ function actorRef(actor: ActorRecord) {
   };
 }
 
-function definitionRef(revision: ActorDefinitionRevision) {
+export function definitionRef(revision: ActorDefinitionRevision) {
   return {
     kind: "actor_definition_revision",
     id: revision.actor_definition_revision_id,
@@ -428,7 +429,7 @@ function revisionAvailability(store: ActorDefinitionStore, context: OperationEva
       };
 }
 
-function actorOperationRefusal(error: unknown): OperationRefusal {
+export function actorOperationRefusal(error: unknown): OperationRefusal {
   if (error instanceof ActorDefinitionConflictError || error instanceof ActorDefinitionDraftConflictError) {
     return refusal(
       "actor_definition_revision_conflict",
@@ -598,7 +599,7 @@ export function createActorOperation(
     authority_boundary_kinds: ["workspace"],
     category: "actors",
     title: "Create Actor",
-    description: "Create a stable Actor identity and its first unpublished definition draft in this Workspace. The new Actor may use every engine tool you hold, unless you choose limits. It cannot receive work until you publish its definition (actor.definition.publish) and bind it to a runtime (actor.runtime-binding.create).",
+    description: "Create a stable Actor identity and its first unpublished definition draft in this Workspace. The new Actor may use every engine tool you hold, unless you choose limits. It cannot receive work until you publish its definition (actor.definition.publish) and bind it to a runtime (actor.runtime-binding.create). To do all of that in one all-or-nothing step, use actor.setup instead.",
     effects: { mode: "write", reversibility: "reversible", external: false, secret_access: "none" },
     required_grants: [CREATE_ACTOR_OPERATION_ID],
     interaction_constraints: { allowed_modes: ["interactive", "unattended"] },
@@ -608,54 +609,80 @@ export function createActorOperation(
     handler: (context, input) => handle(() => {
       store.db.exec("SAVEPOINT create_actor");
       try {
-        const workspaceId = authorityWorkspaceId(context);
-        const actorId = workspaceActorId(workspaceId, input.actor_id
-          ? workspaceActorName(workspaceId, input.actor_id) : `actor_${randomUUID()}`);
-        if (store.getActor(actorId)) {
+        const created = createActorWithToolAccess(store, grants, context, input);
+        if ("refusal" in created) {
+          store.db.exec("ROLLBACK TO create_actor");
           store.db.exec("RELEASE create_actor");
-          return {
-            state: "refused" as const,
-            refusal: refusal("actor_name_taken", `An Actor named ${JSON.stringify(workspaceActorName(workspaceId, actorId))} already exists in this Workspace (${actorId}).`,
-              false, requiredAction("choose_actor_name", "Choose another name", "Create the Actor with a name no other Actor in this Workspace uses, or revise the existing Actor instead.")),
-          };
+          return { state: "refused" as const, refusal: created.refusal };
         }
-        const created = store.createActor({
-          workspace_id: workspaceId,
-          created_in_context_id: actorCreationContextId(store, context),
-          created_in_scope_execution_id: context.provenance.scope_execution_id,
-          created_by_principal_id: context.authority.principal_id,
-          definition: input.definition,
-          actor_id: actorId,
-        });
-        const { draft, tool_access } = passOnEngineToolAccess({
-          grants,
-          actors: store,
-          authority: context.authority,
-          draft: created.draft,
-          chosen_operation_ids: input.engine_tool_operation_ids,
-          invocation_id: context.invocation_id,
-        });
         store.db.exec("RELEASE create_actor");
         return {
           state: "completed" as const,
-          result: { actor: created.actor, draft, tool_access },
-          changed_refs: [
-            actorRef(created.actor),
-            definitionRef(draft),
-            ...tool_access.grant_ids.map((id) => ({ kind: "capability_grant", id, revision: null })),
-          ],
+          result: created,
+          changed_refs: createdActorRefs(created),
           audit_ref: auditRef(context),
         };
       } catch (error) {
         store.db.exec("ROLLBACK TO create_actor");
         store.db.exec("RELEASE create_actor");
-        if (error instanceof ToolAccessWideningError) {
-          return { state: "refused" as const, refusal: refusal("actor_tool_access_widened", error.message, false, null) };
-        }
         throw error;
       }
     }),
   };
+}
+
+/**
+ * Create one Actor, its first draft, and its engine tool access. Synchronous,
+ * so a caller can hold it inside a larger savepoint. On a refusal, grants may
+ * already have been delegated: the caller must roll its savepoint back.
+ */
+export function createActorWithToolAccess(
+  store: ActorDefinitionStore,
+  grants: SqliteCapabilityGrantStore,
+  context: OperationExecutionContext,
+  input: { actor_id?: string; definition: ActorDefinitionContent; engine_tool_operation_ids?: string[] },
+): { refusal: OperationRefusal } | { actor: ActorRecord; draft: ActorDefinitionRevision; tool_access: NewActorToolAccess } {
+  const workspaceId = authorityWorkspaceId(context);
+  const actorId = workspaceActorId(workspaceId, input.actor_id
+    ? workspaceActorName(workspaceId, input.actor_id) : `actor_${randomUUID()}`);
+  if (store.getActor(actorId)) {
+    return {
+      refusal: refusal("actor_name_taken", `An Actor named ${JSON.stringify(workspaceActorName(workspaceId, actorId))} already exists in this Workspace (${actorId}).`,
+        false, requiredAction("choose_actor_name", "Choose another name", "Create the Actor with a name no other Actor in this Workspace uses, or revise the existing Actor instead.")),
+    };
+  }
+  const created = store.createActor({
+    workspace_id: workspaceId,
+    created_in_context_id: actorCreationContextId(store, context),
+    created_in_scope_execution_id: context.provenance.scope_execution_id,
+    created_by_principal_id: context.authority.principal_id,
+    definition: input.definition,
+    actor_id: actorId,
+  });
+  try {
+    const { draft, tool_access } = passOnEngineToolAccess({
+      grants,
+      actors: store,
+      authority: context.authority,
+      draft: created.draft,
+      chosen_operation_ids: input.engine_tool_operation_ids,
+      invocation_id: context.invocation_id,
+    });
+    return { actor: created.actor, draft, tool_access };
+  } catch (error) {
+    if (error instanceof ToolAccessWideningError) {
+      return { refusal: refusal("actor_tool_access_widened", error.message, false, null) };
+    }
+    throw error;
+  }
+}
+
+function createdActorRefs(created: { actor: ActorRecord; draft: ActorDefinitionRevision; tool_access: NewActorToolAccess }) {
+  return [
+    actorRef(created.actor),
+    definitionRef(created.draft),
+    ...created.tool_access.grant_ids.map((id) => ({ kind: "capability_grant", id, revision: null })),
+  ];
 }
 
 function actorCreationContextId(
