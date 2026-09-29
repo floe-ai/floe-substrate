@@ -24,7 +24,8 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { copyFile, link } from "node:fs/promises";
 import type { Dirent } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 
 export const STAGE_MANIFEST = "stage.json";
@@ -224,22 +225,59 @@ export async function ensureStage(home: string, source: StageSource): Promise<St
     root,
     created_at: new Date().toISOString(),
   };
-  const partial = join(runtime, `.partial-${id}-${process.pid}`);
-  rmSync(partial, { recursive: true, force: true });
+  // Unique per call: concurrent starts, in one process or several, each build
+  // their own copy and never touch another's. The pid stays last for pruneStages.
+  const partial = join(runtime, `.partial-${id}-${randomBytes(4).toString("hex")}-${process.pid}`);
   mkdirSync(partial, { recursive: true });
   await buildTree(closure, root, join(partial, "tree"));
   // The manifest is written last: a stage without one is incomplete.
   writeFileSync(join(partial, STAGE_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-  try {
-    renameSync(partial, dir);
-  } catch (error) {
-    // Another start finished the same stage first; use it.
-    rmSync(partial, { recursive: true, force: true });
-    const raced = readJson(join(dir, STAGE_MANIFEST)) as StageManifest | null;
-    if (raced?.kind !== "floe-stage") throw error;
-    return makeStage(dir, raced);
+  const placed = await placeStage(partial, dir);
+  return makeStage(dir, placed ?? manifest);
+}
+
+/** How long a start keeps retrying a rename that Windows refuses because a file is briefly held. */
+const RENAME_PATIENCE_MS = 30_000;
+
+/**
+ * Move a finished copy into place. Returns the manifest of a stage another
+ * start placed first (this copy is then discarded), or null when this copy
+ * became the stage. Windows refuses a directory rename while any file in it is
+ * held (a scanner reading fresh files, another start linking the same ones), so
+ * a refusal is retried until the stage exists or the patience runs out.
+ */
+async function placeStage(partial: string, dir: string): Promise<StageManifest | null> {
+  const deadline = Date.now() + RENAME_PATIENCE_MS;
+  for (let wait = 25; ; wait = Math.min(wait * 2, 1_000)) {
+    try {
+      renameSync(partial, dir);
+      return null;
+    } catch (error: any) {
+      const placed = readJson(join(dir, STAGE_MANIFEST)) as StageManifest | null;
+      if (placed?.kind === "floe-stage") {
+        discard(partial);
+        return placed;
+      }
+      if (!["EPERM", "EACCES", "EBUSY", "ENOTEMPTY", "EEXIST"].includes(error?.code) || Date.now() >= deadline) {
+        discard(partial);
+        throw new Error(
+          `Floe could not finish preparing its runtime copy in ${dir}: another program kept its files in use ` +
+            `(${error?.code ?? "unknown"}). Close anything scanning or using that folder, then start Floe again.`,
+          { cause: error },
+        );
+      }
+      await sleep(wait);
+    }
   }
-  return makeStage(dir, manifest);
+}
+
+/** Remove an unused copy. Failure is harmless: pruneStages removes it on a later start. */
+function discard(partial: string): void {
+  try {
+    rmSync(partial, { recursive: true, force: true, maxRetries: 3 });
+  } catch {
+    // Still held; a later start removes it.
+  }
 }
 
 /**

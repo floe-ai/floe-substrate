@@ -26,6 +26,7 @@ import { canonicalHome } from "./identity/protocol.js";
 import { probeChannel } from "./local-channel/connection.js";
 import { ENGINES_CHANNEL } from "./engines/protocol.js";
 import { fetchHostControlToken, fetchBridgeServiceToken } from "./operation-client.js";
+import { withStartLock } from "./start-lock.js";
 
 export class ForeignBusError extends Error {
   readonly code = "E_FOREIGN_BUS" as const;
@@ -197,12 +198,17 @@ export function planSubstrateStart(reachable: boolean, startOnDemand: boolean): 
  * "connect". Otherwise consult the machine's start_on_demand policy — start the
  * substrate ("start") or refuse and report "blocked". This is the single
  * client-side readiness path shared by the launcher, `floe up`, and
- * `floe <surface>`.
+ * `floe <surface>`. It runs as one start (start-lock.ts): a client that
+ * arrives while another start is running waits for it, then connects.
  */
-export async function ensureSubstrateForClient(configPath: string, config: LocalConfig): Promise<SubstratePlan> {
+export function ensureSubstrateForClient(configPath: string, config: LocalConfig): Promise<SubstratePlan> {
+  return withStartLock(floeHome(configPath, config), () => ensureSubstrateHeld(configPath, config));
+}
+
+async function ensureSubstrateHeld(configPath: string, config: LocalConfig): Promise<SubstratePlan> {
   const reachable = await isHealthy(config.bus.http_base_url);
   const plan = planSubstrateStart(reachable, config.services.start_on_demand);
-  if (plan === "start") await startAll(configPath, config);
+  if (plan === "start") await startAllHeld(configPath, config);
   // The identity agent and the Bridge are services of their own: a bus that is
   // already serving does not mean they are. Both share the Floe home. Only a Bus
   // this home started gets a Bridge from here; a foreign Bus is left alone.
@@ -252,7 +258,15 @@ async function waitUntilAnswering(
   throw new Error(`${label} did not become ready within 15s. Last lines of ${record.log_file}:\n${readLogTail(record.log_file)}`);
 }
 
-export async function startAll(configPath: string, config: LocalConfig): Promise<void> {
+/**
+ * Start Floe for this home. Starts of the same home take turns (start-lock.ts),
+ * so a second start waits for the first and then finds its services running.
+ */
+export function startAll(configPath: string, config: LocalConfig): Promise<void> {
+  return withStartLock(floeHome(configPath, config), () => startAllHeld(configPath, config));
+}
+
+async function startAllHeld(configPath: string, config: LocalConfig): Promise<void> {
   const busUrl = config.bus.http_base_url;
   const before = await classifyRunningBus(configPath, config);
   if (before.state === "foreign") throw new ForeignBusError(busUrl, before.detail);

@@ -22,6 +22,12 @@ floe restart
 `floe start` starts the bus, bridge and identity agent. It does not launch a
 surface.
 
+Starts of the same Floe home take turns. If Floe is started twice at once (from
+the terminal and a surface, or by launching twice), the second start waits for
+the first, then uses the services it started. Neither start fails. A start
+that waits more than three minutes stops and says another start has not
+finished.
+
 `floe up` is the connect-first entry for clients that need the substrate but do
 not want to launch a surface. It reuses a reachable substrate. If the substrate
 is unavailable, it starts the local services only when
@@ -46,6 +52,9 @@ Windows a running process locks the folder it runs from, so this is what lets
 - A snapshot belongs to the copy that made it. Its `stage.json` records that
   copy, and a staged service reports that copy's version and whether it is a
   dependency. Staging adds no third kind of copy.
+- Starts that build the same snapshot at once share it: each builds its own
+  copy, and the first to finish becomes the snapshot. If Windows briefly holds
+  the files, Floe tries again for up to 30 seconds, then gives a plain message.
 - Each start removes snapshots that no running service uses. A snapshot still in
   use is kept until the next start after it stops. `floe reset` removes them all.
 - A source checkout runs in place and is never staged.
@@ -72,6 +81,7 @@ Start on demand and start at login are separate:
 
 - `floe-cli/src/cli.ts` - service and launcher commands
 - `floe-cli/src/startup.ts` - connect-first readiness and startup
+- `floe-cli/src/start-lock.ts` - one start at a time per Floe home
 - `floe-cli/src/process-manager.ts` - local process records, logs, and stopping
 - `floe-cli/src/staging.ts` - service snapshots under `<Floe home>/runtime/`
 - `floe-cli/src/service.ts` - operating-system auto-start
