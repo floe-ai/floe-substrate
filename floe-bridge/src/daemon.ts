@@ -335,6 +335,12 @@ export class BridgeDaemon {
       await this.adapter.cancelDelivery?.(deliveryId);
     }
     if (
+      (message.type === "approval_decided" || message.type === "approval_invalidated")
+      && typeof message.payload?.request?.approval_request_id === "string"
+    ) {
+      this.adapter.approvalChanged?.(message.payload.request.approval_request_id);
+    }
+    if (
       message.type === "workspace_registered" ||
       message.type === "workspace_selected" ||
       message.type === "workspace_attachment_requested" ||
@@ -870,6 +876,7 @@ export class BridgeDaemon {
       const instructions = endpointEntry?.instructions;
       let preparedAttemptId: string | null = null;
       let operationAuthoritySession: Awaited<ReturnType<BusClient["prepareRuntimeDelivery"]>>["operation_authority_session"] | undefined;
+      let engineToolOperationIds: string[] = [];
       let effectiveRuntime: AgentRuntimeConfig;
       const hasCanonicalRuntimePins = Boolean(
         delivery.processing_contract
@@ -902,6 +909,7 @@ export class BridgeDaemon {
         }
         delivery.processing_contract = contract;
         operationAuthoritySession = prepared.operation_authority_session;
+        engineToolOperationIds = prepared.engine_tool_operation_ids ?? [];
         if (contract.contract_kind === "scope_node") {
           preparedAttemptId = contract.execution_attempt.attempt_id;
           delivery.execution_attempt_id = preparedAttemptId;
@@ -961,6 +969,7 @@ export class BridgeDaemon {
         agent_id: endpointEntry?.agent_id,
         hooks: hookRegistry,
         operation_authority_session: operationAuthoritySession,
+        engine_tool_operation_ids: engineToolOperationIds,
       }, delivery, effectiveRuntime);
       if (this.cancelledDeliveries.delete(delivery.delivery_id)) {
         await this.reportTurnEndSafely(delivery.endpoint_id);

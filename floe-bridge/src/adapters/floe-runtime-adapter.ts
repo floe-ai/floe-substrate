@@ -10,8 +10,15 @@
  * substrate tools are direct SDK tools.
  */
 import { randomUUID } from "node:crypto";
-import { CopilotRuntime } from "floe-runtime/adapters/copilot";
-import type { ActivityEvent, HostTool, RunResult } from "floe-runtime/adapters/copilot";
+import { COPILOT_BUILTIN_TOOL_MANIFEST, CopilotRuntime } from "floe-runtime/adapters/copilot";
+import type {
+  ActivityEvent,
+  CopilotPermissionRequest,
+  CopilotRuntimeOptions,
+  HostTool,
+  PermissionPolicyDecision,
+  RunResult,
+} from "floe-runtime/adapters/copilot";
 import type { AgentRuntimeConfig } from "../auth.js";
 import type { DeliveryBundle, RuntimeOperationAuthoritySession } from "../bus-client.js";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
@@ -25,6 +32,18 @@ import { TurnFailedError } from "./turn-failed-error.js";
 import { turnUsage } from "./turn-usage.js";
 import { copilotEnvironment, createCopilotAccount } from "../engines/copilot.js";
 import type { EngineAccount } from "../engines/engine-control.js";
+import { EngineToolGate } from "./engine-tool-gate.js";
+
+type RuntimeFactory = (options: Pick<CopilotRuntimeOptions, "permissionPolicy">) => CopilotRuntime;
+
+/** The pinned manifest's built-ins that the Actor's granted operations may use. */
+export function grantedBuiltinTools(operationIds: readonly string[] = [], platform: NodeJS.Platform = process.platform): string[] {
+  const manifest = COPILOT_BUILTIN_TOOL_MANIFEST[platform] ?? {};
+  return Object.entries(manifest)
+    .filter(([, descriptor]) => operationIds.includes(descriptor.operationId))
+    .map(([name]) => `builtin:${name}`)
+    .sort();
+}
 
 type FloeTurn = {
   runtime_turn_id: string;
@@ -63,6 +82,8 @@ type FloeSession = {
   contextId: string;
   workspaceId: string;
   directTools: HostTool[];
+  /** The exact tool list the live SDK session was created with. */
+  offeredTools: string | null;
   model?: string;
   context?: RuntimeContext;
   activeTurn?: FloeTurn;
@@ -94,11 +115,30 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
   readonly engine = "copilot";
   // floe-runtime holds no credentials; the vendor CLI authenticates itself.
   private readonly sessions = new Map<string, FloeSession>();
-  private readonly runtimeFactory: () => CopilotRuntime;
-  constructor(options?: { runtimeFactory?: () => CopilotRuntime }) {
+  private readonly runtimeFactory: RuntimeFactory;
+  private readonly toolGate = new EngineToolGate();
+  constructor(options?: { runtimeFactory?: RuntimeFactory }) {
     // The SDK runtime inherits no credential variables from Floe's environment.
     this.runtimeFactory = options?.runtimeFactory
-      ?? (() => new CopilotRuntime({ clientOptions: { env: copilotEnvironment() } }));
+      ?? ((runtimeOptions) => new CopilotRuntime({ ...runtimeOptions, clientOptions: { env: copilotEnvironment() } }));
+  }
+
+  approvalChanged(approvalRequestId: string): void {
+    this.toolGate.approvalChanged(approvalRequestId);
+  }
+
+  private async decideToolCall(session: FloeSession, request: CopilotPermissionRequest): Promise<PermissionPolicyDecision> {
+    const turn = session.activeTurn;
+    const context = session.context;
+    if (!turn || turn.finalized || turn.cancelled || !context) {
+      return { decision: "cancel", refusal: { code: "tool_policy_cancelled", reason: "No Floe turn is running." } };
+    }
+    return this.toolGate.decide({
+      bus: context.bus,
+      deliveryId: turn.delivery_id,
+      workspaceLocator: context.workspace_locator ?? null,
+      request,
+    });
   }
 
   createEngineAccount(): EngineAccount {
@@ -202,8 +242,18 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       system_message_bytes: systemMessage.length,
     });
 
+    const availableTools = [
+      ...session.directTools.map(tool => tool.name),
+      ...grantedBuiltinTools(context.engine_tool_operation_ids),
+    ];
     try {
       await this.throwIfCancelled(session, turn);
+      // An SDK session keeps the tool list it was created with; a changed grant
+      // set resumes it under the new list instead of reporting catalog drift.
+      const offeredTools = JSON.stringify(availableTools);
+      if (session.sessionId && session.offeredTools !== null && session.offeredTools !== offeredTools) {
+        await session.runtime.retire(session.sessionId);
+      }
       if (session.sessionId && model && session.model !== model) {
         await session.runtime.setModel(session.sessionId, model);
       }
@@ -218,21 +268,20 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
         },
         {
           ...(model ? { model } : {}),
-          ...(session.directTools.length ? {
-            tools: session.directTools,
-            availableTools: session.directTools.map(tool => tool.name),
-          } : {}),
+          ...(session.directTools.length ? { tools: session.directTools } : {}),
+          availableTools,
           ...(systemMessage ? { systemMessage: { mode: "append" as const, content: systemMessage } } : {}),
         },
         session.sessionId ? { sessionId: session.sessionId, scope: session.contextId } : { scope: session.contextId },
       );
 
+      session.offeredTools = offeredTools;
       await this.throwIfCancelled(session, turn);
       turn.visible_output = typeof result.text === "string" ? result.text : "";
       if (model) session.model = model;
       await this.appendTelemetry(context, turn, "sdk_tool_evidence", {
         sdk_session_id: result.sessionId,
-        offered_tool_names: session.directTools.map(tool => tool.name),
+        offered_tool_names: availableTools,
         registration_acknowledgement: {
           exposed: false,
           reason: "copilot_sdk_does_not_expose_tool_registration_acknowledgement",
@@ -306,6 +355,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       }
 
       turn.finalized = true;
+      this.toolGate.abandonDelivery(turn.delivery_id);
       if (session.activeTurn === turn) session.activeTurn = undefined;
       this.writeWorkLog(context, bundle, turn, "error");
 
@@ -328,6 +378,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       const turn = session.activeTurn;
       if (!turn || turn.delivery_id !== deliveryId || turn.finalized) continue;
       turn.cancelled = true;
+      this.toolGate.abandonDelivery(deliveryId);
       this.beginCancellation(session, turn);
       return true;
     }
@@ -358,16 +409,19 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       return existing;
     }
 
-    const runtime = this.runtimeFactory();
-    const session: FloeSession = {
-      runtime,
+    const session = {
       sessionId: null,
       endpointId: bundle.endpoint_id,
       contextId,
       workspaceId: bundle.workspace_id,
       directTools: [],
+      offeredTools: null,
       context,
-    };
+    } as Omit<FloeSession, "runtime"> as FloeSession;
+    const runtime = this.runtimeFactory({
+      permissionPolicy: (request) => this.decideToolCall(session, request),
+    });
+    session.runtime = runtime;
     const toolHandle: SubstrateSessionHandle = {
         getBus: () => session.context?.bus ?? context.bus,
         getAnchor: () => (session.activeTurn && !session.activeTurn.finalized && !session.activeTurn.cancelled ? this.turnAnchor(session.activeTurn) : null),

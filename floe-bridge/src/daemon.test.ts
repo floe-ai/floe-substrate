@@ -167,6 +167,23 @@ describe("BridgeDaemon shutdown", () => {
     }
   });
 
+  it("hands pushed approval answers and invalidations to the runtime", async () => {
+    const made = makeConfig("fake");
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      const approvalChanged = vi.fn();
+      (daemon as any).adapter = { name: "test-adapter", handleBundle: vi.fn(), approvalChanged };
+
+      await (daemon as any).handleEventStreamMessage({ type: "approval_decided", payload: { request: { approval_request_id: "req-1" } } });
+      await (daemon as any).handleEventStreamMessage({ type: "approval_invalidated", payload: { request: { approval_request_id: "req-2" } } });
+      await (daemon as any).handleEventStreamMessage({ type: "approval_requested", payload: { request: { approval_request_id: "req-3" } } });
+
+      expect(approvalChanged.mock.calls).toEqual([["req-1"], ["req-2"]]);
+    } finally {
+      made.cleanup();
+    }
+  });
+
   it("does not start a pushed delivery when cancellation overtakes execution", async () => {
     const made = makeConfig("fake");
     try {

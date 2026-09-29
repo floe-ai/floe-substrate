@@ -16,7 +16,7 @@ import { decodeEventCursor } from "./event-cursor.js";
 import { runtimeCredentialAccessOperations } from "./credential-runtime-access-operations.js";
 import { capabilityGrantOperations } from "./capability-grant-operations.js";
 import { resolveActorApprovalPolicy } from "./actor-approval-policy.js";
-import { decideToolAuthority, type ToolAuthorityDecision } from "./tool-policy.js";
+import { decideToolAuthority, isEngineToolOperation, type ToolAuthorityDecision } from "./tool-policy.js";
 import type { ToolCallPolicyFacts } from "./tool-policy-facts.js";
 import {
   TOOL_APPROVAL_TARGET_KIND,
@@ -6206,6 +6206,8 @@ export class BusStore {
       bearer_token: string;
       expires_at: string;
     }>;
+    /** Engine tool operations the Actor's live grants cover; the Bridge offers only these. */
+    engine_tool_operation_ids: string[];
   } {
     let prepared!: {
       delivery: DeliveryBundle;
@@ -6215,6 +6217,7 @@ export class BusStore {
         bearer_token: string;
         expires_at: string;
       }>;
+      engine_tool_operation_ids: string[];
     };
     let claimedFromPush = false;
     this.transaction(() => {
@@ -6357,6 +6360,11 @@ export class BusStore {
           bearer_token: issued.bearer_token,
           expires_at: issued.session.expires_at,
         },
+        engine_tool_operation_ids: [...new Set(this.capabilityGrantStore.inspectSessionGrantIds({
+          principal_id: issued.session.principal_id,
+          boundary: issued.session.boundary,
+          grant_ids: issued.session.grant_ids,
+        }).active_grants.flatMap((grant) => grant.operation_ids).filter(isEngineToolOperation))].sort(),
       };
     });
     if (claimedFromPush) {
