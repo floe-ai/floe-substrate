@@ -8,7 +8,7 @@ const text = { type: "string", minLength: 1 } as const;
 const targets = { type: "array", items: { type: "object", additionalProperties: false,
   required: ["kind", "id"], properties: { kind: text, id: { oneOf: [text, { type: "null" }] } } } };
 const grantSchema = { type: "object", additionalProperties: false,
-  required: ["grant_id", "principal_id", "boundary", "operation_ids", "targets", "issued_at", "expires_at", "revoked_at", "issuer_id", "evidence"],
+  required: ["grant_id", "principal_id", "boundary", "operation_ids", "targets", "issued_at", "expires_at", "revoked_at", "issuer_id", "evidence", "delegation_only"],
   properties: { grant_id: text, principal_id: text,
     boundary: { type: "object", additionalProperties: false, required: ["kind", "workspace_id"],
       properties: { kind: { const: "workspace" }, workspace_id: text } },
@@ -16,6 +16,7 @@ const grantSchema = { type: "object", additionalProperties: false,
     issued_at: text, expires_at: text, revoked_at: { oneOf: [text, { type: "null" }] }, issuer_id: text,
     evidence: { type: "array", items: { type: "object", additionalProperties: false, required: ["kind", "ref"],
       properties: { kind: text, ref: text } } },
+    delegation_only: { type: "boolean" },
   } };
 const resultSchema = (properties: Record<string, unknown>) => ({ version: "1", schema: {
   type: "object", additionalProperties: false, required: Object.keys(properties), properties,
@@ -42,6 +43,7 @@ export function capabilityGrantOperations(deps: Dependencies): SemanticOperation
         operation_ids: { type: "array", minItems: 1, uniqueItems: true, items: text },
         targets: { ...targets, description: "Omit to preserve the source targets. Supplied targets may only narrow them." },
         expires_at: { ...text, description: "Optional earlier expiry. Otherwise uses the earlier source or delegation-permission expiry." },
+        delegation_only: { type: "boolean", description: "When true, the recipient may only delegate this access onward and can never exercise it itself." },
       } } },
     handler: (context, input) => {
       const workspaceId = requireWorkspaceAuthorityId(context.authority);
@@ -73,10 +75,11 @@ export function capabilityGrantOperations(deps: Dependencies): SemanticOperation
   return [{
     ...common, operation_id: "capability.grant.list", required_grants: ["capability.grant.list"],
     title: "Inspect your permitted access",
-    description: "List the current grants pinned by your authenticated session, including their operation and target limits. Delegation creates a new grant for another Actor; these IDs cannot be reused as that Actor's authority.",
+    description: "List the current grants pinned by your authenticated session, including their operation and target limits. active_grants authorize your own actions; delegable_grants can only be delegated onward. Delegation creates a new grant for another Actor; these IDs cannot be reused as that Actor's authority.",
     effects: { mode: "read", reversibility: "none", external: false, secret_access: "reference" },
     target: { resource_kinds: [], expected_revision: "not_applicable" },
     result: resultSchema({ active_grants: { type: "array", items: grantSchema },
+      delegable_grants: { type: "array", items: grantSchema },
       unavailable_grants: { type: "array", items: { type: "object", additionalProperties: false,
         required: ["grant_id", "code"], properties: { grant_id: text, code: text } } } }),
     input: { version: "1", schema: { type: "object", additionalProperties: false } },

@@ -293,6 +293,48 @@ export type PreparedRuntimeDelivery = {
   };
   processing_contract: RuntimeDispatchContract;
   operation_authority_session: RuntimeOperationAuthoritySession;
+  /** Engine tool operations the Actor's live grants cover; offer only these. */
+  engine_tool_operation_ids?: string[];
+};
+
+/** Facts about one attempted engine built-in call, already normalized by the Bridge. */
+export type RuntimeToolCallRequest = {
+  operation_id: string;
+  tool_call_id: string | null;
+  engine: string;
+  manifest_version: string;
+  native_tools: string[];
+  /** Canonical workspace-relative paths; null when unresolved or outside the Workspace. */
+  paths: (string | null)[];
+  /** One entry per shell segment; null when the engine could not classify it. */
+  executables: (string | null)[];
+  urls: string[];
+  write_redirection: boolean;
+  sandbox_bypass: boolean;
+  argument_digest: string;
+};
+
+export type RuntimeToolRefusal = {
+  code: "tool_policy_denied";
+  tool_call_id: string | null;
+  operation_id: string;
+  rule_id: string;
+  reason: string;
+};
+
+export type RuntimeToolDecision = {
+  evaluation_id: string;
+  decision: "allow" | "deny" | "require_approval";
+  refusal: RuntimeToolRefusal | null;
+  approval_request_ids: string[];
+  approval_expires_at: string | null;
+};
+
+export type RuntimeToolResolution = {
+  evaluation_id: string;
+  outcome: "pending" | "allowed" | "denied" | "cancelled" | "unavailable";
+  refusal: RuntimeToolRefusal | null;
+  approval_request_ids: string[];
 };
 
 export type SemanticOperationDescriptor = {
@@ -744,6 +786,24 @@ export class BusClient {
       `/v1/delivery/${encodeURIComponent(deliveryId)}/runtime-prepare`,
       {},
     ) as Promise<PreparedRuntimeDelivery>;
+  }
+
+  async evaluateRuntimeToolCall(deliveryId: string, request: RuntimeToolCallRequest): Promise<RuntimeToolDecision> {
+    return this.post(
+      `/v1/delivery/${encodeURIComponent(deliveryId)}/tool-policy/evaluate`,
+      request,
+    ) as Promise<RuntimeToolDecision>;
+  }
+
+  async resolveRuntimeToolApproval(
+    deliveryId: string,
+    evaluationId: string,
+    abandon: "cancelled" | "unavailable" | null,
+  ): Promise<RuntimeToolResolution> {
+    return this.post(
+      `/v1/delivery/${encodeURIComponent(deliveryId)}/tool-policy/${encodeURIComponent(evaluationId)}/resolve`,
+      { abandon },
+    ) as Promise<RuntimeToolResolution>;
   }
 
   async readRuntimeCredential(deliveryId: string, secretRefId: string): Promise<Uint8Array> {

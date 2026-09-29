@@ -3,6 +3,7 @@ import type { WorkspaceConfigurationPolicyProvider } from "./workspace-config-im
 import { CAPABILITY_GRANT_OPERATION_IDS } from "./capability-grant-operations.js";
 import type { CapabilityGrantTarget } from "./capability-grants.js";
 import type { BusStore } from "./store.js";
+import { ENGINE_TOOL_OPERATIONS } from "./tool-policy.js";
 
 /** Local product defaults, explicitly installed by the CLI/desktop entry points. */
 export const LOCAL_FLOE_ACTOR_OPERATIONS_V1 = Object.freeze([
@@ -27,6 +28,8 @@ export const LOCAL_FLOE_ACTOR_OPERATIONS_V1 = Object.freeze([
   "scope.execution.inspect", "scope.execution.pause", "scope.execution.redo", "scope.execution.resume",
   "scope.execution.start", "scope.execution.stop", "scope.node-execution.retry", "scope.node-output.publish",
   "scope.plan.inspect", "workspace.inspect",
+  // Engine built-ins are unrestricted by default; a person may choose limits.
+  ...Object.values(ENGINE_TOOL_OPERATIONS),
 ]);
 
 export const localProductWorkspacePolicy: WorkspaceConfigurationPolicyProvider = input => {

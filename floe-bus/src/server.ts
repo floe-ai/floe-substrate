@@ -377,6 +377,39 @@ export async function createBusServer(
         socketAuthorities.delete(socket);
       }
     }
+    // A Workspace newly bound to a host whose Bridge is already connected learns
+    // of that Bridge now, not at its next reconnect.
+    if (type === "workspace_attachment_requested" && typeof payload.workspace_id === "string") {
+      for (const bridgeId of connectedBridgeIds(payload.workspace_id)) {
+        broadcast("bridge_connected", { bridge_id: bridgeId, workspace_id: payload.workspace_id });
+      }
+    }
+  }
+
+  /** Bridges connected now: those serving one Workspace, or all of them when workspaceId is null. */
+  function connectedBridgeIds(workspaceId: string | null): string[] {
+    const ids: string[] = [];
+    for (const [socket, authority] of socketAuthorities) {
+      if (authority.audience !== "bridge_service" || bridgeSockets.get(authority.bridge_id) !== socket) continue;
+      if (workspaceId === null || bridgeMayUseWorkspace(store, authority, workspaceId)) ids.push(authority.bridge_id);
+    }
+    return ids.sort();
+  }
+
+  /**
+   * Bridge presence reaches every connection of each Workspace the Bridge's host
+   * serves, so a remote surface learns the Bridge came up or went down by push.
+   * A Bridge that serves no Workspace yet announces itself host-wide only.
+   */
+  function broadcastBridgePresence(
+    type: "bridge_connected" | "bridge_disconnected",
+    authority: Readonly<{ bridge_id: string; host_id: string }>,
+  ): void {
+    const workspaceIds = store.workspaceIdentityStore.listLocalProjections(authority.host_id)
+      .filter((workspace) => workspace.binding !== null)
+      .map((workspace) => String(workspace.workspace_id));
+    if (workspaceIds.length === 0) broadcast(type, { bridge_id: authority.bridge_id });
+    for (const workspaceId of workspaceIds) broadcast(type, { bridge_id: authority.bridge_id, workspace_id: workspaceId });
   }
 
   function requireLocalControl(request: object, reply: any): HostControlAuthority | null {
@@ -1105,9 +1138,13 @@ export async function createBusServer(
         if (replay.length === 0) break;
         replaySequence = replay.at(-1)?.sequence ?? replaySequence;
       }
+      // caught_up is where replay ends and live pushes begin, so current state
+      // belongs here: no replayed history can arrive after it and contradict it.
+      const presence = authority.audience === "bridge_service" ? {}
+        : { connected_bridge_ids: connectedBridgeIds(authority.audience === "workspace_operation" ? authority.workspace_id : null) };
       client.send(JSON.stringify({
         type: "caught_up",
-        payload: { cursor: pushStream.cursorForSequence(highWater) },
+        payload: { cursor: pushStream.cursorForSequence(highWater), ...presence },
         at: new Date().toISOString(),
       }));
       socketAuthorities.set(client, authority);
@@ -1118,7 +1155,7 @@ export async function createBusServer(
         if (previous && previous !== client) previous.close(4409, "Bridge connection replaced");
         bridgeSockets.set(authority.bridge_id, client);
         store.reportBridgeLiveness(authority.bridge_id);
-        broadcast("bridge_connected", { bridge_id: authority.bridge_id });
+        broadcastBridgePresence("bridge_connected", authority);
       }
     });
 
@@ -1128,7 +1165,7 @@ export async function createBusServer(
       clearTimeout(sessionExpiryTimeout);
       if (connectedBridgeId !== null && bridgeSockets.get(connectedBridgeId) === client) {
         bridgeSockets.delete(connectedBridgeId);
-        broadcast("bridge_disconnected", { bridge_id: connectedBridgeId });
+        if (socketAuthority?.audience === "bridge_service") broadcastBridgePresence("bridge_disconnected", socketAuthority);
       }
     };
     client.on("close", removeSocket);
@@ -2897,6 +2934,75 @@ export async function createBusServer(
     }
   });
 
+  app.post("/v1/delivery/:delivery_id/tool-policy/evaluate", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
+    const params = z.object({ delivery_id: z.string().min(1) }).parse(request.params);
+    if (
+      !testBypassedRequests.has(request)
+      && !bridgeOwnsDelivery(store, bridgeAuthority.bridge_id, params.delivery_id)
+    ) {
+      return sendTransportForbidden(reply);
+    }
+    const body = z.object({
+      operation_id: z.string().min(1),
+      tool_call_id: z.string().min(1).nullable(),
+      engine: z.string().min(1),
+      manifest_version: z.string().min(1),
+      native_tools: z.array(z.string().min(1)),
+      paths: z.array(z.string().min(1).nullable()),
+      executables: z.array(z.string().min(1).nullable()),
+      urls: z.array(z.string()),
+      write_redirection: z.boolean(),
+      sandbox_bypass: z.boolean(),
+      argument_digest: z.string().regex(/^[a-f0-9]{64}$/),
+    }).strict().safeParse(request.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: "tool_call_facts_invalid", message: body.error.message });
+    }
+    try {
+      return store.evaluateRuntimeToolCall({
+        bridge_id: bridgeAuthority.bridge_id,
+        delivery_id: params.delivery_id,
+        request: body.data,
+      }, broadcast);
+    } catch (error) {
+      return reply.code(409).send({
+        error: "tool_policy_unavailable",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.post("/v1/delivery/:delivery_id/tool-policy/:evaluation_id/resolve", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
+    const params = z.object({ delivery_id: z.string().min(1), evaluation_id: z.string().min(1) }).parse(request.params);
+    if (
+      !testBypassedRequests.has(request)
+      && !bridgeOwnsDelivery(store, bridgeAuthority.bridge_id, params.delivery_id)
+    ) {
+      return sendTransportForbidden(reply);
+    }
+    const body = z.object({ abandon: z.enum(["cancelled", "unavailable"]).nullable() }).strict().safeParse(request.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: "tool_approval_resolution_invalid", message: body.error.message });
+    }
+    try {
+      return store.resolveRuntimeToolApproval({
+        bridge_id: bridgeAuthority.bridge_id,
+        delivery_id: params.delivery_id,
+        evaluation_id: params.evaluation_id,
+        abandon: body.data.abandon,
+      }, broadcast);
+    } catch (error) {
+      return reply.code(409).send({
+        error: "tool_policy_unavailable",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
   app.get("/v1/delivery/:delivery_id/runtime-credentials/:secret_ref_id", async (request, reply) => {
     const bridgeAuthority = requireBridgeService(request, reply);
     if (!bridgeAuthority) return reply;
@@ -4454,6 +4560,8 @@ export function resolveTransportRequirement(request: any, store: BusStore): Tran
     || route === "/v1/bridges/:bridge_id/liveness"
     || route === "/v1/delivery/:delivery_id/status"
     || route === "/v1/delivery/:delivery_id/runtime-prepare"
+    || route === "/v1/delivery/:delivery_id/tool-policy/evaluate"
+    || route === "/v1/delivery/:delivery_id/tool-policy/:evaluation_id/resolve"
     || route === "/v1/delivery/:delivery_id/runtime-credentials/:secret_ref_id"
     || (route === "/v1/runtime/telemetry" && method === "POST")
     || (route === "/v1/endpoints/:endpoint_id/status" && method === "POST")
@@ -4741,7 +4849,7 @@ function resolveBroadcastWorkspaceId(
   add(payload.workspace_id);
   for (const key of [
     "workspace", "scope", "revision", "execution", "node_execution",
-    "event", "delivery", "telemetry", "pulse", "context", "endpoint", "binding",
+    "event", "delivery", "telemetry", "pulse", "context", "endpoint", "binding", "request",
   ]) {
     add(asRecord(payload[key]).workspace_id);
   }

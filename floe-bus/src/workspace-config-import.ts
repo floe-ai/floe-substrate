@@ -4,9 +4,11 @@ import type { DatabaseSync } from "node:sqlite";
 import {
   ActorDefinitionStore,
   actorDefinitionDigest,
+  canonicalActorScopePath,
   validateActorDefinition,
   type ActorDefinitionContent,
   type ActorDefinitionRevision,
+  type ActorScope,
 } from "./actor-definitions.js";
 import {
   RuntimeProfileStore,
@@ -25,6 +27,7 @@ import {
 } from "./credential-broker.js";
 import type { SemanticOperationRegistry } from "./operations.js";
 import type { WorkspaceCreationKind } from "./workspace-identities.js";
+import { isEngineToolOperation } from "./tool-policy.js";
 import {
   REFRESH_CREDENTIAL_OPERATION_ID,
   USE_CREDENTIAL_OPERATION_ID,
@@ -379,7 +382,7 @@ export class WorkspaceConfigurationImportStore {
     }));
     const unknownOperationIds = policy.actor_operation_authority
       .flatMap((entry) => entry.operation_ids)
-      .filter((operationId) => !currentOperationIds.has(operationId));
+      .filter((operationId) => !currentOperationIds.has(operationId) && !isEngineToolOperation(operationId));
     if (unknownOperationIds.length > 0) {
       throw new WorkspaceConfigurationPolicyError(
         `import policy names unregistered Workspace operation '${unknownOperationIds[0]}'`,
@@ -1077,7 +1080,7 @@ function normalizeActor(value: unknown, index: number): WorkspaceConfigurationAc
     throw new WorkspaceConfigurationInventoryValidationError(`${path}.source.kind is invalid`);
   }
   const definition = exactObject(actor.definition, [
-    "label", "charter", "responsibilities", "instructions", "knowledge_refs", "policy_refs", "escalation_rules",
+    "label", "charter", "responsibilities", "instructions", "knowledge_refs", "policy_refs", "escalation_rules", "scope",
   ], `${path}.definition`);
   const runtime = exactObject(actor.runtime, [
     "label", "backing_kind", "adapter_id", "configuration", "required_capability_ids",
@@ -1142,6 +1145,7 @@ function normalizeActor(value: unknown, index: number): WorkspaceConfigurationAc
           ...(rule.target_actor_id == null ? {} : { target_actor_id: requiredText(rule.target_actor_id, "target_actor_id") }),
         };
       }),
+      ...(definition.scope == null ? {} : { scope: normalizeActorScope(definition.scope, `${path}.definition.scope`) }),
     },
     runtime: {
       label: requiredText(runtime.label, `${path}.runtime.label`),
@@ -1247,6 +1251,21 @@ function unique(values: readonly string[], label: string): void {
     }
     seen.add(value);
   }
+}
+
+function normalizeActorScope(value: unknown, label: string): ActorScope {
+  const scope = exactObject(value, ["paths"], label);
+  if (!Array.isArray(scope.paths) || scope.paths.length === 0) {
+    throw new WorkspaceConfigurationInventoryValidationError(`${label}.paths must list at least one folder`);
+  }
+  const paths = scope.paths.map((path, index) => {
+    const canonical = typeof path === "string" ? canonicalActorScopePath(path) : null;
+    if (!canonical) {
+      throw new WorkspaceConfigurationInventoryValidationError(`${label}.paths[${index}] must stay within the Workspace`);
+    }
+    return canonical;
+  });
+  return { paths: [...new Set(paths)].sort((left, right) => left.localeCompare(right)) };
 }
 
 function safeRelativePath(value: unknown, label: string): string {

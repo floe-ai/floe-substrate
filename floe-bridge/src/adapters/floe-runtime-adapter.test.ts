@@ -56,6 +56,20 @@ describe("FloeRuntimeAdapter SDK route", () => {
       async setModel() {
         throw new Error("initial model must not be changed after session creation");
       },
+      rpc: {
+        permissions: {
+          async configure() {},
+          async setApproveAll() {},
+          async setMode() { return { success: true, mode: "manual" }; },
+          async resetSessionApprovals() {},
+        },
+        tools: {
+          async initializeAndValidate() {},
+          async getCurrentMetadata() {
+            return { tools: (createdConfig?.availableTools as string[] ?? []).map(name => ({ name: name.replace(/^(custom|builtin):/, "") })) };
+          },
+        },
+      },
     };
     const client = {
       async start() {},
@@ -73,19 +87,19 @@ describe("FloeRuntimeAdapter SDK route", () => {
     expect(createdConfig).toMatchObject({
       model: "creation-model",
       availableTools: [
-        "emit",
-        "request",
-        "discover_capabilities",
-        "use_capability",
-        "create_pulse",
-        "list_pulses",
-        "pause_pulse",
-        "resume_pulse",
-        "cancel_pulse",
-        "read_artefact",
+        "custom:emit",
+        "custom:request",
+        "custom:discover_capabilities",
+        "custom:use_capability",
+        "custom:create_pulse",
+        "custom:list_pulses",
+        "custom:pause_pulse",
+        "custom:resume_pulse",
+        "custom:cancel_pulse",
+        "custom:read_artefact",
       ],
     });
-    expect((createdConfig!.tools as any[]).map(tool => tool.name)).toEqual(createdConfig!.availableTools);
+    expect((createdConfig!.tools as any[]).map(tool => `custom:${tool.name}`)).toEqual(createdConfig!.availableTools);
     expect((createdConfig!.tools as any[]).find(tool => tool.name === "emit")).toMatchObject({
       skipPermission: true,
       parameters: expect.objectContaining({ type: "object", additionalProperties: false }),

@@ -109,10 +109,6 @@ skills:
 mcp: []
 pulse:
   inherit: true
-scope:
-  paths:
-    - ./
-  services: []
 ---
 ${DEFAULT_FLOE_AGENT_BODY}
 `, "utf8");

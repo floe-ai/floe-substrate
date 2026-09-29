@@ -291,7 +291,9 @@ describe("Delivery symmetry", () => {
     expect(signal, "expected a runtime_unconfigured telemetry signal").toBeTruthy();
     expect(signal.endpoint_id).toBe(PROCESSOR_EP);
     const payload = typeof signal.payload_json === "string" ? JSON.parse(signal.payload_json) : signal.payload;
-    expect(String(payload.message)).toMatch(/auth profile/i);
+    expect(String(payload.message)).toMatch(/cannot run yet/i);
+    expect(String(payload.message)).toMatch(/\.floe\/agents/);
+    expect(String(payload.message)).not.toMatch(/Settings|auth profile/i);
   });
 
   it("makes queued work deliverable at normal turn end for an active delivery processor", async () => {

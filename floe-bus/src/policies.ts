@@ -9,6 +9,7 @@ import type {
   OperationResourceRef,
 } from "./operations.js";
 import type { ActorRoleAuthorityEvidence } from "./actor-role-authority.js";
+import { normalizeToolCallPolicyFacts, type ToolCallPolicyFacts } from "./tool-policy-facts.js";
 
 export type PolicyCategory =
   | "operation"
@@ -164,6 +165,22 @@ export type PolicyEvaluationFacts = Readonly<{
   extension_package_version_id: string | null;
   data_classes: readonly string[];
   worker_trust_level: string | null;
+  /** Normalized evidence for one engine built-in tool call; absent for ordinary operations. */
+  tool?: ToolCallPolicyFacts;
+}>;
+
+export type PolicyEvaluationOptions = Readonly<{
+  /**
+   * Published revisions referenced directly by the acting definition (for
+   * example an Actor's pinned Approval Policy). They are evaluated alongside
+   * bindings and recorded with a null binding id.
+   */
+  direct_revision_ids?: readonly string[];
+  /**
+   * Refusal from the authority layer (grants, scope, engine evidence). Policy
+   * can only restrict authority, so a present reason always yields deny.
+   */
+  authority_denial_reason?: string;
 }>;
 
 export type PolicyEvaluationRecord = Readonly<{
@@ -180,7 +197,8 @@ export type PolicyEvaluationRecord = Readonly<{
   evaluated_policy_revision_ids: readonly string[];
   matched_rules: readonly Readonly<{
     policy_revision_id: string;
-    policy_binding_id: string;
+    /** Null when the revision was referenced directly rather than bound. */
+    policy_binding_id: string | null;
     rule_id: string;
     effect: PolicyRuleEffect;
   }>[];
@@ -676,27 +694,48 @@ export class PolicyStore {
     return this.requirePolicy(policy.policy_id);
   }
 
-  evaluate(factsInput: PolicyEvaluationFacts): PolicyEvaluationRecord {
+  evaluate(factsInput: PolicyEvaluationFacts, options: PolicyEvaluationOptions = {}): PolicyEvaluationRecord {
     const facts = normalizeFacts(factsInput);
     const bindings = this.listApplicableBindings(facts);
-    const evaluatedRevisionIds = [...new Set(bindings.map((binding) => binding.policy_revision_id))].sort();
+    const direct = [...new Set(options.direct_revision_ids ?? [])].sort().map((revisionId) => {
+      const revision = this.requireRevision(revisionId);
+      if (
+        revision.workspace_id !== facts.workspace_id
+        || revision.published_at === null
+        || revision.withdrawn_at !== null
+        || this.requirePolicy(revision.policy_id).status !== "active"
+      ) {
+        throw new PolicyValidationError(`directly referenced revision '${revisionId}' is not a live published revision in this Workspace`);
+      }
+      return revision;
+    });
+    const evaluatedRevisionIds = [...new Set([
+      ...bindings.map((binding) => binding.policy_revision_id),
+      ...direct.map((revision) => revision.policy_revision_id),
+    ])].sort();
+    const sources: Array<{ revision: PolicyRevisionRecord; binding_id: string | null }> = [
+      ...bindings.map((binding) => ({ revision: this.requireRevision(binding.policy_revision_id), binding_id: binding.policy_binding_id })),
+      ...direct.map((revision) => ({ revision, binding_id: null })),
+    ];
     const matched: Array<PolicyEvaluationRecord["matched_rules"][number]> = [];
-    for (const binding of bindings) {
-      const revision = this.requireRevision(binding.policy_revision_id);
+    for (const { revision, binding_id } of sources) {
       for (const rule of [...revision.content.rules].sort(compareRules)) {
         if (!matchesRule(rule.match, facts)) continue;
         matched.push({
           policy_revision_id: revision.policy_revision_id,
-          policy_binding_id: binding.policy_binding_id,
+          policy_binding_id: binding_id,
           rule_id: rule.rule_id,
           effect: rule.effect,
         });
       }
     }
 
-    const denials = matched
-      .filter((item) => item.effect.kind === "deny")
-      .map((item) => (item.effect as Extract<PolicyRuleEffect, { kind: "deny" }>).reason);
+    const denials = [
+      ...(options.authority_denial_reason ? [options.authority_denial_reason] : []),
+      ...matched
+        .filter((item) => item.effect.kind === "deny")
+        .map((item) => (item.effect as Extract<PolicyRuleEffect, { kind: "deny" }>).reason),
+    ];
     const approvals = matched
       .filter((item) => item.effect.kind === "require_approval")
       .map((item) => {
@@ -710,11 +749,16 @@ export class PolicyStore {
       });
     const limits = strictestLimits(matched.flatMap((item) => {
       if (item.effect.kind !== "limit") return [];
+      if (item.policy_binding_id === null) {
+        throw new PolicyValidationError(
+          `directly referenced revision '${item.policy_revision_id}' has limit rule '${item.rule_id}'; budget limits must be bound`,
+        );
+      }
       const binding = bindings.find((candidate) => candidate.policy_binding_id === item.policy_binding_id);
       if (!binding) throw new PolicyValidationError(`binding '${item.policy_binding_id}' disappeared during evaluation`);
       return item.effect.limits.map((limit) => ({
         policy_revision_id: item.policy_revision_id,
-        policy_binding_id: item.policy_binding_id,
+        policy_binding_id: binding.policy_binding_id,
         rule_id: item.rule_id,
         subject: binding.subject,
         ...limit,
@@ -1083,6 +1127,7 @@ function normalizeFacts(facts: PolicyEvaluationFacts): PolicyEvaluationFacts {
     extension_package_version_id: nullableText(facts.extension_package_version_id),
     data_classes: uniqueText(facts.data_classes),
     worker_trust_level: nullableText(facts.worker_trust_level),
+    ...(facts.tool ? { tool: normalizeToolCallPolicyFacts(facts.tool) } : {}),
   };
   if (Boolean(normalized.node_placement_id) && !normalized.scope_composition_revision_id) {
     throw new PolicyValidationError(

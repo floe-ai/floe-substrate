@@ -88,6 +88,7 @@ describe("CapabilityGrant persistence and authority", () => {
         { kind: "approval", ref: "approval:acme-access" },
         { kind: "policy", ref: "policy:workspace-owner" },
       ],
+      delegation_only: false,
     });
     expect(grant.grant_id).not.toContain(grant.principal_id);
     expect(grant.grant_id).not.toContain("workspace:acme");

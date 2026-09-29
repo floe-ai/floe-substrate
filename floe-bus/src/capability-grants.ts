@@ -34,7 +34,19 @@ export type CapabilityGrantRecord = Readonly<{
   revoked_at: string | null;
   issuer_id: string;
   evidence: readonly CapabilityGrantEvidence[];
+  /**
+   * A delegation-only grant never authorizes its holder's own operation or
+   * tool call. It is usable only as the source of `capability.grant.delegate`.
+   */
+  delegation_only: boolean;
 }>;
+
+/** Target kind whose ids are canonical workspace-relative folders; containment narrows. */
+export const FILESYSTEM_PATH_TARGET_KIND = "filesystem_path";
+/** Target kind whose ids are lowercase executable names (for example `git`). */
+export const EXECUTABLE_TARGET_KIND = "executable";
+/** Target kind whose ids are host names; a domain contains its subdomains. */
+export const NETWORK_DOMAIN_TARGET_KIND = "network_domain";
 
 export type IssueCapabilityGrant = Readonly<{
   /** Used by trusted deterministic policy issuers. Omit for ordinary grants. */
@@ -46,6 +58,7 @@ export type IssueCapabilityGrant = Readonly<{
   expires_at: string;
   issuer_id: string;
   evidence: readonly CapabilityGrantEvidence[];
+  delegation_only?: boolean;
 }>;
 
 export type CapabilityGrantSessionBinding = Readonly<{
@@ -101,7 +114,10 @@ export type CapabilityGrantReferenceFailure = Readonly<{
 }>;
 
 export type CapabilityGrantReferenceInspection = Readonly<{
+  /** Exercisable grants: the only grants that authorize the holder's own actions. */
   active_grants: readonly CapabilityGrantRecord[];
+  /** Live delegation-only grants: usable solely as a delegation source. */
+  delegable_grants: readonly CapabilityGrantRecord[];
   unavailable_grants: readonly CapabilityGrantReferenceFailure[];
 }>;
 
@@ -188,6 +204,10 @@ export function applyCapabilityGrantSchema(db: DatabaseSync): void {
       source_grant_id TEXT NOT NULL REFERENCES capability_grants(grant_id),
       authority_grant_id TEXT NOT NULL REFERENCES capability_grants(grant_id),
       CHECK (grant_id != source_grant_id AND grant_id != authority_grant_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS capability_grant_delegation_only (
+      grant_id TEXT PRIMARY KEY REFERENCES capability_grants(grant_id) ON DELETE CASCADE
     );
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_capability_grant_target_identity
@@ -390,6 +410,9 @@ export class SqliteCapabilityGrantStore {
         VALUES (?, ?, ?)
       `);
       for (const target of targets) insertTarget.run(grantId, target.kind, target.id);
+      if (input.delegation_only) {
+        this.db.prepare("INSERT INTO capability_grant_delegation_only (grant_id) VALUES (?)").run(grantId);
+      }
     });
 
     return this.requireGrant(grantId);
@@ -404,6 +427,7 @@ export class SqliteCapabilityGrantStore {
     operation_ids: readonly string[];
     targets?: readonly CapabilityGrantTarget[];
     expires_at?: string;
+    delegation_only?: boolean;
     invocation_id: string;
   }>): CapabilityGrantRecord {
     const authority = input.authority;
@@ -429,7 +453,7 @@ export class SqliteCapabilityGrantStore {
       throw new Error("Delegated operations must be a subset of the source grant.");
     }
     if (parent.targets.length > 0 && (targets.length === 0 || targets.some(target =>
-      !parent.targets.some(allowed => allowed.kind === target.kind && (allowed.id === null || allowed.id === target.id))))) {
+      !parent.targets.some(allowed => targetContains(allowed, target))))) {
       throw new Error("Delegated targets must be contained in the source grant.");
     }
     const limit = Math.min(Date.parse(parent.expires_at), Date.parse(permission.expires_at));
@@ -441,6 +465,7 @@ export class SqliteCapabilityGrantStore {
       const grant = this.issueGrant({ principal_id: input.principal_id, boundary: authority.boundary,
         operation_ids: operations, targets, expires_at: expiry, issuer_id: authority.principal_id,
         evidence: [{ kind: "operation_invocation", ref: input.invocation_id }],
+        delegation_only: input.delegation_only === true,
       });
       this.db.prepare(`INSERT INTO capability_grant_delegations (grant_id, source_grant_id, authority_grant_id)
         VALUES (?, ?, ?)`).run(grant.grant_id, parent.grant_id, permission.grant_id);
@@ -635,6 +660,9 @@ export class SqliteCapabilityGrantStore {
       revoked_at: row.revoked_at,
       issuer_id: row.issuer_id,
       evidence: parseEvidence(row.evidence_json),
+      delegation_only: Boolean(this.db.prepare(
+        "SELECT 1 AS present FROM capability_grant_delegation_only WHERE grant_id = ?",
+      ).get(grantId)),
     };
   }
 
@@ -679,7 +707,8 @@ export class SqliteCapabilityGrantStore {
       now,
     ) as Array<{ grant_id: string }>;
     return ids.filter(({ grant_id }) => this.delegationIsActive(grant_id, Date.parse(now)))
-      .map(({ grant_id }) => this.requireGrant(grant_id));
+      .map(({ grant_id }) => this.requireGrant(grant_id))
+      .filter((grant) => !grant.delegation_only);
   }
 
   /**
@@ -694,17 +723,18 @@ export class SqliteCapabilityGrantStore {
     const grantIds = normalizeNonEmptySet(session.grant_ids, "session grant_id", false);
     const nowMs = parseTimestamp("now", this.now());
     const activeGrants: CapabilityGrantRecord[] = [];
+    const delegableGrants: CapabilityGrantRecord[] = [];
     const unavailableGrants: CapabilityGrantReferenceFailure[] = [];
 
     for (const grantId of grantIds) {
       const grant = this.getGrant(grantId);
       const code = grantReferenceFailure(grant, session, nowMs)
         ?? (this.delegationIsActive(grantId, nowMs) ? null : "grant_dependency_unavailable");
-      if (code === null && grant) activeGrants.push(grant);
+      if (code === null && grant) (grant.delegation_only ? delegableGrants : activeGrants).push(grant);
       else unavailableGrants.push({ grant_id: grantId, code: code ?? "grant_not_found" });
     }
 
-    return { active_grants: activeGrants, unavailable_grants: unavailableGrants };
+    return { active_grants: activeGrants, delegable_grants: delegableGrants, unavailable_grants: unavailableGrants };
   }
 
   /**
@@ -715,10 +745,12 @@ export class SqliteCapabilityGrantStore {
     session: Pick<CapabilityGrantSessionBinding, "principal_id" | "boundary" | "grant_ids">,
   ): readonly string[] {
     const inspection = this.inspectSessionGrantIds(session);
-    if (inspection.active_grants.length === 0 || inspection.unavailable_grants.length > 0) {
+    const live = [...inspection.active_grants, ...inspection.delegable_grants];
+    if (live.length === 0 || inspection.unavailable_grants.length > 0) {
       throw new CapabilityGrantReferenceError(inspection.unavailable_grants);
     }
-    return inspection.active_grants.map((grant) => grant.grant_id);
+    const liveIds = new Set(live.map((grant) => grant.grant_id));
+    return normalizeNonEmptySet(session.grant_ids, "session grant_id", false).filter((id) => liveIds.has(id));
   }
 
   /**
@@ -743,7 +775,10 @@ export class SqliteCapabilityGrantStore {
         principal_id: session.principal_id,
         boundary: session.boundary,
         capability_grant_ids: applicableGrants.map((grant) => grant.grant_id),
-        session_capability_grant_ids: inspection.active_grants.map((grant) => grant.grant_id),
+        // Delegation-only grants stay pinned to the session so they can be a
+        // delegation source, but they never contribute operations above.
+        session_capability_grant_ids: [...inspection.active_grants, ...inspection.delegable_grants]
+          .map((grant) => grant.grant_id),
         grants: operationIds,
         interaction: {
           mode: session.interaction.mode,
@@ -808,6 +843,26 @@ function grantAppliesToTarget(
   if (target === null) return false;
   return grant.targets.some((candidate) =>
     candidate.kind === target.kind && (candidate.id === null || candidate.id === target.id));
+}
+
+/**
+ * True when `child` is within `allowed`. Filesystem paths narrow by folder,
+ * network domains by subdomain, and executables match case-insensitively.
+ */
+export function targetContains(allowed: CapabilityGrantTarget, child: CapabilityGrantTarget): boolean {
+  if (allowed.kind !== child.kind) return false;
+  if (allowed.id === null || allowed.id === child.id) return true;
+  if (child.id === null) return false;
+  if (allowed.kind === FILESYSTEM_PATH_TARGET_KIND) {
+    return allowed.id === "." || child.id.startsWith(`${allowed.id}/`);
+  }
+  if (allowed.kind === EXECUTABLE_TARGET_KIND) return allowed.id.toLowerCase() === child.id.toLowerCase();
+  if (allowed.kind === NETWORK_DOMAIN_TARGET_KIND) {
+    const domain = allowed.id.toLowerCase();
+    const host = child.id.toLowerCase();
+    return host === domain || host.endsWith(`.${domain}`);
+  }
+  return false;
 }
 
 function normalizeTargets(targets: readonly CapabilityGrantTarget[]): CapabilityGrantTarget[] {

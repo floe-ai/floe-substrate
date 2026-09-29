@@ -27,6 +27,7 @@ import {
 } from "./project.js";
 import type { RuntimeAdapter } from "./adapters/runtime-adapter.js";
 import { EngineControl, type EngineAccount } from "./engines/engine-control.js";
+import { runtimeEndpointRegistration } from "./runtime-endpoint-registration.js";
 import type { EngineState } from "floe-cli/engines/protocol";
 import { thisInstallation } from "floe-cli/installation";
 import { FakeRuntimeAdapter } from "./adapters/fake-runtime-adapter.js";
@@ -334,6 +335,12 @@ export class BridgeDaemon {
       await this.adapter.cancelDelivery?.(deliveryId);
     }
     if (
+      (message.type === "approval_decided" || message.type === "approval_invalidated")
+      && typeof message.payload?.request?.approval_request_id === "string"
+    ) {
+      this.adapter.approvalChanged?.(message.payload.request.approval_request_id);
+    }
+    if (
       message.type === "workspace_registered" ||
       message.type === "workspace_selected" ||
       message.type === "workspace_attachment_requested" ||
@@ -578,22 +585,8 @@ export class BridgeDaemon {
           agent_id: runtime.agent_id ?? undefined,
         });
         if (this.processingEndpoints.has(runtime.endpoint_id)) continue;
-        await this.bus.registerEndpoint({
-          endpoint_id: runtime.endpoint_id,
-          workspace_id: workspaceId,
-          name: runtime.name,
-          agent_id: runtime.agent_id,
-          status: runtime.runtime_status === "resolved" && !this.heldForEngine.has(runtime.endpoint_id)
-            ? "idle"
-            : "runtime_unconfigured",
-          metadata: {
-            runtime_adapter: runtime.adapter_id,
-            actor_definition_revision_id: runtime.actor_definition_revision_id,
-            runtime_profile_revision_id: runtime.runtime_profile_revision_id,
-            actor_runtime_binding_id: runtime.actor_runtime_binding_id,
-            runtime_unresolved_reasons: runtime.unresolved_reasons,
-          }
-        });
+        await this.bus.registerEndpoint(runtimeEndpointRegistration(
+          workspaceId, runtime, this.adapter.engine ?? null, this.heldForEngine.has(runtime.endpoint_id)));
       }
 
       const hookRegistry = new HookRegistry();
@@ -883,6 +876,7 @@ export class BridgeDaemon {
       const instructions = endpointEntry?.instructions;
       let preparedAttemptId: string | null = null;
       let operationAuthoritySession: Awaited<ReturnType<BusClient["prepareRuntimeDelivery"]>>["operation_authority_session"] | undefined;
+      let engineToolOperationIds: string[] = [];
       let effectiveRuntime: AgentRuntimeConfig;
       const hasCanonicalRuntimePins = Boolean(
         delivery.processing_contract
@@ -915,6 +909,7 @@ export class BridgeDaemon {
         }
         delivery.processing_contract = contract;
         operationAuthoritySession = prepared.operation_authority_session;
+        engineToolOperationIds = prepared.engine_tool_operation_ids ?? [];
         if (contract.contract_kind === "scope_node") {
           preparedAttemptId = contract.execution_attempt.attempt_id;
           delivery.execution_attempt_id = preparedAttemptId;
@@ -974,6 +969,7 @@ export class BridgeDaemon {
         agent_id: endpointEntry?.agent_id,
         hooks: hookRegistry,
         operation_authority_session: operationAuthoritySession,
+        engine_tool_operation_ids: engineToolOperationIds,
       }, delivery, effectiveRuntime);
       if (this.cancelledDeliveries.delete(delivery.delivery_id)) {
         await this.reportTurnEndSafely(delivery.endpoint_id);

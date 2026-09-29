@@ -52,7 +52,8 @@ node bin/floe.mjs <args>    # forwards every flag untouched
 ## Two separate start settings
 
 - **Start on demand** (`services.start_on_demand` in the config, default `true`):
-  may a client start the substrate itself when it is not already reachable? On
+  may a client start the substrate itself when it is not already reachable, or
+  start a missing identity agent or bridge beside a bus this home started? On
   for a personal machine; turn it off where Floe runs as an externally managed
   service.
 - **Start at login**: not a config key. It is the OS auto-start, installed with

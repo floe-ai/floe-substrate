@@ -7,6 +7,9 @@ import {
   ActorDefinitionImmutableError,
   ActorDefinitionStore,
   ActorDefinitionValidationError,
+  actorDefinitionDigest,
+  canonicalActorScopePath,
+  validateActorDefinition,
   type ActorDefinitionContent,
 } from "./actor-definitions.js";
 
@@ -34,6 +37,30 @@ function definition(label: string): ActorDefinitionContent {
     }],
   };
 }
+
+describe("Actor scope", () => {
+  it("accepts canonical workspace-relative folders and refuses escapes or non-canonical text", () => {
+    expect(() => validateActorDefinition({ ...definition("Scoped"), scope: { paths: [".", "src/app"] } })).not.toThrow();
+    for (const paths of [[], ["../outside"], ["C:/abs"], ["/abs"], ["./src"], ["src/"], ["src\\app"], [".", "."]]) {
+      expect(() => validateActorDefinition({ ...definition("Scoped"), scope: { paths } }), JSON.stringify(paths))
+        .toThrow(ActorDefinitionValidationError);
+    }
+  });
+
+  it("canonicalises author paths and rejects anything that leaves the Workspace", () => {
+    expect(canonicalActorScopePath("./")).toBe(".");
+    expect(canonicalActorScopePath("src\\app\\")).toBe("src/app");
+    expect(canonicalActorScopePath("./src/./app")).toBe("src/app");
+    expect(canonicalActorScopePath("src/../..")).toBeNull();
+    expect(canonicalActorScopePath("D:\\elsewhere")).toBeNull();
+  });
+
+  it("keeps the digest of an unscoped definition unchanged", () => {
+    const unscoped = definition("Plain");
+    expect(actorDefinitionDigest(unscoped)).toBe(actorDefinitionDigest({ ...unscoped }));
+    expect(actorDefinitionDigest({ ...unscoped, scope: { paths: ["."] } })).not.toBe(actorDefinitionDigest(unscoped));
+  });
+});
 
 describe("ActorDefinitionStore", () => {
   let db: DatabaseSync;

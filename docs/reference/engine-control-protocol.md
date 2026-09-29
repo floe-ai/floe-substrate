@@ -32,7 +32,8 @@ await engines.refresh("copilot");                           // "Try again"
   `connectIdentity` (see [identity agent protocol](identity-agent-protocol.md)):
   it connects to the Floe already serving this home, or starts Floe when the
   machine's `services.start_on_demand` allows it, and otherwise rejects with
-  `EnginesUnavailableError` (`reason: "not_running"`).
+  `EnginesUnavailableError` (`reason: "not_running"`). If the bus is up but the
+  bridge is down, the same setting lets it start the bridge.
 - `engines.agentVersion` and `engines.versionNote` report a version mismatch
   with the copy of Floe your surface depends on. The running Floe is used as it
   is and never restarted.
@@ -68,6 +69,15 @@ Draw the button from `action`, and show `message`:
 
 The Bridge checks each engine when it starts, after a sign-in finishes, after a
 turn on that engine fails, and when a surface calls `refresh`. It never polls.
+
+### Which engine an Actor uses
+
+Each Actor's endpoint carries `metadata.engine` (parsed `metadata` on
+`GET /v1/endpoints`; inside `metadata_json` on the `endpoint_registered` push):
+the `engine` id whose state gates that Actor's work,
+or `null` when its runtime needs no engine. The Bridge that runs the Actor sets
+it, so it is absent until a Bridge has attached the Actor. Match it against
+`EngineState.engine` to warn about the right engine before sending work.
 
 ### Work sent while an engine is not ready
 

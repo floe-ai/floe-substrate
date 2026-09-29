@@ -14,6 +14,8 @@ export type RuntimeContext = {
   hooks?: HookRegistry;
   /** Ephemeral, Delivery-scoped Bus operation authority; never persisted. */
   operation_authority_session?: RuntimeOperationAuthoritySession;
+  /** Engine tool operations the Actor's live grants cover; the only built-ins offered. */
+  engine_tool_operation_ids?: string[];
 };
 
 export interface RuntimeAdapter {
@@ -27,5 +29,7 @@ export interface RuntimeAdapter {
   handleBundle(context: RuntimeContext, bundle: DeliveryBundle, runtimeConfig?: AgentRuntimeConfig): Promise<void>;
   /** Interrupt one active delivery when the Bus has durably cancelled it. */
   cancelDelivery?(deliveryId: string): Promise<boolean> | boolean;
+  /** A pushed answer or invalidation for an approval a tool call may be waiting on. */
+  approvalChanged?(approvalRequestId: string): void;
   dispose?(reason?: HookPayload<"SessionEnd">["reason"]): Promise<void>;
 }
