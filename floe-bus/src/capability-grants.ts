@@ -43,6 +43,10 @@ export type CapabilityGrantRecord = Readonly<{
 
 /** Target kind whose ids are canonical workspace-relative folders; containment narrows. */
 export const FILESYSTEM_PATH_TARGET_KIND = "filesystem_path";
+/** Target kind whose ids are lowercase executable names (for example `git`). */
+export const EXECUTABLE_TARGET_KIND = "executable";
+/** Target kind whose ids are host names; a domain contains its subdomains. */
+export const NETWORK_DOMAIN_TARGET_KIND = "network_domain";
 
 export type IssueCapabilityGrant = Readonly<{
   /** Used by trusted deterministic policy issuers. Omit for ordinary grants. */
@@ -841,12 +845,24 @@ function grantAppliesToTarget(
     candidate.kind === target.kind && (candidate.id === null || candidate.id === target.id));
 }
 
-/** True when `child` is within `allowed`; filesystem paths narrow by folder containment. */
+/**
+ * True when `child` is within `allowed`. Filesystem paths narrow by folder,
+ * network domains by subdomain, and executables match case-insensitively.
+ */
 export function targetContains(allowed: CapabilityGrantTarget, child: CapabilityGrantTarget): boolean {
   if (allowed.kind !== child.kind) return false;
   if (allowed.id === null || allowed.id === child.id) return true;
-  if (child.id === null || allowed.kind !== FILESYSTEM_PATH_TARGET_KIND) return false;
-  return allowed.id === "." || child.id.startsWith(`${allowed.id}/`);
+  if (child.id === null) return false;
+  if (allowed.kind === FILESYSTEM_PATH_TARGET_KIND) {
+    return allowed.id === "." || child.id.startsWith(`${allowed.id}/`);
+  }
+  if (allowed.kind === EXECUTABLE_TARGET_KIND) return allowed.id.toLowerCase() === child.id.toLowerCase();
+  if (allowed.kind === NETWORK_DOMAIN_TARGET_KIND) {
+    const domain = allowed.id.toLowerCase();
+    const host = child.id.toLowerCase();
+    return host === domain || host.endsWith(`.${domain}`);
+  }
+  return false;
 }
 
 function normalizeTargets(targets: readonly CapabilityGrantTarget[]): CapabilityGrantTarget[] {

@@ -15,6 +15,16 @@ import { ContextStore, applyContextSchema, type ContextRecord } from "./contexts
 import { decodeEventCursor } from "./event-cursor.js";
 import { runtimeCredentialAccessOperations } from "./credential-runtime-access-operations.js";
 import { capabilityGrantOperations } from "./capability-grant-operations.js";
+import { resolveActorApprovalPolicy } from "./actor-approval-policy.js";
+import { decideToolAuthority } from "./tool-policy.js";
+import {
+  policyDecisionEvent,
+  runtimeToolDecision,
+  toolFactsFromRequest,
+  toolOperationEffects,
+  type RuntimeToolCallRequest,
+  type RuntimeToolDecision,
+} from "./runtime-tool-policy.js";
 import {
   EndpointWatermarkStore,
   applyEndpointWatermarkSchema,
@@ -6343,6 +6353,105 @@ export class BusStore {
         : null,
     });
     return prepared;
+  }
+
+  /**
+   * Decides one engine built-in tool call for a Delivery this Bridge is
+   * running: the Actor's live grants and scope bound it, then its pinned
+   * Approval Policy and bound policies may restrict it. Every call is
+   * recorded and pushed; nothing is remembered as a standing approval.
+   */
+  evaluateRuntimeToolCall(input: Readonly<{
+    bridge_id: string;
+    delivery_id: string;
+    request: RuntimeToolCallRequest;
+  }>, broadcast: Broadcast): RuntimeToolDecision {
+    const row = this.db.prepare("SELECT * FROM delivery_bundles WHERE delivery_id = ?").get(input.delivery_id) as any;
+    if (!row) throw new Error(`Unknown delivery_id: ${input.delivery_id}`);
+    if (row.state !== "delivered_to_bridge" && row.state !== "injected_to_runtime") {
+      throw new Error(`Delivery '${input.delivery_id}' is '${row.state}' and is not running.`);
+    }
+    const endpoint = this.getEndpoint(String(row.endpoint_id)) as { bridge_id?: string | null } | null;
+    if (endpoint?.bridge_id !== input.bridge_id) {
+      throw new Error(`Bridge '${input.bridge_id}' does not own Delivery '${input.delivery_id}'.`);
+    }
+    const delivery = this.rowToDelivery(row);
+    const session = delivery.operation_authority_session_id
+      ? this.operationAuthoritySessions.getSession(delivery.operation_authority_session_id)
+      : null;
+    if (!session) throw new Error(`Delivery '${input.delivery_id}' has no prepared runtime authority.`);
+    const contract = delivery.node_execution_id
+      ? this.getRuntimeProcessingContract(delivery.execution_attempt_id!)
+      : this.resolveDirectRuntimeProcessingContract(delivery);
+    const definition = contract.actor.definition;
+    const toolFacts = toolFactsFromRequest(input.request, definition.actor_definition_revision_id);
+
+    const sessionLive = session.revoked_at === null && Date.parse(session.expires_at) > Date.now();
+    const grants = sessionLive
+      ? this.capabilityGrantStore.inspectSessionGrantIds({
+          principal_id: session.principal_id,
+          boundary: session.boundary,
+          grant_ids: session.grant_ids,
+        }).active_grants
+      : [];
+    const approvalPolicy = resolveActorApprovalPolicy(definition, this.policyStore);
+    let authority = decideToolAuthority({
+      operation_id: input.request.operation_id,
+      facts: toolFacts,
+      scope_paths: definition.content.scope?.paths ?? null,
+      grants,
+    });
+    let authorityReason = authority.allowed ? null : authority.reason;
+    if (authority.allowed && !approvalPolicy.ok) {
+      authority = { allowed: false, code: "tool_grant_missing", reason: approvalPolicy.reason };
+      authorityReason = approvalPolicy.reason;
+    }
+
+    const scoped = contract.contract_kind === "scope_node" ? contract : null;
+    const roles = this.actorRoleAuthorityStore.resolveCurrent({
+      workspace_id: contract.workspace_id,
+      principal_id: session.principal_id,
+      target: {
+        scope_id: scoped?.scope_execution.scope_id ?? null,
+        scope_composition_revision_id: scoped?.node_execution.revision_id ?? null,
+        node_placement_id: scoped?.node_execution.node_id ?? null,
+        node_execution_id: scoped?.node_execution.node_execution_id ?? null,
+        context_id: contract.context.context_id,
+      },
+    });
+    const evaluation = this.policyStore.evaluate({
+      authority_boundary: { kind: "workspace", workspace_id: contract.workspace_id },
+      workspace_id: contract.workspace_id,
+      principal_id: session.principal_id,
+      principal_roles: roles.roles,
+      actor_role_evidence: roles.evidence,
+      interaction_mode: session.interaction_mode,
+      provenance: session.provenance,
+      operation_id: input.request.operation_id,
+      target: null,
+      effects: toolOperationEffects(input.request.operation_id),
+      scope_id: scoped?.scope_execution.scope_id ?? null,
+      actor_id: contract.actor.actor_id,
+      scope_composition_revision_id: scoped?.node_execution.revision_id ?? null,
+      node_placement_id: scoped?.node_execution.node_id ?? null,
+      connector_binding_id: null,
+      extension_installation_id: null,
+      extension_package_version_id: null,
+      data_classes: [],
+      worker_trust_level: null,
+      tool: toolFacts,
+    }, {
+      direct_revision_ids: approvalPolicy.ok && approvalPolicy.policy_revision_id ? [approvalPolicy.policy_revision_id] : [],
+      ...(authorityReason ? { authority_denial_reason: authorityReason } : {}),
+    });
+    const decision = runtimeToolDecision(evaluation, input.request.operation_id, toolFacts.tool_call_id, authority);
+    broadcast("policy_decision", policyDecisionEvent(evaluation, {
+      delivery_id: delivery.delivery_id,
+      endpoint_id: delivery.endpoint_id,
+      actor_id: contract.actor.actor_id,
+      rule_id: decision.refusal?.rule_id ?? null,
+    }));
+    return decision;
   }
 
   reportDeliveryStatus(input: {

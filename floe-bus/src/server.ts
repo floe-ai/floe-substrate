@@ -2934,6 +2934,46 @@ export async function createBusServer(
     }
   });
 
+  app.post("/v1/delivery/:delivery_id/tool-policy/evaluate", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
+    const params = z.object({ delivery_id: z.string().min(1) }).parse(request.params);
+    if (
+      !testBypassedRequests.has(request)
+      && !bridgeOwnsDelivery(store, bridgeAuthority.bridge_id, params.delivery_id)
+    ) {
+      return sendTransportForbidden(reply);
+    }
+    const body = z.object({
+      operation_id: z.string().min(1),
+      tool_call_id: z.string().min(1).nullable(),
+      engine: z.string().min(1),
+      manifest_version: z.string().min(1),
+      native_tools: z.array(z.string().min(1)),
+      paths: z.array(z.string().min(1).nullable()),
+      executables: z.array(z.string().min(1).nullable()),
+      urls: z.array(z.string()),
+      write_redirection: z.boolean(),
+      sandbox_bypass: z.boolean(),
+      argument_digest: z.string().min(1),
+    }).strict().safeParse(request.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: "tool_call_facts_invalid", message: body.error.message });
+    }
+    try {
+      return store.evaluateRuntimeToolCall({
+        bridge_id: bridgeAuthority.bridge_id,
+        delivery_id: params.delivery_id,
+        request: body.data,
+      }, broadcast);
+    } catch (error) {
+      return reply.code(409).send({
+        error: "tool_policy_unavailable",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
   app.get("/v1/delivery/:delivery_id/runtime-credentials/:secret_ref_id", async (request, reply) => {
     const bridgeAuthority = requireBridgeService(request, reply);
     if (!bridgeAuthority) return reply;
@@ -4491,6 +4531,7 @@ export function resolveTransportRequirement(request: any, store: BusStore): Tran
     || route === "/v1/bridges/:bridge_id/liveness"
     || route === "/v1/delivery/:delivery_id/status"
     || route === "/v1/delivery/:delivery_id/runtime-prepare"
+    || route === "/v1/delivery/:delivery_id/tool-policy/evaluate"
     || route === "/v1/delivery/:delivery_id/runtime-credentials/:secret_ref_id"
     || (route === "/v1/runtime/telemetry" && method === "POST")
     || (route === "/v1/endpoints/:endpoint_id/status" && method === "POST")
