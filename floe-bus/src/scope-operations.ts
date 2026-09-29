@@ -1190,12 +1190,14 @@ const stopExecutionResultSchema: JsonSchema = {
 const executionControlResultSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["execution", "pause_id", "node_execution_ids", "delivery_ids"],
+  required: ["execution", "pause_id", "node_execution_ids", "delivery_ids", "active_delivery_ids", "deadline_at"],
   properties: {
     execution: scopeExecutionSchema,
     pause_id: nonEmptyString,
     node_execution_ids: stringArray,
     delivery_ids: stringArray,
+    active_delivery_ids: stringArray,
+    deadline_at: nonEmptyString,
   },
 };
 

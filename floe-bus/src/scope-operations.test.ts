@@ -973,4 +973,69 @@ describe("Bus-owned Scope semantic operations", () => {
       audit_ref: { kind: "operation_invocation" },
     });
   });
+
+  it("pauses and resumes a real execution with receipts that satisfy the published result contract", async () => {
+    const principal = authority("principal:desktop", workspaceId, "interactive");
+    registerExecutableActorFixture(handle.store, workspaceId, "actor:worker");
+    const draft = handle.store.createScopeCompositionDraft({
+      workspace_id: workspaceId,
+      scope_id: "delivery",
+      content: {
+        nodes: [
+          { node_id: "ingress", kind: "event", context_policy: { mode: "new_per_execution" } },
+          { node_id: "worker", kind: "actor", resource_id: "actor:worker", activation: { mode: "per_delivery" }, context_policy: { mode: "new_per_execution" } },
+        ],
+        ports: [
+          { port_id: "ingress:out", node_id: "ingress", name: "start", direction: "output" },
+          { port_id: "worker:in", node_id: "worker", name: "work", direction: "input", min_count: 1 },
+        ],
+        edges: [{ edge_id: "run-worker", source_port_id: "ingress:out", target_port_id: "worker:in" }],
+      },
+    }, handle.broadcast);
+    const published = handle.store.publishScopeComposition({
+      revision_id: draft.revision_id,
+      expected_published_revision_id: null,
+    }, handle.broadcast);
+    const started = receipt(await registry.invoke(
+      resolver(operationBackend, principal),
+      request(
+        START_SCOPE_EXECUTION_OPERATION_ID,
+        { kind: "scope", id: "delivery" },
+        { ingress_node_id: "ingress", output_port_id: "ingress:out", content: {} },
+        "pause-start",
+        published.revision_id,
+      ),
+    ));
+    const execution = (started.result as any).execution;
+
+    const paused = receipt(await registry.invoke(
+      resolver(operationBackend, principal),
+      request(
+        PAUSE_SCOPE_EXECUTION_OPERATION_ID,
+        { kind: "scope_execution", id: execution.execution_id },
+        { reason: "Operator paused the run" },
+        "pause-real-start",
+        scopeExecutionStateRevision(execution),
+      ),
+    ));
+    expect(paused.state, JSON.stringify(paused.refusal)).toBe("accepted");
+    expect(paused.result).toMatchObject({
+      execution: { status: "paused" },
+      active_delivery_ids: [],
+      deadline_at: expect.any(String),
+    });
+
+    const resumed = receipt(await registry.invoke(
+      resolver(operationBackend, principal),
+      request(
+        RESUME_SCOPE_EXECUTION_OPERATION_ID,
+        { kind: "scope_execution", id: execution.execution_id },
+        {},
+        "resume-real-start",
+        scopeExecutionStateRevision((paused.result as any).execution),
+      ),
+    ));
+    expect(resumed.state, JSON.stringify(resumed.refusal)).toBe("accepted");
+    expect((resumed.result as any).pause_id).toBe((paused.result as any).pause_id);
+  });
 });
