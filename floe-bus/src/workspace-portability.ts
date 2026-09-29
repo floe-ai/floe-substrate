@@ -101,6 +101,15 @@ export const WORKSPACE_BUNDLE_RESTORE_SEMANTICS: WorkspaceBundleRestoreSemantics
   ],
 };
 
+/**
+ * Machine access a package never carries: a package can be handed to someone
+ * else, so their machine opts in again. Folders are named, never pathed.
+ */
+export type WorkspaceHostAccessLeftBehind = Readonly<{
+  folder_names: readonly string[];
+  system_access: boolean;
+}>;
+
 export type WorkspaceBundleManifest = Readonly<{
   format: typeof WORKSPACE_BUNDLE_FORMAT;
   format_version: typeof WORKSPACE_BUNDLE_FORMAT_VERSION;
@@ -113,6 +122,7 @@ export type WorkspaceBundleManifest = Readonly<{
   content: readonly WorkspaceBundleContentInventory[];
   restore_semantics: WorkspaceBundleRestoreSemantics;
   unresolved_dependencies: readonly WorkspaceBundleDependency[];
+  host_access_left_behind: WorkspaceHostAccessLeftBehind;
   redaction_count: number;
   bundle_digest: string;
   bundle_id: string;
@@ -178,6 +188,10 @@ export type WorkspacePortabilityDependencies = Readonly<{
   bundle_root: string;
   workspace_locator(workspaceId: string): string | null;
   bind_workspace_locator?: (workspaceId: string, locator: string) => void;
+  /** The source Workspace's extra folders and System access, which stay behind. */
+  host_access?: (workspaceId: string) => Readonly<{ folder_locators: readonly string[]; system_access: boolean }>;
+  /** Told after a restore commits, so the restored Workspace can say what stayed behind. */
+  host_access_left_behind?: (workspaceId: string, leftBehind: WorkspaceHostAccessLeftBehind) => void;
   portable_content_resolvers?: ReadonlyMap<string, PortableContentResolver>;
   now?: () => string;
 }>;
@@ -348,8 +362,9 @@ export const NON_PORTABLE_HOST_TABLES = new Set([
   "transport_credentials",
   "transport_push_checkpoints",
   "transport_push_entries",
-  // Folders and System access name paths on this machine; a restored or copied
-  // Workspace starts with only its own folder and System access off.
+  // Folders and System access are this machine's opt-in. A package names what
+  // it left behind (host_access_left_behind) and a restore arrives without it;
+  // a copy or fork on this machine carries both through carryAccess instead.
   "workspace_access_records",
   "workspace_folders",
   "workspace_notice_acknowledgements",
@@ -551,6 +566,12 @@ export class WorkspacePortabilityService {
       const contentInventory = [...content.inventory].sort((left, right) =>
         left.artefact_version_id.localeCompare(right.artefact_version_id));
       const identityPortable = sanitizePortableRecord(identity, sourcePathTokens).row;
+      const hostAccess = this.dependencies.host_access?.(workspaceId);
+      const hostAccessLeftBehind: WorkspaceHostAccessLeftBehind = {
+        folder_names: (hostAccess?.folder_locators ?? [])
+          .map((locator) => sanitizeString(basename(locator) || locator, sourcePathTokens).value),
+        system_access: hostAccess?.system_access ?? false,
+      };
       const unsigned = {
         format: WORKSPACE_BUNDLE_FORMAT,
         format_version: WORKSPACE_BUNDLE_FORMAT_VERSION,
@@ -563,6 +584,7 @@ export class WorkspacePortabilityService {
         content: contentInventory,
         restore_semantics: WORKSPACE_BUNDLE_RESTORE_SEMANTICS,
         unresolved_dependencies: dependencies,
+        host_access_left_behind: hostAccessLeftBehind,
         redaction_count: selected.redactionCount,
       } as const;
       const bundleDigest = sha256(canonicalJson(unsigned));
@@ -820,6 +842,10 @@ export class WorkspacePortabilityService {
       throw error;
     } finally {
       db.exec("PRAGMA foreign_keys = ON");
+    }
+    const leftBehind = manifest.host_access_left_behind;
+    if (leftBehind.folder_names.length > 0 || leftBehind.system_access) {
+      this.dependencies.host_access_left_behind?.(manifest.workspace_id, leftBehind);
     }
     return {
       workspace_id: manifest.workspace_id,
@@ -2124,6 +2150,9 @@ function validateManifestShape(value: WorkspaceBundleManifest): void {
     || !Array.isArray(value.content)
     || canonicalJson(value.restore_semantics) !== canonicalJson(WORKSPACE_BUNDLE_RESTORE_SEMANTICS)
     || !Array.isArray(value.unresolved_dependencies)
+    || !Array.isArray(value.host_access_left_behind?.folder_names)
+    || !value.host_access_left_behind.folder_names.every((name) => typeof name === "string")
+    || typeof value.host_access_left_behind.system_access !== "boolean"
   ) {
     throw new WorkspacePortabilityError("bundle_manifest_unsupported", "The Workspace package format is not supported by this Floe build.");
   }

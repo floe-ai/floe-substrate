@@ -145,6 +145,14 @@ it now reads. A notice that changes, such as a lapse date moving, shows as new
 again. Marking a notice seen, and Floe recording, changing or removing a notice
 by itself, are pushed as `workspace_access_changed` too.
 
+Folders and System access belong to this machine. Copying or forking a
+Workspace on the same machine keeps both exactly, and the copy records an
+`access_carried` notice saying what came across. A
+[portable package](../setup/workspace-transfer.md) carries neither, because it
+may be handed to someone else: the restored Workspace has only its own folder
+and System access off, and records an `access_left_behind` notice naming the
+folders (by name, never by path) and saying whether System access was on.
+
 **Commands are not confined by any of this.** Floe decides which commands an
 Actor may run, not which files they touch. The engine's own sandbox does not
 confine them on Windows. An Actor that must not reach outside its folders

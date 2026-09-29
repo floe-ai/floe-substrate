@@ -30,7 +30,9 @@ export type WorkspaceAccessRecordKind =
   | "system_access_turned_off"
   | "tool_access_given"
   | "actor_access_moved"
-  | "actor_access_lapsing";
+  | "actor_access_lapsing"
+  | "access_carried"
+  | "access_left_behind";
 
 export type WorkspaceAccessRecord = Readonly<{
   record_id: string;
@@ -219,6 +221,64 @@ export class WorkspaceAccessStore {
     return this.inspect(input.workspace_id);
   }
 
+  /**
+   * Gives a new Workspace the extra folders and System access of the
+   * Workspace it was copied or forked from on this machine, keeping who
+   * first chose each one, and records a notice saying what came across.
+   */
+  carryAccess(input: Readonly<{
+    source_workspace_id: string;
+    workspace_id: string;
+    how: "copied" | "forked";
+    principal_id: string;
+  }>): void {
+    const host = this.dependencies.host_id;
+    const folders = this.db.prepare(`SELECT locator, added_at, added_by_principal_id FROM workspace_folders
+      WHERE workspace_id = ? AND host_id = ? ORDER BY added_at, folder_id`)
+      .all(input.source_workspace_id, host) as Array<{ locator: string; added_at: string; added_by_principal_id: string }>;
+    const system = this.db.prepare(`SELECT changed_at, changed_by_principal_id FROM workspace_system_access
+      WHERE workspace_id = ? AND host_id = ? AND enabled = 1`)
+      .get(input.source_workspace_id, host) as { changed_at: string; changed_by_principal_id: string } | undefined;
+    if (folders.length === 0 && !system) return;
+    for (const folder of folders) {
+      this.db.prepare(`INSERT INTO workspace_folders (folder_id, workspace_id, host_id, locator, added_at, added_by_principal_id)
+        VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(`folder_${randomUUID()}`, input.workspace_id, host, folder.locator, folder.added_at, folder.added_by_principal_id);
+    }
+    if (system) {
+      this.db.prepare(`INSERT INTO workspace_system_access (workspace_id, host_id, enabled, changed_at, changed_by_principal_id)
+        VALUES (?, ?, 1, ?, ?)`).run(input.workspace_id, host, system.changed_at, system.changed_by_principal_id);
+    }
+    this.record(input.workspace_id, "access_carried",
+      carriedSummary(input.how, folders.map(folder => folder.locator), Boolean(system)),
+      null, input.principal_id, this.now());
+  }
+
+  /** The extra folders and System access this machine holds for a Workspace. */
+  hostAccess(workspaceId: string): Readonly<{ folder_locators: readonly string[]; system_access: boolean }> {
+    return { folder_locators: this.folderRows(workspaceId).map(row => row.locator), system_access: this.systemAccess(workspaceId) };
+  }
+
+  /**
+   * Tells a restored Workspace what its package left behind. Restoring the
+   * same package again changes nothing.
+   */
+  recordLeftBehind(workspaceId: string, leftBehind: Readonly<{ folder_names: readonly string[]; system_access: boolean }>): boolean {
+    const parts = [
+      ...(leftBehind.folder_names.length > 0
+        ? [`${leftBehind.folder_names.length === 1 ? "the folder" : `${leftBehind.folder_names.length} folders`} ${leftBehind.folder_names.join(", ")}, which you can add again`]
+        : []),
+      ...(leftBehind.system_access ? ["System access, which was on where it came from and is off here until you turn it on"] : []),
+    ];
+    return this.recordStandingNotice({
+      record_id: `notice:left-behind:${workspaceId}`,
+      workspace_id: workspaceId,
+      kind: "access_left_behind",
+      summary: `This Workspace was restored from a package, which does not carry machine access. Left behind: ${parts.join("; ")}.`,
+      principal_id: "system:workspace-restore",
+    });
+  }
+
   /** Records the tool access notice once per Workspace; true when it was recorded now. */
   recordToolAccessNotice(workspaceId: string, principalId: string): boolean {
     const result = this.db.prepare(`INSERT OR IGNORE INTO workspace_access_records
@@ -305,6 +365,14 @@ export class WorkspaceAccessStore {
       (record_id, workspace_id, host_id, kind, path, summary, principal_id, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(`access_${randomUUID()}`, workspaceId, this.dependencies.host_id, kind, recordPath, summary, principalId, at);
   }
+}
+
+function carriedSummary(how: "copied" | "forked", folders: readonly string[], systemAccess: boolean): string {
+  const parts = [
+    ...(folders.length > 0 ? [`the folder${folders.length === 1 ? "" : "s"} ${folders.join(", ")}`] : []),
+    ...(systemAccess ? ["System access (file tools may reach anywhere on this machine)"] : []),
+  ];
+  return `This Workspace was ${how} with ${parts.join(" and ")}.`;
 }
 
 /**

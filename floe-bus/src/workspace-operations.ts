@@ -72,6 +72,8 @@ export interface WorkspaceOperationBackend {
     name: string;
     locator: string;
     init_authorized?: boolean;
+    /** Who asked for the copy or fork; recorded against access carried from the source. */
+    principal_id: string;
   }): RemoteWorkspaceProjection;
 }
 
@@ -370,6 +372,7 @@ export function workspaceOperationDefinitions(
         source_workspace_id: targetWorkspace(context),
         kind,
         ...value,
+        principal_id: context.authority.principal_id,
       }),
     })),
   ];

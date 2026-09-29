@@ -913,6 +913,9 @@ export class BusStore {
           init_authorized: true,
         });
       },
+      host_access: (workspaceId) => this.workspaceAccessStore.hostAccess(workspaceId),
+      host_access_left_behind: (workspaceId, leftBehind) =>
+        this.workspaceAccessStore.recordLeftBehind(workspaceId, leftBehind),
     });
     this.contextStore = new ContextStore(this.db);
     this.scopeStore = new ScopeStore(this.db);
@@ -2068,6 +2071,7 @@ export class BusStore {
     name: string;
     locator: string;
     init_authorized?: boolean;
+    principal_id: string;
   }, broadcast: Broadcast): LocalWorkspaceRecord {
     const identity = this.workspaceIdentityStore.createDerivedWorkspace({
       source_workspace_id: input.source_workspace_id,
@@ -2079,6 +2083,12 @@ export class BusStore {
         locator: input.locator,
         init_authorized: input.init_authorized,
       },
+    });
+    this.workspaceAccessStore.carryAccess({
+      source_workspace_id: input.source_workspace_id,
+      workspace_id: identity.workspace_id,
+      how: input.kind,
+      principal_id: input.principal_id,
     });
     const workspace = this.requireLocalWorkspace(identity.workspace_id);
     broadcast(input.kind === "copied" ? "workspace_copy_identity_created" : "workspace_fork_identity_created", {
