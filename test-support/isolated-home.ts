@@ -14,8 +14,9 @@
  *   - writes content that names the real Floe home (a config whose `home` is
  *     it, or a native broker command acting for it);
  *   - lists the real user profile folder;
- *   - reaches the real bus address, by fetch or by a spawned process (the
- *     broker names the host-control credential in the OS keyring by it).
+ *   - reaches the real bus address by any connection (http, WebSocket, fetch,
+ *     raw socket) or by a spawned process (the broker names the host-control
+ *     credential in the OS keyring by it).
  * Device keys in the OS keyring are named per Floe home, so a test's
  * throwaway home can never name a real one.
  */
@@ -123,6 +124,7 @@ function installGuard(): void {
   wrap(fs.promises as Record<string, unknown>, "fs.promises", PATH_FUNCTIONS);
   guardChildProcesses();
   guardFetch();
+  guardSockets();
 
   const sqlite = require("node:sqlite") as Record<string, unknown>;
   const Original = sqlite.DatabaseSync as { new (...args: unknown[]): object; __floeGuarded?: boolean };
@@ -199,6 +201,34 @@ function guardFetch(): void {
   }) as typeof fetch;
   Object.defineProperty(guarded, "__floeGuarded", { value: true });
   globalThis.fetch = guarded;
+}
+
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+/**
+ * Every in-process connection (http, ws, fetch, the global WebSocket, raw net)
+ * opens through `net.Socket.prototype.connect`, so a connection to the real bus
+ * port is refused there whatever client a test uses.
+ */
+function guardSockets(): void {
+  const net = require("node:net") as { Socket: { prototype: Record<string, unknown> } };
+  const proto = net.Socket.prototype;
+  const original = proto.connect as ((...args: unknown[]) => unknown) & { __floeGuarded?: boolean };
+  if (original.__floeGuarded) return;
+  const guarded = function (this: { destroy?: () => void }, ...args: unknown[]) {
+    // net.connect passes its normalised [options, callback]; direct calls pass (options) or (port, host).
+    const first = Array.isArray(args[0]) ? args[0][0] : args[0];
+    const options = (first && typeof first === "object" ? first : { port: first, host: args[1] }) as { port?: unknown; host?: unknown; path?: unknown };
+    const port = Number(options.port);
+    const host = typeof options.host === "string" ? options.host.toLowerCase() : "localhost";
+    if (!options.path && port === 5377 && LOOPBACK.has(host)) {
+      this.destroy?.();
+      checkBusAddress("net.Socket.connect", `//${host.includes(":") && !host.startsWith("[") ? `[${host}]` : host}:${port}`);
+    }
+    return original.apply(this, args);
+  };
+  Object.defineProperty(guarded, "__floeGuarded", { value: true });
+  proto.connect = guarded;
 }
 
 function isolateProfile(guard: Guard): void {

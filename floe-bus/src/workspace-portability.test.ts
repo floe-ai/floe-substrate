@@ -18,7 +18,11 @@ afterEach(() => {
   for (const db of opened.splice(0)) db.close();
 });
 
-describe("canonical portable Workspace package", () => {
+// Every test here is synchronous: real SQLite commits, VACUUM INTO and file
+// writes, about a second of CPU. Vitest cannot interrupt synchronous code, so a
+// wall-clock limit here never catches a hang; it only measured how busy the
+// disk was and failed a correct test when the machine was loaded. No limit.
+describe("canonical portable Workspace package", { timeout: 0 }, () => {
   it("exports deterministically and restores exact identity, lineage, history and waits without host credentials or automatic effects", () => {
     const root = mkdtempSync(join(tmpdir(), "floe-portability-"));
     const sourceRoot = join(root, "source", "C-drive-workspace");
@@ -371,7 +375,7 @@ describe("canonical portable Workspace package", () => {
       principal_id: "principal_operator_target",
     });
     expect(released.state).toBe("released");
-  }, 15_000);
+  });
 
   it("rolls back materialized content and canonical rows when a later database write fails", () => {
     const root = mkdtempSync(join(tmpdir(), "floe-portability-rollback-"));
@@ -415,7 +419,7 @@ describe("canonical portable Workspace package", () => {
     expect(existsSync(join(targetRoot, ".floe", "portable-content", "sha256", digest))).toBe(false);
     expect(Number(row(target, "SELECT COUNT(*) AS count FROM workspaces").count)).toBe(0);
     expect(Number(row(target, "SELECT COUNT(*) AS count FROM workspace_restore_holds").count)).toBe(0);
-  }, 15_000);
+  });
 
   it("detects package tampering before restore", () => {
     const root = mkdtempSync(join(tmpdir(), "floe-portability-tamper-"));

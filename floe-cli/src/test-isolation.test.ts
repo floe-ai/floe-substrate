@@ -3,6 +3,8 @@
  * routes that reach a real Floe without touching its folder directly.
  */
 import { mkdtempSync, rmSync } from "node:fs";
+import { get as httpGet } from "node:http";
+import { connect } from "node:net";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -75,5 +77,28 @@ describe("test isolation", () => {
     await expect(fetchHostControlToken("http://127.0.0.1:5377")).rejects.toThrow(/real Floe bus address/);
     await expect(fetch("http://127.0.0.1:5377/v1/health")).rejects.toThrow(/real Floe bus address/);
     expect(guard.violations.splice(0)).toHaveLength(2);
+  });
+
+  it("any other connection to the real bus address is refused: WebSocket, http, raw socket", async () => {
+    const attempts: Array<() => Promise<unknown>> = [
+      () => new Promise((settle) => {
+        const socket = new WebSocket("ws://127.0.0.1:5377/v1/events/stream");
+        socket.onerror = settle;
+        socket.onclose = settle;
+      }),
+      () => new Promise((settle) => {
+        const request = httpGet("http://localhost:5377/v1/health", settle);
+        request.on("error", settle);
+      }),
+      () => new Promise((settle) => {
+        const socket = connect({ host: "::1", port: 5377 }, () => settle(null));
+        socket.on("error", settle);
+      }),
+    ];
+    for (const attempt of attempts) {
+      await attempt().catch((error) => error);
+      const found = guard.violations.splice(0);
+      expect(found.join("\n")).toMatch(/real Floe bus address: net\.Socket\.connect/);
+    }
   });
 });

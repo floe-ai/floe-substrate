@@ -13,7 +13,9 @@ export default defineConfig({
     // machine) a test that needs well under a second of CPU can stretch far past
     // the 5s default in wall-clock terms and time out. That is CPU contention,
     // not a hung test or shared product state, so the ceiling is set to reflect
-    // the real cost model. A genuine hang still fails, just later.
+    // the real cost model. An asynchronous hang still fails, just later; a
+    // synchronous test cannot be interrupted at all, so a ceiling there only
+    // measures machine load (see workspace-portability.test.ts).
     testTimeout: 30_000,
     hookTimeout: 30_000
   }
