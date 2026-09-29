@@ -2,13 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { defaultConfig, type LocalConfig } from "./config.js";
 import { BridgeDaemon, chooseAdapter } from "./daemon.js";
 import { TurnFailedError } from "./adapters/turn-failed-error.js";
 import { HookRegistry, type HookPayload } from "./hooks.js";
 
-const envStack: Array<string | undefined> = [];
 const bridgeServiceToken = `test-bridge-service-${"b".repeat(48)}`;
 const originalBridgeServiceToken = process.env.FLOE_BRIDGE_SERVICE_TOKEN;
 
@@ -33,17 +32,6 @@ function makeConfig(runtimeAdapter?: string): { configPath: string; config: Loca
     cleanup: () => rmSync(home, { recursive: true, force: true })
   };
 }
-
-function withoutAdapterEnv(): void {
-  envStack.push(process.env.FLOE_RUNTIME_ADAPTER);
-  delete process.env.FLOE_RUNTIME_ADAPTER;
-}
-
-afterEach(() => {
-  const previous = envStack.pop();
-  if (previous === undefined) delete process.env.FLOE_RUNTIME_ADAPTER;
-  else process.env.FLOE_RUNTIME_ADAPTER = previous;
-});
 
 describe("chooseAdapter", () => {
   it.each(["push", "claim"])("retains a %s reservation arriving while the previous response unwinds", async path => {
@@ -73,7 +61,6 @@ describe("chooseAdapter", () => {
     } finally { made.cleanup(); }
   });
   it("uses floe-runtime as the live runtime on a clean start", () => {
-    withoutAdapterEnv();
     const made = makeConfig();
     try {
       expect(chooseAdapter(made.configPath, made.config).name).toBe("floe-runtime");
@@ -83,7 +70,6 @@ describe("chooseAdapter", () => {
   });
 
   it("selects floe-runtime when explicitly configured", () => {
-    withoutAdapterEnv();
     const made = makeConfig("floe-runtime");
     try {
       expect(chooseAdapter(made.configPath, made.config).name).toBe("floe-runtime");
@@ -93,30 +79,27 @@ describe("chooseAdapter", () => {
   });
 
   it("rejects the removed pi-agent-core adapter name", () => {
-    withoutAdapterEnv();
     const made = makeConfig("pi-agent-core");
     try {
-      expect(() => chooseAdapter(made.configPath, made.config)).toThrow(/Unsupported FLOE runtime adapter "pi-agent-core"/);
+      expect(() => chooseAdapter(made.configPath, made.config)).toThrow(/Unsupported bridge.runtime_adapter "pi-agent-core"/);
     } finally {
       made.cleanup();
     }
   });
 
   it("does not silently fall back to fake for unsupported adapter names", () => {
-    withoutAdapterEnv();
     const made = makeConfig("copilot");
     try {
-      expect(() => chooseAdapter(made.configPath, made.config)).toThrow(/Unsupported FLOE runtime adapter "copilot"/);
+      expect(() => chooseAdapter(made.configPath, made.config)).toThrow(/Unsupported bridge.runtime_adapter "copilot"/);
     } finally {
       made.cleanup();
     }
   });
 
   it("does not retain the removed Codex app-server runtime path", () => {
-    withoutAdapterEnv();
     const made = makeConfig("codex-app-server");
     try {
-      expect(() => chooseAdapter(made.configPath, made.config)).toThrow(/Unsupported FLOE runtime adapter "codex-app-server"/);
+      expect(() => chooseAdapter(made.configPath, made.config)).toThrow(/Unsupported bridge.runtime_adapter "codex-app-server"/);
     } finally {
       made.cleanup();
     }
@@ -125,7 +108,6 @@ describe("chooseAdapter", () => {
 
 describe("BridgeDaemon shutdown", () => {
   it("stays explicitly unavailable instead of trusting loopback when its credential is missing", async () => {
-    withoutAdapterEnv();
     const made = makeConfig("fake");
     try {
       const daemon = new BridgeDaemon(made.configPath, made.config, {
@@ -146,7 +128,6 @@ describe("BridgeDaemon shutdown", () => {
   });
 
   it("disposes runtime adapter sessions with bridge_shutdown reason", async () => {
-    withoutAdapterEnv();
     const made = makeConfig("fake");
     const disposeReasons: string[] = [];
     try {
@@ -168,7 +149,6 @@ describe("BridgeDaemon shutdown", () => {
   });
 
   it("interrupts the exact runtime delivery requested by the Bus", () => {
-    withoutAdapterEnv();
     const made = makeConfig("fake");
     try {
       const daemon = new BridgeDaemon(made.configPath, made.config);
@@ -188,7 +168,6 @@ describe("BridgeDaemon shutdown", () => {
   });
 
   it("does not start a pushed delivery when cancellation overtakes execution", async () => {
-    withoutAdapterEnv();
     const made = makeConfig("fake");
     try {
       const daemon = new BridgeDaemon(made.configPath, made.config);
@@ -220,7 +199,6 @@ describe("BridgeDaemon canonical runtime and Scope refresh", () => {
   it.each(["scope_graph_created", "scope_graph_updated", "scope_retired", "actor_runtime_binding_changed"])(
     "reattaches workspaces when receiving %s",
     async (messageType) => {
-    withoutAdapterEnv();
     const made = makeConfig("fake");
     try {
       const daemon = new BridgeDaemon(made.configPath, made.config);
@@ -243,7 +221,6 @@ describe("BridgeDaemon canonical runtime and Scope refresh", () => {
   );
 
   it("rechecks attachment when a configuration push arrives during the current pass", async () => {
-    withoutAdapterEnv();
     const made = makeConfig("fake");
     try {
       const daemon = new BridgeDaemon(made.configPath, made.config);
@@ -270,7 +247,6 @@ describe("BridgeDaemon canonical runtime and Scope refresh", () => {
 
 describe("BridgeDaemon hook event stream", () => {
   it("fires WebhookReceived once for a persisted webhook ingest event and ignores spoofed or repeated payloads", async () => {
-    withoutAdapterEnv();
     const made = makeConfig("fake");
     const previousWebSocket = (globalThis as any).WebSocket;
     let socket: { emitMessage(data: string): void } | undefined;
@@ -449,7 +425,6 @@ describe("BridgeDaemon hook event stream", () => {
   });
 
   it("bounds WebhookReceived replay dedupe to recent event IDs", async () => {
-    withoutAdapterEnv();
     const made = makeConfig("fake");
     const previousWebSocket = (globalThis as any).WebSocket;
     let socket: { emitMessage(data: string): void } | undefined;
@@ -538,7 +513,6 @@ describe("BridgeDaemon hook event stream", () => {
 
 describe("BridgeDaemon – TurnFailedError handling (FIX 1)", () => {
   it("records terminal failure through the causal turn-result path", async () => {
-    withoutAdapterEnv();
     const made = makeConfig("fake");
 
     try {
@@ -656,7 +630,6 @@ describe("BridgeDaemon – TurnFailedError handling (FIX 1)", () => {
 
 describe("BridgeDaemon – canonical direct Context runtime", () => {
   it.each([false, true])("uses the pinned runtime and its Workspace binding without an Actor file (local access: %s)", async (hasLocalBinding) => {
-    withoutAdapterEnv();
     const made = makeConfig("fake");
     try {
       const daemon = new BridgeDaemon(made.configPath, made.config);
@@ -785,7 +758,6 @@ describe("BridgeDaemon – canonical direct Context runtime", () => {
 
 describe("BridgeDaemon – Extension isolation", () => {
   it("does not inject workspace Extension code into an Actor runtime", async () => {
-    withoutAdapterEnv();
     const made = makeConfig("fake");
 
     try {
@@ -871,7 +843,6 @@ describe("BridgeDaemon – Extension isolation", () => {
 
 describe("BridgeDaemon – D1 WS reconnect with exponential back-off", () => {
   it("reconnects after socket close with increasing back-off and resets on reopen", async () => {
-    withoutAdapterEnv();
     const made = makeConfig("fake");
     const previousWebSocket = (globalThis as any).WebSocket;
 
@@ -996,7 +967,6 @@ describe("BridgeDaemon – D1 WS reconnect with exponential back-off", () => {
   });
 
   it("does not reconnect after stop() is called", async () => {
-    withoutAdapterEnv();
     const made = makeConfig("fake");
     const previousWebSocket = (globalThis as any).WebSocket;
 
@@ -1059,7 +1029,6 @@ describe("BridgeDaemon – D1 WS reconnect with exponential back-off", () => {
 
 describe("BridgeDaemon – D2 direct bundle consumption from WS payload", () => {
   it("handles a pushed bundle directly without calling claimDeliveries when this bridge owns the endpoint", async () => {
-    withoutAdapterEnv();
     const made = makeConfig("fake");
     const previousWebSocket = (globalThis as any).WebSocket;
 
@@ -1160,7 +1129,6 @@ describe("BridgeDaemon – D2 direct bundle consumption from WS payload", () => 
   });
 
   it("falls back to processDeliveries when the endpoint is not owned by this bridge", async () => {
-    withoutAdapterEnv();
     const made = makeConfig("fake");
     const previousWebSocket = (globalThis as any).WebSocket;
 
@@ -1239,7 +1207,6 @@ describe("BridgeDaemon – D2 direct bundle consumption from WS payload", () => 
 
 describe("BridgeDaemon – authenticated WS first frame", () => {
   it("sends only the credential and retained cursor, not caller identity", async () => {
-    withoutAdapterEnv();
     const made = makeConfig("fake");
     const previousWebSocket = (globalThis as any).WebSocket;
 

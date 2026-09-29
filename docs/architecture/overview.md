@@ -209,8 +209,8 @@ graph TD
 ```
 
 **Adapter selection logic** (`daemon.ts:chooseAdapter`):
-- `FLOE_RUNTIME_ADAPTER` env var overrides config.
-- If no override: `bridge.runtime_adapter` selects `FloeRuntimeAdapter` (spawns the vendor CLI); otherwise `FakeRuntimeAdapter`.
+- Only `bridge.runtime_adapter` in the config selects the adapter; no environment variable does.
+- Unset or `floe-runtime` selects `FloeRuntimeAdapter`; `fake` selects `FakeRuntimeAdapter`; anything else fails at start.
 
 **RuntimeAdapter interface** (`floe-bridge/src/adapters/runtime-adapter.ts`):
 

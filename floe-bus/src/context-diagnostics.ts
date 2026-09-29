@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { BusStore } from "./store.js";
+import { BUS_VERSION } from "./version.js";
 
 type RuntimeStatus = {
   bridge: {
@@ -143,8 +144,8 @@ export function registerContextDiagnosticRoutes(
       generated_at: new Date().toISOString(),
       source: {
         component: "floe-bus",
-        release_version: process.env.FLOE_RELEASE_VERSION ?? null,
-        build_sha: process.env.FLOE_BUILD_SHA ?? null,
+        release_version: BUS_VERSION,
+        build_sha: null,
       },
       workspace: { workspace_id: params.workspace_id },
       context: {

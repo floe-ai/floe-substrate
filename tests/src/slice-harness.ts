@@ -31,7 +31,7 @@ import {
 export interface SliceTier {
   /** Stable id used in test names. */
   id: string;
-  /** Runtime adapter the Bridge selects (drives FLOE_RUNTIME_ADAPTER). */
+  /** Runtime adapter the Bridge selects (bridge.runtime_adapter in the config). */
   adapter: "fake" | "floe-runtime";
   /** Provider recorded on the runtime binding. */
   provider: string;
@@ -79,7 +79,8 @@ export class SliceHarness {
         data_dir: "./bridge",
         log_dir: "./logs/bridge",
         bus_url: this.wsUrl,
-        workspace_access: { local_paths: true }
+        workspace_access: { local_paths: true },
+        runtime_adapter: this.tier.adapter
       },
       library: {
         configs_dir: "./configs",
@@ -90,17 +91,9 @@ export class SliceHarness {
       }
     }), "utf8");
 
-    // The native broker mints the Bridge service credential and workspace
-    // operation sessions against a Bus URL it resolves from the environment.
-    // Point it at this isolated Bus so the harness runs the real broker path
-    // instead of the default-port product instance.
-    process.env.FLOE_BUS_HTTP_BASE = this.busUrl;
-
     // The CLI-shaped config the product start path consumes. It shares the home,
     // ports and log dirs of the on-disk Bus config, and selects this tier's
-    // runtime adapter through configuration exactly as a local install would:
-    // process-manager forwards bridge.runtime_adapter to the Bridge as
-    // FLOE_RUNTIME_ADAPTER, which chooseAdapter() honours.
+    // runtime adapter through bridge.runtime_adapter, exactly as a local install does.
     this.cliConfig = {
       schema: "floe.local.v1",
       version: 1,
@@ -134,7 +127,7 @@ export class SliceHarness {
     // broker-minted service credential. No hand-made tokens, no in-process Bus.
     await startAll(this.configPath, this.cliConfig);
 
-    this.hostControlToken = await fetchHostControlToken();
+    this.hostControlToken = await fetchHostControlToken(this.busUrl);
 
     this.busMessages = [];
     this.eventSocket = new (globalThis as any).WebSocket(`${this.wsUrl}/v1/events/stream`);
@@ -153,7 +146,6 @@ export class SliceHarness {
       stopService(this.configPath, this.cliConfig, "bridge");
       stopService(this.configPath, this.cliConfig, "bus");
     }
-    delete process.env.FLOE_BUS_HTTP_BASE;
     if (this.temp) await removeTemp(this.temp);
   }
 
@@ -229,7 +221,7 @@ export class SliceHarness {
    * not bypassed.
    */
   async registerAndAuthorize(locator: string): Promise<string> {
-    const { workspace_id } = await registerLocalWorkspaceViaBroker(locator, true);
+    const { workspace_id } = await registerLocalWorkspaceViaBroker(locator, true, this.busUrl);
     this.operationSessionBearer = await this.mintOperationSession(workspace_id);
     return workspace_id;
   }

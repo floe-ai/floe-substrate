@@ -135,7 +135,7 @@ export type NativeAuthorityCommandRunner = (
  * this process.
  */
 export class NativeCliOperationAuthorityBroker implements CliOperationAuthorityBroker {
-  constructor(private readonly run: NativeAuthorityCommandRunner = runNativeAuthorityCommand) {}
+  constructor(private readonly run: NativeAuthorityCommandRunner) {}
 
   listLocalWorkspaces(): Promise<unknown> {
     return this.run({ command: "list_local_workspaces" });
@@ -174,6 +174,11 @@ export class NativeCliOperationAuthorityBroker implements CliOperationAuthorityB
   }
 }
 
+/** The native broker, talking to the Bus at the configured URL. */
+export function nativeOperationBroker(busHttpBase: string): NativeCliOperationAuthorityBroker {
+  return new NativeCliOperationAuthorityBroker((command) => runNativeAuthorityCommand(command, busHttpBase));
+}
+
 /**
  * CLI projection over the same Bus-owned semantic operations used by the app
  * and Actors. A native broker owns authentication and sessions; this client
@@ -183,7 +188,7 @@ export class CliOperationClient {
   private readonly interactionSessionId: string;
 
   constructor(
-    private readonly broker: CliOperationAuthorityBroker = new NativeCliOperationAuthorityBroker(),
+    private readonly broker: CliOperationAuthorityBroker,
     interactionSessionId?: string,
   ) {
     this.interactionSessionId = interactionSessionId
@@ -261,22 +266,21 @@ export class CliOperationClient {
 
 async function runNativeAuthorityCommand(
   command: Readonly<Record<string, unknown>>,
-  busHttpBase?: string,
+  busHttpBase: string | null,
 ): Promise<unknown> {
   const helper = resolveNativeAuthorityBrokerPath();
   if (!helper) throw new CliAuthorityBrokerUnavailableError();
   const payload = JSON.stringify(command);
+  // The broker learns which Bus to talk to only from this process: the
+  // configured config.bus.http_base_url, or nothing for commands that never
+  // reach a Bus. A FLOE_BUS_HTTP_BASE left in the person's shell is dropped.
+  const { FLOE_BUS_HTTP_BASE: _inherited, ...inherited } = process.env;
   return new Promise((resolveResult, reject) => {
     const child = spawn(helper, [], {
       shell: false,
       windowsHide: true,
       stdio: ["pipe", "pipe", "ignore"],
-      // The Bus location has one source of truth: config.bus.http_base_url.
-      // The broker must talk to that same Bus, so we derive its FLOE_BUS_HTTP_BASE
-      // here instead of relying on a value a human would have to know to export.
-      env: busHttpBase
-        ? { ...process.env, FLOE_BUS_HTTP_BASE: busHttpBase }
-        : process.env,
+      env: busHttpBase ? { ...inherited, FLOE_BUS_HTTP_BASE: busHttpBase } : inherited,
     });
     const chunks: Buffer[] = [];
     let bytes = 0;
@@ -338,7 +342,7 @@ async function runNativeAuthorityCommand(
  * returned value must be injected into the Bus process environment only and
  * must never be logged, echoed into an error, or written to disk.
  */
-export async function fetchHostControlToken(busHttpBase?: string): Promise<string> {
+export async function fetchHostControlToken(busHttpBase: string): Promise<string> {
   const result = await runNativeAuthorityCommand({ command: "provide_host_control_token" }, busHttpBase);
   if (!isRecord(result) || typeof result.token !== "string" || !result.token) {
     throw new Error("Floe's native authority broker did not provide a host-control credential.");
@@ -352,7 +356,7 @@ export async function fetchHostControlToken(busHttpBase?: string): Promise<strin
  * calls this, and the key never leaves its memory.
  */
 export async function fetchIdentityDeviceKey(home: string, create: boolean): Promise<Uint8Array | null> {
-  const result = await runNativeAuthorityCommand({ command: "identity_device_key", home, create });
+  const result = await runNativeAuthorityCommand({ command: "identity_device_key", home, create }, null);
   if (!isRecord(result) || !("key" in result)) throw new Error("Floe's native authority broker returned no device key answer.");
   if (result.key === null) return null;
   if (typeof result.key !== "string") throw new Error("Floe's native authority broker returned an invalid device key.");
@@ -362,7 +366,7 @@ export async function fetchIdentityDeviceKey(home: string, create: boolean): Pro
 }
 
 export async function forgetIdentityDeviceKey(home: string): Promise<boolean> {
-  const result = await runNativeAuthorityCommand({ command: "forget_identity_device_key", home });
+  const result = await runNativeAuthorityCommand({ command: "forget_identity_device_key", home }, null);
   return isRecord(result) && result.removed === true;
 }
 
@@ -376,7 +380,7 @@ export async function forgetIdentityDeviceKey(home: string): Promise<boolean> {
  * injected into the Bridge process environment only and never logged or
  * persisted.
  */
-export async function fetchBridgeServiceToken(bridgeId = "bridge:local", busHttpBase?: string): Promise<string> {
+export async function fetchBridgeServiceToken(bridgeId: string, busHttpBase: string): Promise<string> {
   const result = await runNativeAuthorityCommand({
     command: "provide_bridge_service_token",
     bridge_id: bridgeId,
@@ -395,7 +399,7 @@ export async function fetchBridgeServiceToken(bridgeId = "bridge:local", busHttp
 export async function registerLocalWorkspaceViaBroker(
   locator: string,
   initAuthorized: boolean,
-  busHttpBase?: string,
+  busHttpBase: string,
 ): Promise<{ workspace_id: string; name: string }> {
   const result = await runNativeAuthorityCommand({
     command: "register_workspace",
@@ -415,13 +419,11 @@ export async function registerLocalWorkspaceViaBroker(
 
 function resolveNativeAuthorityBrokerPath(): string | null {
   const executable = process.platform === "win32" ? "floe-authority-broker.exe" : "floe-authority-broker";
-  const configured = process.env.FLOE_AUTHORITY_BROKER_PATH?.trim();
   const moduleDirectory = dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    configured,
     resolve(moduleDirectory, "..", "native", executable),
     resolve(dirname(process.execPath), executable),
-  ].filter((candidate): candidate is string => Boolean(candidate));
+  ];
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 

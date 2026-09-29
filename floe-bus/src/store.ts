@@ -5642,6 +5642,35 @@ export class BusStore {
   }
 
   /**
+   * The event that started the chain a runtime turn belongs to. A resumed turn
+   * is caused by an answer (request.result), which answers a request, which a
+   * turn made while handling its own trigger; follow those links back to the
+   * first event that no turn caused — normally what the person sent.
+   */
+  private originEventId(event: EventEnvelope): string {
+    let current = event;
+    for (let hops = 0; hops < 32; hops += 1) {
+      const requestEventId = current.type === "request.result"
+        ? (typeof current.metadata?.request_event_id === "string" ? current.metadata.request_event_id : null)
+        : current.type === "request" ? current.event_id : null;
+      if (!requestEventId) return current.event_id;
+      const requestRow = this.db.prepare("SELECT * FROM events WHERE event_id = ?").get(requestEventId) as any;
+      if (!requestRow) return current.event_id;
+      const request = this.rowToEvent(requestRow);
+      const parentDeliveryId = request.metadata?.request_parent_delivery_id;
+      if (typeof parentDeliveryId !== "string") return request.event_id;
+      const parent = this.db.prepare("SELECT trigger_event_id FROM delivery_bundles WHERE delivery_id = ?")
+        .get(parentDeliveryId) as { trigger_event_id: string } | undefined;
+      const parentTriggerRow = parent
+        ? this.db.prepare("SELECT * FROM events WHERE event_id = ?").get(parent.trigger_event_id) as any
+        : null;
+      if (!parentTriggerRow) return request.event_id;
+      current = this.rowToEvent(parentTriggerRow);
+    }
+    return current.event_id;
+  }
+
+  /**
    * Record one runtime delivery's public conclusion without routing it. When
    * the delivery was caused by an exact correlated request to this endpoint,
    * also enqueue a compact return event in the requester's original Context.
@@ -5704,6 +5733,28 @@ export class BusStore {
         throw new Error(`Context not found for runtime result: ${resultContextId}`);
       }
 
+      // If this exact processing cycle established a child request, its public
+      // completion is interim. Keep any inbound request suspended until the child
+      // result resumes this actor and it completes again.
+      const childRequestRows = this.db.prepare(`
+        SELECT pr.*, e.metadata_json
+        FROM pending_responses pr
+        JOIN events e ON e.event_id = pr.source_event_id
+        WHERE pr.waiting_endpoint_id = ?
+      `).all(delivery.endpoint_id) as any[];
+      const awaitingRequestEventIds = childRequestRows
+        .filter((row) => parseJson<Record<string, unknown>>(row.metadata_json).request_parent_delivery_id === input.delivery_id)
+        .map((row) => String(row.source_event_id));
+      const madeChildRequest = awaitingRequestEventIds.length > 0;
+      // What a surface needs without walking links: whether this result ends
+      // the work or waits on requests this turn made, and the event that
+      // started the chain this result belongs to.
+      const chain = {
+        final: !madeChildRequest,
+        awaiting_request_event_ids: awaitingRequestEventIds,
+        origin_event_id: this.originEventId(trigger),
+      };
+
       const resultEvent = this.insertEvent(
         {
           type: "message",
@@ -5722,7 +5773,8 @@ export class BusStore {
               scope_execution_id: canonicalNode?.execution_id ?? null,
               composition_revision_id: canonicalNode?.revision_id ?? null,
               node_execution_id: canonicalNode?.node_execution_id ?? null,
-              execution_attempt_id: canonicalAttempt?.attempt_id ?? null
+              execution_attempt_id: canonicalAttempt?.attempt_id ?? null,
+              ...chain
             }
           },
           metadata: {
@@ -5734,7 +5786,8 @@ export class BusStore {
             scope_execution_id: canonicalNode?.execution_id ?? null,
             composition_revision_id: canonicalNode?.revision_id ?? null,
             node_execution_id: canonicalNode?.node_execution_id ?? null,
-            execution_attempt_id: canonicalAttempt?.attempt_id ?? null
+            execution_attempt_id: canonicalAttempt?.attempt_id ?? null,
+            ...chain
           },
           idempotency_key: resultIdempotencyKey
         },
@@ -5761,19 +5814,7 @@ export class BusStore {
         ? requestEvent.destination_json.endpoint_id
         : null;
 
-      // If this exact processing cycle established a child request, its public
-      // completion is interim. Keep any inbound request suspended until the child
-      // result resumes this actor and it completes again.
-      const childRequestRows = this.db.prepare(`
-        SELECT pr.*, e.metadata_json
-        FROM pending_responses pr
-        JOIN events e ON e.event_id = pr.source_event_id
-        WHERE pr.waiting_endpoint_id = ?
-      `).all(delivery.endpoint_id) as any[];
-      const madeChildRequest = childRequestRows.some((row) => {
-        const metadata = parseJson<Record<string, unknown>>(row.metadata_json);
-        return metadata.request_parent_delivery_id === input.delivery_id;
-      });
+
       if (
         madeChildRequest
         && canonicalNode
@@ -5855,7 +5896,8 @@ export class BusStore {
                 request_event_id: requestEvent!.event_id,
                 result_event_id: resultEvent.event_id,
                 responding_endpoint_id: delivery.endpoint_id,
-                result_context_id: resultContextId
+                result_context_id: resultContextId,
+                origin_event_id: chain.origin_event_id
               }
             },
             metadata: {
@@ -5865,6 +5907,7 @@ export class BusStore {
               result_event_id: resultEvent.event_id,
               responding_endpoint_id: delivery.endpoint_id,
               result_context_id: resultContextId,
+              origin_event_id: chain.origin_event_id,
               scope_execution_id: canonicalContinuationValid ? parentNodeExecution!.execution_id : null,
               composition_revision_id: canonicalContinuationValid ? parentNodeExecution!.revision_id : null,
               node_execution_id: canonicalContinuationValid ? parentNodeExecution!.node_execution_id : null,

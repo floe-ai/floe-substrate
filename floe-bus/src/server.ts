@@ -226,6 +226,12 @@ export type BusServerOptions = Readonly<{
   /** Local product policy: the configured loopback frontend opens without pairing. */
   local_browser_access?: boolean;
   /**
+   * Minted by whoever started this process (`floe start` passes --instance-id)
+   * and reported at /health, so the starter can prove the bus answering on a URL
+   * is the exact process it launched.
+   */
+  instance_id?: string;
+  /**
    * UNSAFE, in-process test only. When set, requests that arrive without a
    * bearer are allowed through with a fabricated authority so old unit tests
    * can exercise route logic without minting real credentials. This is NOT a
@@ -843,11 +849,8 @@ export async function createBusServer(
   app.get("/health", async () => ({
     ok: true,
     service: "floe-bus",
-    // The instance id is minted by whoever started this process (the CLI sets
-    // FLOE_BUS_INSTANCE_ID) and recorded alongside the pid. It lets the starter
-    // prove that a bus answering on a URL is the exact process it launched — not
-    // a stale predecessor or a different install that happens to hold the port.
-    instance_id: process.env.FLOE_BUS_INSTANCE_ID ?? null,
+    // See BusServerOptions.instance_id.
+    instance_id: options.instance_id ?? null,
     // The Floe release this bus is. Two copies of Floe can exist on one machine
     // (a direct install and one inside a surface); whichever started serves, so
     // a client needs this to tell it connected to a different version.
@@ -4025,7 +4028,9 @@ export async function createBusServer(
     const body = z.object({
       delivery_id: z.string().min(1),
       outcome: z.enum(["completed", "failed"]),
-      text: z.string().min(1),
+      // A turn that ends without visible text still ends: it is recorded with
+      // empty text so a finished turn is a fact, not an inference.
+      text: z.string(),
       metadata: z.record(z.unknown()).optional()
     }).parse(request.body);
     if (

@@ -443,6 +443,67 @@ describe("runtime turn results and causal requests", () => {
     ]);
   });
 
+  it("marks a turn that asked as not final and ties every result in the chain to the person's task", async () => {
+    const task = (await emitViaRoute(handle, {
+      type: "message",
+      workspace_id: WS,
+      source_endpoint_id: OPERATOR,
+      destination: { kind: "endpoint", endpoint_id: B },
+      content: { text: "do the task" },
+    })).event;
+    const [first] = store.claimDeliveries("bridge:b", 10, noop);
+
+    // B asks A a question during its turn, then ends the turn with that text.
+    const question = (await emitViaRoute(handle, requestCommand({
+      source: B,
+      destination: A,
+      correlation: "corr-question",
+      currentContext: task.context_id,
+      parentDelivery: first.delivery_id,
+    }))).event;
+    const asked = store.recordRuntimeTurnResult({
+      delivery_id: first.delivery_id,
+      outcome: "completed",
+      text: "Which colour?",
+    }, noop);
+    expect(asked.result_event.content.data).toMatchObject({
+      final: false,
+      awaiting_request_event_ids: [question.event_id],
+      origin_event_id: task.event_id,
+    });
+    expect(asked.result_event.metadata).toMatchObject({ final: false, origin_event_id: task.event_id });
+    store.reportDeliveryStatus({ bridge_id: "bridge:b", delivery_id: first.delivery_id, state: "acknowledged" }, noop);
+    store.reportTurnEnd(B, noop);
+
+    // A answers; its own result belongs to the same task.
+    const [answering] = store.claimDeliveries("bridge:a", 10, noop);
+    const answer = store.recordRuntimeTurnResult({
+      delivery_id: answering.delivery_id,
+      outcome: "completed",
+      text: "Blue.",
+    }, noop);
+    expect(answer.result_event.content.data).toMatchObject({ final: true, origin_event_id: task.event_id });
+    expect(answer.return_event?.metadata.origin_event_id).toBe(task.event_id);
+
+    // B resumes from the answer and ends with no visible text.
+    const [resumed] = store.claimDeliveries("bridge:b", 10, noop);
+    expect(resumed.events[0]).toMatchObject({ type: "request.result" });
+    const finished = store.recordRuntimeTurnResult({
+      delivery_id: resumed.delivery_id,
+      outcome: "completed",
+      text: "",
+    }, noop);
+    expect(finished.result_event.content).toMatchObject({
+      text: "",
+      data: {
+        cause_event_id: resumed.events[0].event_id,
+        final: true,
+        awaiting_request_event_ids: [],
+        origin_event_id: task.event_id,
+      },
+    });
+  });
+
   it("preserves a durable nested A to B to C return chain", async () => {
     const parent = store.contextStore.createContext({
       workspace_id: WS,

@@ -14,7 +14,7 @@ export const DEFAULT_TRUSTED_BROWSER_ORIGINS = Object.freeze([
   "http://127.0.0.1:5379",
 ]);
 
-export function trustedBrowserOrigins(configured = process.env.FLOE_ALLOWED_ORIGINS): ReadonlySet<string> {
+export function trustedBrowserOrigins(configured?: string): ReadonlySet<string> {
   const additions = (configured ?? "")
     .split(",")
     .map((value) => value.trim())

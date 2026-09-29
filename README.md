@@ -101,7 +101,7 @@ npm test
 ```
 
 The black-box vertical-slice test starts real bus and bridge processes against a
-temporary `FLOE_HOME`, registers a project, verifies `.floe/` initialization,
+temporary Floe home, registers a project, verifies `.floe/` initialization,
 sends a human message, receives fake agent progress/output, and resumes a
 waiting fake agent with a later message. It also verifies bus-owned
 `wait_refresh` generation and delivery acknowledgement state.
@@ -112,12 +112,7 @@ The fake adapter is the no-login fallback for local development and CI. Real
 execution runs through the `floe-runtime` adapter, backed by the official
 Copilot SDK. Floe passes its first-session instructions as an appended system
 message and exposes Bridge-owned tools directly; it does not broker model
-credentials. Select it explicitly:
-
-```bash
-FLOE_RUNTIME_ADAPTER=floe-runtime
-```
-
-Or set `bridge.runtime_adapter: floe-runtime` in `~/.floe/config.yaml` and
-restart Floe. Unsupported adapter names fail fast rather than silently falling
-back to fake.
+credentials. It is the default. `bridge.runtime_adapter` in `~/.floe/config.yaml`
+is the only way to choose an adapter: `floe-runtime` or `fake`. Restart Floe
+after changing it. Unsupported adapter names fail fast rather than silently
+falling back to fake.

@@ -78,7 +78,7 @@ export function expandHome(pathValue: string): string {
 }
 
 export function resolveConfigPath(explicitPath?: string): string {
-  return resolve(expandHome(explicitPath ?? process.env.FLOE_CONFIG ?? join(homedir(), ".floe", "config.yaml")));
+  return resolve(expandHome(explicitPath ?? join(homedir(), ".floe", "config.yaml")));
 }
 
 export function resolveLocalPath(configPath: string, home: string, pathValue: string): string {
@@ -136,13 +136,11 @@ export function ensureConfig(explicitPath?: string): { configPath: string; confi
 }
 
 export function bridgeHttpBase(config: LocalConfig): string {
-  if (process.env.FLOE_BUS_HTTP_URL) return process.env.FLOE_BUS_HTTP_URL;
   if (config.bus.http_base_url) return config.bus.http_base_url;
   return config.bridge.bus_url.replace(/^ws:/, "http:").replace(/^wss:/, "https:");
 }
 
 export function bridgeWsBase(config: LocalConfig): string {
-  if (process.env.FLOE_BUS_WS_URL) return process.env.FLOE_BUS_WS_URL;
   if (config.bus.ws_base_url) return config.bus.ws_base_url;
   return config.bridge.bus_url;
 }

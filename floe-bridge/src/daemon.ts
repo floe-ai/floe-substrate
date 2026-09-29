@@ -107,7 +107,7 @@ export class BridgeDaemon {
     readonly config: LocalConfig,
     options: BridgeDaemonOptions = {},
   ) {
-    this.bridgeId = options.bridge_id ?? process.env.FLOE_BRIDGE_ID ?? "bridge:local";
+    this.bridgeId = options.bridge_id ?? "bridge:local";
     const injectedToken = Object.prototype.hasOwnProperty.call(options, "transport_authority")
       ? options.transport_authority?.bearer_token ?? ""
       : process.env.FLOE_BRIDGE_SERVICE_TOKEN ?? "";
@@ -137,8 +137,6 @@ export class BridgeDaemon {
       runtime_adapters: [this.adapter.name],
       workspace_access: this.config.bridge.workspace_access,
       capabilities: ["workspace_attach", "project_template_init", "agent_endpoint_registration", "delivery_claim"],
-      release_version: process.env.FLOE_RELEASE_VERSION ?? null,
-      build_sha: process.env.FLOE_BUILD_SHA ?? null,
     });
     this.openEventStream();
     await this.attachKnownWorkspaces();
@@ -1164,12 +1162,12 @@ export class BridgeDaemon {
 }
 
 export function chooseAdapter(_configPath: string, config: LocalConfig): RuntimeAdapter {
-  const configured = process.env.FLOE_RUNTIME_ADAPTER ?? config.bridge.runtime_adapter;
+  const configured = config.bridge.runtime_adapter;
   if (!configured) return new FloeRuntimeAdapter();
   const selected = configured.trim().toLowerCase();
   if (selected === "fake") return new FakeRuntimeAdapter();
   if (selected === "floe-runtime") return new FloeRuntimeAdapter();
-  throw new Error(`Unsupported FLOE runtime adapter "${selected}". Use "fake" or "floe-runtime".`);
+  throw new Error(`Unsupported bridge.runtime_adapter "${selected}" in the Floe config. Use "fake" or "floe-runtime".`);
 }
 
 function runtimeAdapterMatches(requiredAdapterId: string, activeAdapterName: string): boolean {

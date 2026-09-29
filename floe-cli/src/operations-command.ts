@@ -30,7 +30,7 @@ type InvokeOptions = CommonOptions & {
 
 export type OperationsCommandDependencies = Readonly<{
   cwd?: () => string;
-  client?: () => CliOperationClient;
+  client: () => CliOperationClient;
   confirm?: (confirmation: OperationConfirmation) => Promise<boolean>;
   output?: (message: string) => void;
   read_file?: (path: string) => string;
@@ -176,7 +176,7 @@ export async function confirmInTerminal(confirmation: OperationConfirmation): Pr
 }
 
 function createClient(dependencies: OperationsCommandDependencies): CliOperationClient {
-  return dependencies.client?.() ?? new CliOperationClient();
+  return dependencies.client();
 }
 
 function write(dependencies: OperationsCommandDependencies, message: string): void {

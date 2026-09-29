@@ -79,7 +79,7 @@ describe("identity-actor gate [fake]", () => {
 
     // 2. Admit a client keypair to this workspace (host_control, the trust
     //    anchor). The client owns the key; the substrate only stores the pubkey.
-    const hostToken = await fetchHostControlToken();
+    const hostToken = await fetchHostControlToken(busUrl);
     const mnemonic = generateSeedWords();
     const sk = privateKeyFromSeedWords(mnemonic);
     const npub = nip19.npubEncode(getPublicKey(sk));

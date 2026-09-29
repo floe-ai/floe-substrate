@@ -84,7 +84,7 @@ export function expandHome(pathValue: string): string {
 }
 
 export function resolveConfigPath(explicitPath?: string): string {
-  const configured = explicitPath ?? process.env.FLOE_CONFIG ?? join(homedir(), ".floe", "config.yaml");
+  const configured = explicitPath ?? join(homedir(), ".floe", "config.yaml");
   return resolve(expandHome(configured));
 }
 

@@ -126,6 +126,22 @@ describe("FloeRuntimeAdapter SDK route", () => {
     });
   });
 
+  it("records a result with empty text when a turn ends without visible output", async () => {
+    const runtime = new FakeRuntime();
+    runtime.run = vi.fn(async (...args: any[]) => {
+      await args[3]?.("sdk-session");
+      return { text: "  ", sessionId: "sdk-session", stopReason: "idle", usage: null, elapsedMs: 1 };
+    }) as any;
+    const ctx = context();
+    const record = vi.fn(async () => ({ request_resolved: false, result_event: { event_id: "result-1" } }));
+    ctx.bus.recordRuntimeTurnResult = record;
+    const adapter = new FloeRuntimeAdapter({ runtimeFactory: () => runtime as any });
+
+    await adapter.handleBundle(ctx, bundle(), undefined);
+
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({ delivery_id: "delivery-1", outcome: "completed", text: "" }));
+  });
+
   it("keeps coded SDK faults visible instead of recording a successful result", async () => {
     const failure = Object.assign(new Error("model call failed"), { code: "model_call_failure" });
     const runtime = new FakeRuntime(failure);

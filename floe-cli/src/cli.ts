@@ -15,7 +15,7 @@ import {
   SERVICE_NAMES,
   type ServiceName
 } from "./process-manager.js";
-import { forgetIdentityDeviceKey } from "./operation-client.js";
+import { CliOperationClient, forgetIdentityDeviceKey, nativeOperationBroker } from "./operation-client.js";
 import { probeAgent } from "./identity/connection.js";
 import { registerOperationsCommand } from "./operations-command.js";
 import { registerIdentityCommand } from "./identity-command.js";
@@ -224,7 +224,9 @@ program
     console.log("\nReset complete. Run \`floe setup\` or \`floe start\` to start fresh.");
   });
 
-registerOperationsCommand(program, {});
+registerOperationsCommand(program, {
+  client: () => new CliOperationClient(nativeOperationBroker(ensureConfig(program.opts().config).config.bus.http_base_url)),
+});
 registerIdentityCommand(program, {});
 
 // The surfaces a person can use Floe through: installed packages that declare

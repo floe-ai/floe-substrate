@@ -34,7 +34,8 @@ const session = await identity.session({}, (event) => {
 - `connectIdentity({ surface, configPath?, start? })`
   - `surface`: the name the person sees in `floe identity sessions`. It is a
     label, not proof of which program you are.
-  - `configPath`: defaults to `FLOE_CONFIG`, then `~/.floe/config.yaml`.
+  - `configPath`: defaults to `~/.floe/config.yaml`. Floe reads no
+    environment variable to find its config.
   - `start`: default `true`. If the agent is not running, Floe (bus, bridge and
     agent) is started, when the machine's `services.start_on_demand` allows it.
     Otherwise it rejects with `AgentUnavailableError` (`reason: "not_running"`).

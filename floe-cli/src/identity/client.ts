@@ -67,7 +67,7 @@ export { AgentUnavailableError };
 export type ConnectOptions = {
   /** Shown in `floe identity sessions`, so the person can tell surfaces apart. */
   surface: string;
-  /** Defaults to FLOE_CONFIG, then ~/.floe/config.yaml. */
+  /** Defaults to ~/.floe/config.yaml. */
   configPath?: string;
   /**
    * Start Floe (bus, bridge and agent) when the agent is not answering, if the

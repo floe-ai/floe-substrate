@@ -24,6 +24,7 @@ async function main(): Promise<void> {
   delete process.env.FLOE_HOST_CONTROL_TOKEN;
   const server = await createBusServer(configPath, config, {
     host_control_token: hostControlToken,
+    instance_id: getArgValue("--instance-id"),
     local_browser_access: true,
     workspace_configuration_policy: localProductWorkspacePolicy,
   });

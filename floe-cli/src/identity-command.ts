@@ -18,7 +18,7 @@ import { registerPersonIdentityCommands } from "./identity/terminal-commands.js"
 export type IdentityCommandDependencies = Readonly<{
   output?: (message: string) => void;
   resolve_config?: () => { config: LocalConfig };
-  fetch_host_control_token?: (busHttpBase?: string) => Promise<string>;
+  fetch_host_control_token?: (busHttpBase: string) => Promise<string>;
   fetch?: typeof fetch;
   cwd?: () => string;
 }>;

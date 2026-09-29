@@ -16,6 +16,11 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+function argValue(name) {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? process.argv[index + 1] : undefined;
+}
+
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const npmCli = process.env.npm_execpath;
 const runtimePin = "github:floe-ai/floe-runtime#4e21695972d29941f465f9edaf0f73a0a3c7acf0";
@@ -25,8 +30,7 @@ const consumer = join(root, "consumer");
 const home = join(root, "home");
 const configPath = join(home, "config.json");
 const artifactPath = resolve(
-  process.env.FLOE_PACKAGED_GATE_ARTIFACT
-    ?? join(tmpdir(), "floe-packaged-install-gate.json"),
+  argValue("--artifact") ?? join(tmpdir(), "floe-packaged-install-gate.json"),
 );
 const artifact = {
   schema: "floe.packaged-install-gate.v1",
@@ -327,8 +331,6 @@ try {
     NODE_PATH: "",
     HOME: home,
     USERPROFILE: home,
-    FLOE_CONFIG: configPath,
-    FLOE_BUS_HTTP_BASE: baseUrl,
   };
   run(process.execPath, [cliEntry, "--config", configPath, "start"], {
     cwd: consumer,

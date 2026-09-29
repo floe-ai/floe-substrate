@@ -473,41 +473,35 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
     if (turn.finalized) return;
     turn.finalized = true;
     const output = turn.visible_output.trim();
-    if (output.length > 0) {
-      const recorded = await context.bus.recordRuntimeTurnResult({
-        delivery_id: turn.delivery_id,
-        outcome: "completed",
-        text: output,
-        metadata: {
-          runtime: this.name,
-          runtime_turn_id: turn.runtime_turn_id,
-          execution_attempt_id: turn.execution_attempt_id,
-          node_execution_id: turn.node_execution_id,
-          composition_revision_id: turn.composition_revision_id,
-          stop_reason: result.stopReason,
-          session_id: result.sessionId,
-        },
-      });
-      console.log("[bridge] floe-runtime turn result recorded", {
+    // Every turn that ends records a result, with empty text when the turn
+    // produced none, so the finished state is recorded rather than inferred.
+    const recorded = await context.bus.recordRuntimeTurnResult({
+      delivery_id: turn.delivery_id,
+      outcome: "completed",
+      text: output,
+      metadata: {
+        runtime: this.name,
         runtime_turn_id: turn.runtime_turn_id,
-        delivery_id: turn.delivery_id,
-        output_length: output.length,
-        request_resolved: recorded.request_resolved,
-      });
-      await this.appendTelemetry(context, turn, "turn_result", {
-        text: output,
-        result_event_id: recorded.result_event.event_id,
-        request_resolved: recorded.request_resolved,
-        return_event_id: recorded.return_event?.event_id ?? null,
+        execution_attempt_id: turn.execution_attempt_id,
+        node_execution_id: turn.node_execution_id,
+        composition_revision_id: turn.composition_revision_id,
         stop_reason: result.stopReason,
-      });
-    } else {
-      console.log("[bridge] floe-runtime no visible output", {
-        runtime_turn_id: turn.runtime_turn_id,
-        delivery_id: turn.delivery_id,
-        stop_reason: result.stopReason,
-      });
-    }
+        session_id: result.sessionId,
+      },
+    });
+    console.log("[bridge] floe-runtime turn result recorded", {
+      runtime_turn_id: turn.runtime_turn_id,
+      delivery_id: turn.delivery_id,
+      output_length: output.length,
+      request_resolved: recorded.request_resolved,
+    });
+    await this.appendTelemetry(context, turn, "turn_result", {
+      text: output,
+      result_event_id: recorded.result_event.event_id,
+      request_resolved: recorded.request_resolved,
+      return_event_id: recorded.return_event?.event_id ?? null,
+      stop_reason: result.stopReason,
+    });
   }
 
   private async recordUsage(context: RuntimeContext, turn: FloeTurn, result: RunResult): Promise<void> {
