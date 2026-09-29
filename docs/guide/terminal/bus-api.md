@@ -423,7 +423,15 @@ When a Bridge connects or disconnects, every connection of each Workspace that
 Bridge's host serves receives `bridge_connected` or `bridge_disconnected` with
 payload `{ "bridge_id": "...", "workspace_id": "..." }`. A Bridge that serves
 no Workspace yet announces itself only to host connections, without
-`workspace_id`.
+`workspace_id`. When a Workspace becomes bound to a host whose Bridge is
+already connected, its connections receive `bridge_connected` at once. These
+events state current presence, so a repeat is harmless.
+
+Current presence never depends on having been connected at the right moment:
+for Workspace and host connections, `caught_up` also carries
+`connected_bridge_ids`, the Bridges connected at that instant (for a Workspace
+connection, only those serving it). `caught_up` is where replay ends, so start
+from that list and apply the pushes that follow it.
 
 ## Legacy and internal routes
 

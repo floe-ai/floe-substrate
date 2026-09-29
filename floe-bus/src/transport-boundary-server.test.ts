@@ -753,6 +753,39 @@ describe("authenticated Bus transport boundary", () => {
       surface.socket.close();
     }
   });
+
+  it("gives a late Workspace connection the Bridge's current state, and tells a newly bound Workspace", async () => {
+    const { handle } = await makeServer();
+    const bridge = handle.issueBridgeServiceCredential("bridge:present");
+    const address = await handle.app.listen({ host: "127.0.0.1", port: 0 });
+    const streamUrl = address.replace(/^http/, "ws") + "/v1/events/stream";
+    const host = await openSocket(streamUrl);
+    host.socket.send(JSON.stringify({ type: "authenticate", bearer_token: HOST_TOKEN, start_at: "current" }));
+    await waitFor(host.messages, message => message.type === "caught_up");
+    const runtime = await openSocket(streamUrl);
+    runtime.socket.send(JSON.stringify({ type: "authenticate", bearer_token: bridge.bearer_token }));
+    await waitFor(host.messages, message => message.type === "bridge_connected");
+
+    // R1: connecting after the Bridge came up still learns it is connected.
+    const late = await openSocket(streamUrl);
+    late.socket.send(JSON.stringify({ type: "authenticate", bearer_token: await issueWorkspaceSession(handle, WORKSPACE_ONE),
+      workspace_id: WORKSPACE_ONE, start_at: "current" }));
+    const caughtUp = await waitFor(late.messages, message => message.type === "caught_up");
+    expect(caughtUp.payload.connected_bridge_ids).toEqual(["bridge:present"]);
+
+    // R3: a Workspace bound while the Bridge is already connected is told at once.
+    const added = handle.store.registerWorkspace({ locator: "C:\\FloeTest\\TransportThree", init_authorized: true }, handle.broadcast);
+    const told = await waitFor(host.messages, message => message.type === "bridge_connected"
+      && message.payload?.workspace_id === added.workspace_id);
+    expect(told.payload).toEqual({ bridge_id: "bridge:present", workspace_id: added.workspace_id });
+
+    await closeSocket(runtime.socket);
+    const after = await openSocket(streamUrl);
+    after.socket.send(JSON.stringify({ type: "authenticate", bearer_token: await issueWorkspaceSession(handle, WORKSPACE_ONE),
+      workspace_id: WORKSPACE_ONE, start_at: "current" }));
+    expect((await waitFor(after.messages, message => message.type === "caught_up")).payload.connected_bridge_ids).toEqual([]);
+    for (const socket of [host.socket, late.socket, after.socket]) socket.close();
+  });
 });
 
 function bearer(token: string): Record<string, string> {

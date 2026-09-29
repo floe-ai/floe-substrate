@@ -377,6 +377,23 @@ export async function createBusServer(
         socketAuthorities.delete(socket);
       }
     }
+    // A Workspace newly bound to a host whose Bridge is already connected learns
+    // of that Bridge now, not at its next reconnect.
+    if (type === "workspace_attachment_requested" && typeof payload.workspace_id === "string") {
+      for (const bridgeId of connectedBridgeIds(payload.workspace_id)) {
+        broadcast("bridge_connected", { bridge_id: bridgeId, workspace_id: payload.workspace_id });
+      }
+    }
+  }
+
+  /** Bridges connected now: those serving one Workspace, or all of them when workspaceId is null. */
+  function connectedBridgeIds(workspaceId: string | null): string[] {
+    const ids: string[] = [];
+    for (const [socket, authority] of socketAuthorities) {
+      if (authority.audience !== "bridge_service" || bridgeSockets.get(authority.bridge_id) !== socket) continue;
+      if (workspaceId === null || bridgeMayUseWorkspace(store, authority, workspaceId)) ids.push(authority.bridge_id);
+    }
+    return ids.sort();
   }
 
   /**
@@ -1121,9 +1138,13 @@ export async function createBusServer(
         if (replay.length === 0) break;
         replaySequence = replay.at(-1)?.sequence ?? replaySequence;
       }
+      // caught_up is where replay ends and live pushes begin, so current state
+      // belongs here: no replayed history can arrive after it and contradict it.
+      const presence = authority.audience === "bridge_service" ? {}
+        : { connected_bridge_ids: connectedBridgeIds(authority.audience === "workspace_operation" ? authority.workspace_id : null) };
       client.send(JSON.stringify({
         type: "caught_up",
-        payload: { cursor: pushStream.cursorForSequence(highWater) },
+        payload: { cursor: pushStream.cursorForSequence(highWater), ...presence },
         at: new Date().toISOString(),
       }));
       socketAuthorities.set(client, authority);
