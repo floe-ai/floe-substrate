@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isAbsoluteCanonicalPath } from "./workspace-paths.js";
 import type { DatabaseSync } from "node:sqlite";
 
 import {
@@ -873,7 +874,10 @@ export function targetContains(allowed: CapabilityGrantTarget, child: Capability
   if (allowed.id === null || allowed.id === child.id) return true;
   if (child.id === null) return false;
   if (allowed.kind === FILESYSTEM_PATH_TARGET_KIND) {
-    return allowed.id === "." || child.id.startsWith(`${allowed.id}/`);
+    // "." is the Workspace's home folder: it holds every relative path, but not
+    // the absolute paths of the Workspace's other folders.
+    if (allowed.id === ".") return !isAbsoluteCanonicalPath(child.id);
+    return child.id.startsWith(`${allowed.id}/`);
   }
   if (allowed.kind === EXECUTABLE_TARGET_KIND) return allowed.id.toLowerCase() === child.id.toLowerCase();
   if (allowed.kind === NETWORK_DOMAIN_TARGET_KIND) {

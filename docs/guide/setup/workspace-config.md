@@ -54,11 +54,12 @@ You are Floe, ...
 
 Fields: `schema`, `agent_id`, `label`, `runtime.model` (optional override of the engine's default model), `extensions` (list of [[Extension]] names bound to this actor), `skills`, `mcp`, `pulse.inherit`, `scope`.
 
-`scope.paths` is optional. Omit it and the Actor's engine tools are not limited
-to any folder; this is the default, and a new Workspace's default Floe Actor may
-use every engine tool anywhere the machine allows. Set it to limit engine file
-tools to those Workspace folders; an Actor with a folder limit cannot use shell.
-See [[Actor]] for how engine tools are governed.
+`scope.paths` is optional. Omit it and the Actor's file tools may use any of
+the Workspace's folders; this is the default. Set it to limit file tools to
+those folders inside the Workspace's own folder; an Actor with a folder limit
+cannot use shell. Shell commands are otherwise not confined to any folder. See
+[[Actor]] for how engine tools are governed, including Workspace folders and
+System access.
 
 The engine an Actor runs on is not chosen here. It follows from the runtime
 adapter of the Bridge that runs the Actor, and the Bridge reports it on the

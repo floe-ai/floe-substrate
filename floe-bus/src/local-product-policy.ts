@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { WorkspaceConfigurationPolicyProvider } from "./workspace-config-import.js";
 import { CAPABILITY_GRANT_OPERATION_IDS } from "./capability-grant-operations.js";
-import type { CapabilityGrantTarget } from "./capability-grants.js";
+import type { CapabilityGrantRecord, CapabilityGrantTarget } from "./capability-grants.js";
 import type { BusStore } from "./store.js";
 import { ENGINE_TOOL_OPERATIONS } from "./tool-policy.js";
 
@@ -63,7 +63,31 @@ export function applyLocalFloeApprovalResponsePolicy(store: BusStore): void {
   applyLocalFloeOperationPolicy(store, "policy:local-floe-approval-response:v1", "capgrant_local_floe_approval_response_", ["approval.response.configure"], [{kind:"approval_request",id:null}]);
 }
 
-function applyLocalFloeOperationPolicy(store: BusStore, policy: string, grantPrefix: string, operationIds: readonly string[], targets: readonly CapabilityGrantTarget[] = []): void {
+/**
+ * The default Floe Actor in an older Workspace gets the default engine tool
+ * access (Q31), unless a person already chose its tool access: any live grant
+ * for an engine tool, targeted or not, is left exactly as it is. Floe does not
+ * widen authority silently, so each Workspace given access records a one-time
+ * notice a surface can show.
+ */
+export function applyLocalFloeToolPolicy(store: BusStore): string[] {
+  const engineOperations = Object.values(ENGINE_TOOL_OPERATIONS);
+  const granted = applyLocalFloeOperationPolicy(store, "policy:local-floe-tools:v1", "capgrant_local_floe_tools_",
+    engineOperations, [], grants => grants.some(grant => grant.operation_ids.some(id => engineOperations.includes(id as never))));
+  for (const workspaceId of granted) store.workspaceAccessStore.recordToolAccessNotice(workspaceId, "policy:local-floe-tools:v1");
+  return granted;
+}
+
+/** Returns the Workspaces whose Floe Actor was given the operations now. */
+function applyLocalFloeOperationPolicy(
+  store: BusStore,
+  policy: string,
+  grantPrefix: string,
+  operationIds: readonly string[],
+  targets: readonly CapabilityGrantTarget[] = [],
+  alreadyChosen: (grants: readonly CapabilityGrantRecord[]) => boolean = () => false,
+): string[] {
+  const granted: string[] = [];
   for (const workspace of store.workspaceIdentityStore.listLocalProjections(store.localHostId)) {
     if (!workspace.binding?.init_authorized || !["created", "legacy_retained"].includes(workspace.creation_kind)) continue;
     const ownership = store.db.prepare(`SELECT actor_id FROM workspace_configuration_import_resources
@@ -77,6 +101,7 @@ function applyLocalFloeOperationPolicy(store: BusStore, policy: string, grantPre
       boundary: { kind: "workspace", workspace_id: actor.workspace_id }, grant_ids: definition.content.capability_grant_ids });
     if (inspection.unavailable_grants.length > 0) continue;
     if (operationIds.every(id => inspection.active_grants.some(grant => grant.targets.length === 0 && grant.operation_ids.includes(id)))) continue;
+    if (alreadyChosen(inspection.active_grants)) continue;
     const basis = inspection.active_grants.find(grant => grant.targets.length === 0
       && ["policy:local-floe-actor:v1", "policy:legacy-workspace-model-actor-authority:v1"].includes(grant.issuer_id)
       && grant.evidence.some(item => item.kind === "workspace_configuration_import_policy")
@@ -99,9 +124,11 @@ function applyLocalFloeOperationPolicy(store: BusStore, policy: string, grantPre
       store.actorDefinitionStore.publishDraft({ actor_definition_revision_id: draft.actor_definition_revision_id,
         expected_current_revision_id: definition.actor_definition_revision_id, changed_by_principal_id: policy });
       store.db.exec("RELEASE local_floe_delegation_policy");
+      granted.push(workspace.workspace_id);
     } catch (error) {
       store.db.exec("ROLLBACK TO local_floe_delegation_policy"); store.db.exec("RELEASE local_floe_delegation_policy");
       throw error;
     }
   }
+  return granted;
 }

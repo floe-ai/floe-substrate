@@ -304,7 +304,7 @@ export type RuntimeToolCallRequest = {
   engine: string;
   manifest_version: string;
   native_tools: string[];
-  /** Canonical workspace-relative paths; null when unresolved or outside the Workspace. */
+  /** Real absolute paths; null when unresolved. The Bus sorts them against the Workspace's folders. */
   paths: (string | null)[];
   /** One entry per shell segment; null when the engine could not classify it. */
   executables: (string | null)[];

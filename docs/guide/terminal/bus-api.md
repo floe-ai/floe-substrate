@@ -380,7 +380,9 @@ POST /v1/delivery/:delivery_id/tool-policy/:evaluation_id/resolve
 ```
 
 `evaluate` takes the normalised call facts (`operation_id`, `tool_call_id`,
-`engine`, `manifest_version`, `native_tools`, workspace-relative `paths`,
+`engine`, `manifest_version`, `native_tools`, `paths` (real absolute paths, or
+`null` when unresolved; the Bus sorts them against the Workspace's folders and
+keeps outside paths only as a count),
 `executables`, `urls`, `write_redirection`, `sandbox_bypass` and a SHA-256
 `argument_digest`) and returns `allow`, `deny` or `require_approval`. `resolve`
 takes `{ "abandon": null | "cancelled" | "unavailable" }` and reports how a
@@ -398,6 +400,8 @@ These are pushed on the stream to the Workspace's connections:
 - `approval_decided` / `approval_invalidated` — the answer, or the request
   no longer applying;
 - `policy_decision_resolved` — how a call that needed a decision ended.
+- `workspace_access_changed` — the Workspace's folders or System access
+  changed; carries the current `access`.
 
 ## Resumable WebSocket stream
 

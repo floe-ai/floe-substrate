@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { ensureConfig } from "./config.js";
 import { createBusServer } from "./server.js";
-import { applyLocalFloeDelegationPolicy, applyLocalFloeExportPolicy, applyLocalFloeApprovalResponsePolicy, localProductWorkspacePolicy } from "./local-product-policy.js";
+import { applyLocalFloeDelegationPolicy, applyLocalFloeExportPolicy, applyLocalFloeApprovalResponsePolicy, applyLocalFloeToolPolicy, localProductWorkspacePolicy } from "./local-product-policy.js";
 
 function getArgValue(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -31,6 +31,7 @@ async function main(): Promise<void> {
   applyLocalFloeDelegationPolicy(server.store);
   applyLocalFloeExportPolicy(server.store);
   applyLocalFloeApprovalResponsePolicy(server.store);
+  applyLocalFloeToolPolicy(server.store);
   await server.listen();
 }
 

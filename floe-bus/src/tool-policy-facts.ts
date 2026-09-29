@@ -9,10 +9,15 @@ export type ToolCallPolicyFacts = Readonly<{
   engine: string;
   manifest_version: string;
   native_tools: readonly string[];
-  /** Canonical workspace-relative paths ("." is the Workspace root). */
+  /**
+   * Paths inside the Workspace's folders: relative for the home folder ("." is
+   * its root), canonical absolute for any other Workspace folder.
+   */
   paths: readonly string[];
-  /** Paths the engine reported that could not be resolved inside the Workspace. */
+  /** Paths the engine reported that could not be resolved. */
   unresolved_path_count: number;
+  /** Paths outside every Workspace folder. Counted, never named. */
+  outside_path_count: number;
   /** Lowercase executable identifiers from parsed shell segments. */
   executables: readonly string[];
   /** Shell segments the engine could not classify. */
@@ -44,6 +49,7 @@ export function normalizeToolCallPolicyFacts(facts: ToolCallPolicyFacts): ToolCa
     native_tools: sortedUnique(facts.native_tools.map((name) => text(name, "native tool"))),
     paths: sortedUnique(facts.paths.map((path) => text(path, "path"))),
     unresolved_path_count: count(facts.unresolved_path_count, "unresolved_path_count"),
+    outside_path_count: count(facts.outside_path_count ?? 0, "outside_path_count"),
     executables: sortedUnique(facts.executables.map((name) => text(name, "executable").toLowerCase())),
     unclassified_segment_count: count(facts.unclassified_segment_count, "unclassified_segment_count"),
     destinations: [...new Map(facts.destinations.map((destination) => {
