@@ -297,7 +297,8 @@ export type PreparedRuntimeDelivery = {
     execution_attempt_id?: string | null;
   };
   processing_contract: RuntimeDispatchContract;
-  operation_authority_session: RuntimeOperationAuthoritySession;
+  /** Null when the Actor holds no live grants: it takes its turn without operations or engine tools. */
+  operation_authority_session: RuntimeOperationAuthoritySession | null;
   /** Engine tool operations the Actor's live grants cover; offer only these. */
   engine_tool_operation_ids?: string[];
 };

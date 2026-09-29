@@ -29,8 +29,9 @@ export type OperationAuthorityTurn = {
 /**
  * Return a valid operation-authority session for the active Delivery, issuing
  * or refreshing it from the Bus when the cached one is missing or within one
- * minute of expiry. Throws when no Delivery is bound or when the Bus returns a
- * different immutable processing contract for the same Delivery.
+ * minute of expiry. Throws when no Delivery is bound, when the Actor holds no
+ * live grants, or when the Bus returns a different immutable processing
+ * contract for the same Delivery.
  */
 export async function requireOperationAuthority(
   bus: BusClient,
@@ -52,6 +53,9 @@ export async function requireOperationAuthority(
     session = prepared.operation_authority_session;
     turn.operation_authority_session = session;
     turn.processing_contract_id = prepared.processing_contract.processing_contract_id;
+  }
+  if (!session) {
+    throw new Error("This Actor holds no permissions, so it cannot use Floe operations. It can still reply and send messages.");
   }
   return session;
 }

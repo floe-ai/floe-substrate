@@ -393,10 +393,13 @@ describe("canonical Delivery and ExecutionAttempt lifecycle", () => {
       delivery_id: started.deliveryId,
       state: "injected_to_runtime",
     }, broadcast);
-    expect(() => handle.store.prepareRuntimeDelivery({
+    // Work that reached the engine without prepared authority never gains any afterwards.
+    expect(handle.store.prepareRuntimeDelivery({
       bridge_id: BRIDGE,
       delivery_id: started.deliveryId,
-    }, broadcast)).toThrow(/no prepared runtime authority to renew/);
+    }, broadcast)).toMatchObject({ operation_authority_session: null, engine_tool_operation_ids: [] });
+    expect(handle.store.db.prepare(`SELECT operation_authority_session_id FROM delivery_bundles WHERE delivery_id = ?`)
+      .get(started.deliveryId)).toEqual({ operation_authority_session_id: null });
     broadcasts.length = 0;
 
     handle.store.reportDeliveryStatus({
