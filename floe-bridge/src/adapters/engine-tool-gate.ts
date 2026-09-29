@@ -20,6 +20,7 @@ import { powershellEvidence } from "./powershell-evidence.js";
 
 /** The only shell tool in the pinned manifest reports complete PowerShell text. */
 const SHELL_OPERATION = "engine.tool.process.execute";
+const READ_OPERATION = "engine.tool.filesystem.read";
 
 type Abandon = "cancelled" | "unavailable";
 
@@ -50,15 +51,15 @@ function realpathAllowingMissing(target: string): string {
   }
 }
 
-/** Canonical workspace-relative path, or null when unresolved or outside the Workspace. */
-export function workspaceRelativePath(workspaceLocator: string | null, reported: string): string | null {
-  if (!workspaceLocator || !reported.trim()) return null;
+/**
+ * The real absolute path a call touches, resolved against the engine's working
+ * folder (the Workspace's home folder), or null when it cannot be resolved.
+ * The Bus decides which Workspace folder, if any, it is inside.
+ */
+export function resolvedToolPath(workingFolder: string | null, reported: string): string | null {
+  if (!workingFolder || !reported.trim()) return null;
   try {
-    const root = realpathSync.native(workspaceLocator);
-    const resolved = realpathAllowingMissing(path.resolve(root, reported));
-    const relative = path.relative(root, resolved);
-    if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
-    return relative ? relative.split(path.sep).join("/") : ".";
+    return realpathAllowingMissing(path.resolve(realpathSync.native(workingFolder), reported));
   } catch {
     return null;
   }
@@ -66,6 +67,8 @@ export function workspaceRelativePath(workspaceLocator: string | null, reported:
 
 export function toolCallFacts(request: CopilotPermissionRequest, workspaceLocator: string | null): RuntimeToolCallRequest {
   const facts = request.facts;
+  // A search given no path (grep or glob without one) searches the working folder.
+  const reported = facts.paths.length === 0 && request.operationId === READ_OPERATION ? ["."] : facts.paths;
   const shell = request.operationId === SHELL_OPERATION && typeof facts.fullCommandText === "string"
     ? powershellEvidence(facts.fullCommandText)
     : null;
@@ -75,7 +78,7 @@ export function toolCallFacts(request: CopilotPermissionRequest, workspaceLocato
     engine: request.runtime,
     manifest_version: request.manifestVersion,
     native_tools: [...request.nativeToolCandidates],
-    paths: facts.paths.map((reported) => workspaceRelativePath(workspaceLocator, reported)),
+    paths: reported.map((item) => resolvedToolPath(workspaceLocator, item)),
     executables: shell?.executables ?? [],
     urls: [...new Set([...facts.urls, ...(shell?.urls ?? [])])],
     write_redirection: shell?.write_redirection ?? false,

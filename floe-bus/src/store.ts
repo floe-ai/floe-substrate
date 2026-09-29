@@ -266,6 +266,8 @@ import {
 } from "./isolated-extension-runtime.js";
 import { BusWorkspaceOperationBackend } from "./workspace-operation-backend.js";
 import { registerWorkspaceOperations } from "./workspace-operations.js";
+import { WorkspaceAccessStore, type WorkspaceAccess } from "./workspace-access.js";
+import { registerWorkspaceAccessOperations } from "./workspace-access-operations.js";
 import { ensureOperatorActor } from "./local-operator-actor.js";
 import { type EventIngressCapability, requireEventIngress } from "./event-ingress.js";
 import {
@@ -812,6 +814,7 @@ export class BusStore {
   readonly extensionRuntime: BusStoreExtensionRuntime;
   readonly runtimeProcessingContracts: RuntimeProcessingContractResolver;
   readonly workspaceIdentityStore: SqliteWorkspaceIdentityStore;
+  readonly workspaceAccessStore: WorkspaceAccessStore;
   readonly localHostId: string;
   readonly localOperatorPrincipalStore: SqliteLocalOperatorPrincipalStore;
   readonly localOperatorPrincipalId: string;
@@ -870,6 +873,10 @@ export class BusStore {
     this.localOperatorPrincipalId = this.localOperatorPrincipalStore.getOrCreate().principal_id;
     this.localWorkspacePlatform = process.platform === "win32" ? "windows" : "posix";
     this.workspaceIdentityStore = new SqliteWorkspaceIdentityStore(this.db);
+    this.workspaceAccessStore = new WorkspaceAccessStore(this.db, {
+      host_id: this.localHostId,
+      home_locator: (workspaceId) => this.workspaceIdentityStore.getCurrentBinding(workspaceId, this.localHostId)?.locator ?? null,
+    });
     this.workspacePortabilityService = new WorkspacePortabilityService({
       db: this.db,
       database_path: databasePath,
@@ -1082,6 +1089,10 @@ export class BusStore {
       (type, payload = {}) => this.broadcastFn?.(type, payload),
     );
     operationRegistry = registerWorkspaceOperations(operationRegistry, this.workspaceOperationBackend);
+    operationRegistry = registerWorkspaceAccessOperations(operationRegistry, {
+      access: this.workspaceAccessStore,
+      changed: (access) => this.workspaceAccessChanged(access),
+    });
     operationRegistry = registerWorkspacePortabilityOperations(
       operationRegistry,
       this.workspacePortabilityService,
@@ -1132,21 +1143,48 @@ export class BusStore {
    */
   private settleApprovalsAfterRevocation(grant: CapabilityGrantRecord): void {
     const lost = new Set(this.capabilityGrantStore.dependentGrantIds(grant.grant_id));
-    const pending = (grant.boundary.kind === "workspace"
+    this.settlePendingApprovals(
+      grant.boundary.kind === "workspace" ? grant.boundary.workspace_id : null,
+      "system:capability-revocation",
+      (request) => request.action.capability_grant_ids.some((id) => lost.has(id))
+        ? "The access this request depended on was revoked."
+        : null,
+    );
+  }
+
+  /**
+   * A Workspace folder or System access change can end what a waiting tool
+   * approval needed, so pending requests are re-checked now, and the change is
+   * pushed to the Workspace's connections with its current state.
+   */
+  private workspaceAccessChanged(access: WorkspaceAccess): void {
+    this.settlePendingApprovals(access.workspace_id, "system:workspace-access",
+      () => "The Workspace's folders or System access changed, so this call is no longer inside what it may reach.");
+    queueMicrotask(() => this.broadcastFn?.("workspace_access_changed", {
+      workspace_id: access.workspace_id,
+      access: this.workspaceAccessStore.inspect(access.workspace_id),
+    }));
+  }
+
+  private settlePendingApprovals(
+    workspaceId: string | null,
+    principalId: string,
+    reasonFor: (request: ReturnType<ApprovalStore["requireRequestForWorkspace"]>) => string | null,
+  ): void {
+    const pending = (workspaceId !== null
       ? this.db.prepare("SELECT approval_request_id, workspace_id FROM approval_requests WHERE status = 'pending' AND workspace_id = ?")
-        .all(grant.boundary.workspace_id)
+        .all(workspaceId)
       : this.db.prepare("SELECT approval_request_id, workspace_id FROM approval_requests WHERE status = 'pending'").all()
     ) as Array<{ approval_request_id: string; workspace_id: string }>;
     const invalidated: Array<{ approval_request_id: string; workspace_id: string }> = [];
     for (const row of pending) {
       const request = this.approvalStore.requireRequestForWorkspace(row.approval_request_id, row.workspace_id);
+      const reason = reasonFor(request);
       const result = this.approvalStore.refreshRequestValidity({
         workspace_id: row.workspace_id,
         approval_request_id: row.approval_request_id,
-        invalidated_by_principal_id: "system:capability-revocation",
-        ...(request.action.capability_grant_ids.some((id) => lost.has(id))
-          ? { stale_action_reason: "The access this request depended on was revoked." }
-          : {}),
+        invalidated_by_principal_id: principalId,
+        ...(reason ? { stale_action_reason: reason } : {}),
       });
       if (result.invalidated) invalidated.push(row);
     }
@@ -4907,6 +4945,7 @@ export class BusStore {
       this.db.prepare("DELETE FROM scopes WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM endpoints WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM runtime_bindings WHERE workspace_id = ?").run(workspaceId);
+      this.workspaceAccessStore.forgetWorkspace(workspaceId);
       this.db.prepare("DELETE FROM workspace_locator_bindings WHERE workspace_id = ?").run(workspaceId);
       this.db.prepare("DELETE FROM workspaces WHERE workspace_id = ?").run(workspaceId);
     });
@@ -6437,7 +6476,8 @@ export class BusStore {
     request: RuntimeToolCallRequest;
   }>, broadcast: Broadcast): RuntimeToolDecision {
     const inputs = this.runtimeToolPolicyInputs(input.delivery_id, input.bridge_id);
-    const toolFacts = toolFactsFromRequest(input.request, inputs.definition.actor_definition_revision_id);
+    const toolFacts = toolFactsFromRequest(input.request, inputs.definition.actor_definition_revision_id,
+      this.workspaceAccessStore.toolBoundary(inputs.contract.workspace_id));
     const { evaluation, authority } = this.evaluateToolFacts(inputs, input.request.operation_id, toolFacts);
     const requests = evaluation.decision === "require_approval" && authority.allowed
       ? this.transaction(() => evaluation.approval_requirements.map((requirement) =>
@@ -6624,6 +6664,7 @@ export class BusStore {
       facts: toolFacts,
       scope_paths: definition.content.scope?.paths ?? null,
       grants,
+      workspace: this.workspaceAccessStore.toolBoundary(contract.workspace_id),
     });
     if (authority.allowed && !approvalPolicy.ok) {
       authority = { allowed: false, code: "tool_grant_missing", reason: approvalPolicy.reason };

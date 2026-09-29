@@ -8,11 +8,13 @@ import {
   type ToolNetworkDestination,
 } from "./tool-policy-facts.js";
 import { ENGINE_TOOL_OPERATIONS, type ToolAuthorityDecision } from "./tool-policy.js";
+import { classifyToolPaths, type WorkspaceToolBoundary } from "./workspace-access.js";
 
 /**
  * What an engine adapter reports about one attempted built-in call. Paths are
- * already resolved by the Bridge (which owns the filesystem) to canonical
- * workspace-relative form, or null when unresolved or outside the Workspace.
+ * resolved by the Bridge (which owns the filesystem) to real absolute paths, or
+ * null when they cannot be resolved. The Bus sorts them against the
+ * Workspace's folders; paths outside every folder are only counted.
  */
 export type RuntimeToolCallRequest = Readonly<{
   operation_id: string;
@@ -62,7 +64,9 @@ export type RuntimeToolResolution = Readonly<{
 export function toolFactsFromRequest(
   request: RuntimeToolCallRequest,
   actorDefinitionRevisionId: string,
+  boundary: WorkspaceToolBoundary,
 ): ToolCallPolicyFacts {
+  const paths = classifyToolPaths(request.paths, boundary);
   const destinations: ToolNetworkDestination[] = [];
   let invalidUrls = 0;
   for (const url of request.urls) {
@@ -76,8 +80,9 @@ export function toolFactsFromRequest(
     engine: request.engine,
     manifest_version: request.manifest_version,
     native_tools: request.native_tools,
-    paths: request.paths.filter((path): path is string => path !== null),
-    unresolved_path_count: request.paths.filter((path) => path === null).length,
+    paths: paths.paths,
+    unresolved_path_count: paths.unresolved_path_count,
+    outside_path_count: paths.outside_path_count,
     executables: request.executables.filter((name): name is string => name !== null),
     unclassified_segment_count: request.executables.filter((name) => name === null).length,
     destinations,

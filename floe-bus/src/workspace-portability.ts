@@ -339,11 +339,16 @@ export const NON_PORTABLE_HOST_TABLES = new Set([
   "transport_credentials",
   "transport_push_checkpoints",
   "transport_push_entries",
+  // Folders and System access name paths on this machine; a restored or copied
+  // Workspace starts with only its own folder and System access off.
+  "workspace_access_records",
+  "workspace_folders",
   "workspace_locator_bindings",
   "workspace_portability_imported_operation_receipts",
   "workspace_portability_dependencies",
   "workspace_portability_restores",
   "workspace_restore_holds",
+  "workspace_system_access",
 ]);
 
 const DIRECT_SCOPE_EXCEPTIONS = new Set([

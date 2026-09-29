@@ -76,17 +76,22 @@ segment, whether output is redirected to a file, and any literal URLs. Anything
 it cannot name with certainty (a variable, a subexpression, a script block, an
 escape) is counted as unclassified, never guessed.
 
-Every Actor may use every engine tool by default, anywhere the machine allows,
-without prompts. Restrictions are opt-in: a person chooses them for an Actor or
-a Workspace. Each call is decided before it runs, and checked only against the
-limits that were chosen:
+Every Actor may use every engine tool by default, without prompts. File tools
+(view, grep, glob, create, edit, apply_patch) stay inside the Workspace's
+folders; see [Workspace folders and System access](#workspace-folders-and-system-access).
+**Shell commands are not confined**: a command can read, change or delete any
+file the signed-in user can, inside or outside the Workspace's folders. Other
+restrictions are opt-in: a person chooses them for an Actor or a Workspace.
+Each call is decided before it runs, and checked against the Workspace's
+folders and the limits that were chosen:
 
 1. the Actor's live grants for that operation. An Actor is offered only the
    built-in tools its grants cover. A grant with no targets is unrestricted;
    targets narrow it to folders (`filesystem_path`), commands (`executable`)
    or fetch domains (`network_domain`);
 2. its definition's `scope.paths`, if set: every path a file tool touches must
-   resolve, after symlinks, inside those folders;
+   resolve, after symlinks, inside those folders. Scope paths are relative to
+   the Workspace's own folder, so a scope never reaches an added folder;
 3. the Approval Policy revision its definition pins, if any, and policies bound
    to the Workspace. These can refuse a call or require a person's decision
    (`require_approval`), but never widen authority.
@@ -102,6 +107,44 @@ person waits for a pushed answer, bounded by the turn's authority and
 cancellation. One approval covers one exact call; changed arguments need a new
 decision.
 
+### Workspace folders and System access
+
+A Workspace has one or more folders. Its own folder, where `.floe` lives, is
+always one of them and cannot be removed. A person may add other folders on
+the same machine, by full path. File tools may use any path that resolves,
+after symlinks, inside one of those folders. A path outside them is refused
+with `tool_path_outside_workspace`, and the reason says to add the folder or
+turn on System access. A file tool whose path cannot be resolved, or which
+names no path, is refused, because it cannot be shown to stay inside.
+
+**System access** is a Workspace setting, off by default. When on, file tools
+may reach any path on the machine, and an engine's request to run outside its
+own sandbox may be allowed. When off, such a request is always refused
+(`tool_sandbox_bypass`).
+
+These operations change and show the setting. The three that change it are
+interactive only, so an Actor cannot widen its own boundary:
+
+| Operation | What it does |
+|---|---|
+| `workspace.access.inspect` | Lists the folders, whether System access is on, and recent changes. |
+| `workspace.folder.add` | Adds a folder by full path. Refuses a relative path, a missing folder, a file, or a folder already inside the Workspace's folders. |
+| `workspace.folder.remove` | Removes an added folder. The Workspace's own folder stays. |
+| `workspace.system_access.set` | Turns System access on or off. |
+
+Every change is recorded with who made it and is pushed as
+`workspace_access_changed`. A Workspace connection also receives the current
+folders and setting, as `workspace_access`, with `caught_up`. A change that
+removes what a waiting approval needed ends that wait, and the call is refused
+with a reason.
+
+**Commands are not confined by any of this.** Floe decides which commands an
+Actor may run, not which files they touch. The engine's own sandbox does not
+confine them on Windows. An Actor that must not reach outside its folders
+needs a `scope.paths` limit, which refuses every shell call.
+
+### Default tool access
+
 The default Floe Actor of a new local Workspace holds all four engine tool
 operations with no targets and no folder limit. `actor.create` gives a new
 Actor every engine tool its creator holds, as delegated copies with the
@@ -116,6 +159,14 @@ subset of it to another Actor.
 When access behind a call that is waiting for a person is revoked, the wait
 ends: the call is refused with the reason "The access this request depended on
 was revoked." and the Actor receives that refusal.
+
+The default Floe Actor of a Workspace made by an older Floe may have no tool
+access. When the Bus starts, it gives that Actor the same default access,
+unless a person already chose its tool access: any live grant for an engine
+tool, even a narrow one, is left as it is. Floe does not widen access silently,
+so the Workspace records a one-time notice, shown in
+`workspace.access.inspect` as a `tool_access_given` record: "Floe Actors in
+this workspace can now use tools inside its folders."
 
 Early Floe templates wrote `scope.paths: [./]` into `.floe/agents/floe.md`.
 When a Bridge attaches a Workspace, it removes that scope only if the file's
@@ -139,7 +190,10 @@ Limits:
   keep shell off the network.
 - Records keep paths, command names, domains and a digest of the arguments.
   Command text and file contents are never stored.
-- A path outside the Workspace is recorded as unresolved, not by name.
+- A path outside the Workspace's folders is counted, never recorded by name.
+- The Copilot engine today refuses every request to run outside its sandbox
+  before Floe sees it, so the System access rule for such requests cannot yet
+  take effect with Copilot.
 - Floe controls side effects, not what the engine's own hidden instructions
   tell the model.
 

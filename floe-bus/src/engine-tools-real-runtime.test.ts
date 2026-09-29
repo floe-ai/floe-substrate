@@ -246,12 +246,26 @@ describe.runIf(process.platform === "win32")("engine tools through the real pinn
     return { decision: row.decision, facts: JSON.parse(row.facts_json), denials: JSON.parse(row.denial_reasons_json) as string[] };
   }
 
-  it("offers every built-in and runs any call by default, recording each decision (proofs 2, 8)", async () => {
-    const outsideRead = await turn({ name: "view", args: { path: join(root, "outside", "secret.txt") } });
-    expect(outsideRead).toContain("outside-secret");
+  it("offers every built-in and runs any call inside the Workspace by default, recording each decision (proofs 2, 8)", async () => {
+    const outside = join(root, "outside", "secret.txt");
+    const blocked = await turn({ name: "view", args: { path: outside } });
+    expect(blocked).toContain("authority.tool_path_outside_workspace");
+    expect(blocked).not.toContain("outside-secret");
     const offered = model.requests.at(-1)!.tools;
     expect(offered).toEqual(expect.arrayContaining(["view", "grep", "glob", "create", "edit", "powershell", "web_fetch"]));
-    expect(lastDecision("engine.tool.filesystem.read")).toMatchObject({ decision: "allow", facts: { tool: { unresolved_path_count: 1 } } });
+    expect(lastDecision("engine.tool.filesystem.read")).toMatchObject({ decision: "deny", facts: { tool: { paths: [], outside_path_count: 1 } } });
+
+    expect(await turn({ name: "view", args: { path: join(workspace, "src", "a.txt") } })).toContain("inside-content");
+    // A second folder is reachable once added.
+    handle.store.workspaceAccessStore.addFolder({ workspace_id: WS, path: join(root, "outside"), principal_id: "principal:operator" });
+    expect(await turn({ name: "view", args: { path: outside } })).toContain("outside-secret");
+    handle.store.workspaceAccessStore.removeFolder({ workspace_id: WS,
+      folder_id: handle.store.workspaceAccessStore.inspect(WS).folders[1]!.folder_id, principal_id: "principal:operator" });
+    expect(await turn({ name: "view", args: { path: outside } })).toContain("authority.tool_path_outside_workspace");
+    // System access reaches anywhere.
+    handle.store.workspaceAccessStore.setSystemAccess({ workspace_id: WS, enabled: true, principal_id: "principal:operator" });
+    expect(await turn({ name: "view", args: { path: outside } })).toContain("outside-secret");
+    handle.store.workspaceAccessStore.setSystemAccess({ workspace_id: WS, enabled: false, principal_id: "principal:operator" });
 
     const marker = join(workspace, "made-by-shell.txt");
     await turn({ name: "powershell", args: { command: `Set-Content -Path '${marker}' -Value made`, description: "write a marker" } });
@@ -276,10 +290,10 @@ describe.runIf(process.platform === "win32")("engine tools through the real pinn
 
     for (const path of [join(root, "outside", "secret.txt"), join(workspace, "escape", "secret.txt")]) {
       const refused = await turn({ name: "view", args: { path } });
-      expect(refused).toContain("authority.tool_path_unresolved");
+      expect(refused).toContain("authority.tool_path_outside_workspace");
       expect(refused).not.toContain("outside-secret");
     }
-    expect(model.requests.some((request) => request.body.includes("outside-secret") && request.body.includes("tool_path_unresolved"))).toBe(false);
+    expect(model.requests.some((request) => request.body.includes("outside-secret") && request.body.includes("tool_path_outside_workspace"))).toBe(false);
 
     const created = join(workspace, "src", "created.txt");
     await turn({ name: "create", args: { path: created, file_text: "written-inside" } });

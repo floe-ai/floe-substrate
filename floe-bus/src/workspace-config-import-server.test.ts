@@ -8,7 +8,8 @@ import { defaultConfig } from "./config.js";
 import { createBusServer } from "./server.js";
 import { emitViaRoute } from "./test-support/emit-via-route.js";
 import { LEGACY_WORKSPACE_MODEL_ACTOR_OPERATION_IDS_V1 } from "./workspace-config-import.js";
-import { applyLocalFloeDelegationPolicy, applyLocalFloeExportPolicy, applyLocalFloeApprovalResponsePolicy, localProductWorkspacePolicy, LOCAL_FLOE_ACTOR_OPERATIONS_V1 } from "./local-product-policy.js";
+import { applyLocalFloeDelegationPolicy, applyLocalFloeExportPolicy, applyLocalFloeApprovalResponsePolicy, applyLocalFloeToolPolicy, localProductWorkspacePolicy, LOCAL_FLOE_ACTOR_OPERATIONS_V1 } from "./local-product-policy.js";
+import { TOOL_ACCESS_NOTICE } from "./workspace-access.js";
 import type { BusServerOptions } from "./server.js";
 import { BridgeDaemon } from "../../floe-bridge/src/daemon.js";
 import { BusClient } from "../../floe-bridge/src/bus-client.js";
@@ -374,10 +375,44 @@ describe("authenticated canonical Workspace configuration import", () => {
     expect(handle.store.actorDefinitionStore.getActor(imported.actor_id)?.current_definition_revision_id).toBe(imported.actor_definition_revision_id);
   });
 
+  it("gives an older Workspace's Floe Actor default tool access once, with a notice, and keeps a person's tool choices", async () => {
+    const { handle, bridge_headers, binding_id } = await fixture();
+    const imported = await handle.app.inject({ method: "POST",
+      url: `/v1/workspaces/${encodeURIComponent(LEGACY_WORKSPACE)}/import-config`, headers: bridge_headers,
+      payload: inventory(binding_id(LEGACY_WORKSPACE)) });
+    const [floe] = imported.json().import_result.receipt.imported_actors;
+    const access = () => handle.store.workspaceAccessStore.inspect(LEGACY_WORKSPACE);
+    expect(access().records).toEqual([]);
+
+    expect(applyLocalFloeToolPolicy(handle.store)).toEqual([LEGACY_WORKSPACE]);
+    const notices = access().records.filter(record => record.kind === "tool_access_given");
+    expect(notices).toEqual([expect.objectContaining({ summary: TOOL_ACCESS_NOTICE, principal_id: "policy:local-floe-tools:v1" })]);
+    expect(TOOL_ACCESS_NOTICE).toBe("Floe Actors in this workspace can now use tools inside its folders.");
+    // Every later start finds nothing to give and records nothing more.
+    expect(applyLocalFloeToolPolicy(handle.store)).toEqual([]);
+    expect(access().records).toEqual(notices);
+
+    // A person's own choice of tool access, even a narrow one, is never widened.
+    const grants = handle.store.capabilityGrantStore, actors = handle.store.actorDefinitionStore;
+    const current = actors.getCurrentDefinition(floe.actor_id)!;
+    const given = current.content.capability_grant_ids.find(id => grants.getGrant(id)?.issuer_id === "policy:local-floe-tools:v1")!;
+    const chosen = grants.issueGrant({ principal_id: floe.actor_id, boundary: { kind: "workspace", workspace_id: LEGACY_WORKSPACE },
+      operation_ids: ["engine.tool.filesystem.read"], targets: [{ kind: "filesystem_path", id: "docs" }],
+      expires_at: "2099-01-01T00:00:00.000Z", issuer_id: "operator", evidence: [{ kind: "test_fixture", ref: "chosen" }] });
+    const narrowed = actors.createDraft({ actor_id: floe.actor_id, created_by_principal_id: "operator", definition: {
+      ...current.content, capability_grant_ids: [...current.content.capability_grant_ids.filter(id => id !== given), chosen.grant_id] } });
+    actors.publishDraft({ actor_definition_revision_id: narrowed.actor_definition_revision_id,
+      expected_current_revision_id: current.actor_definition_revision_id, changed_by_principal_id: "operator" });
+    expect(applyLocalFloeToolPolicy(handle.store)).toEqual([]);
+    expect(actors.getCurrentDefinition(floe.actor_id)?.actor_definition_revision_id).toBe(narrowed.actor_definition_revision_id);
+  });
+
   it.each([
     { name: "delegation", apply: applyLocalFloeDelegationPolicy, operations: ["capability.grant.delegate", "capability.grant.list", "capability.grant.revoke"] },
     { name: "export", apply: applyLocalFloeExportPolicy, operations: ["artefact.version.export"] },
     { name: "approval response", apply: applyLocalFloeApprovalResponsePolicy, operations: ["approval.response.configure"] },
+    { name: "tool", apply: applyLocalFloeToolPolicy, operations: [
+      "engine.tool.filesystem.read", "engine.tool.filesystem.write", "engine.tool.network.fetch", "engine.tool.process.execute"] },
   ])("adds local $name responsibility without replacing saved settings or restoring removed access", async ({apply, operations}) => {
     const { handle, bridge_headers, binding_id } = await fixture();
     const input = inventory(binding_id(LEGACY_WORKSPACE));

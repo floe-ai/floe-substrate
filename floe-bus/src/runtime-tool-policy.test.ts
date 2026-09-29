@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import YAML from "yaml";
 import { defaultConfig } from "./config.js";
 import { createBusServer } from "./server.js";
@@ -23,6 +23,7 @@ type Handle = Awaited<ReturnType<typeof createBusServer>>;
 describe("runtime tool policy", () => {
   let handle: Handle;
   let tmp: string;
+  let home: string;
   let pushed: Array<{ type: string; payload: Record<string, unknown> }>;
 
   beforeEach(async () => {
@@ -35,6 +36,12 @@ describe("runtime tool policy", () => {
     const at = new Date().toISOString();
     handle.store.workspaceIdentityStore.restoreWorkspace({
       snapshot: { workspace_id: WS, name: "Tools", creation_kind: "created", source_workspace_id: null, created_at: at, updated_at: at },
+    });
+    home = join(realpathSync.native(tmp), "home");
+    mkdirSync(join(home, "src"), { recursive: true });
+    handle.store.workspaceIdentityStore.bindLocator(WS, {
+      host_id: handle.store.localHostId, platform: process.platform === "win32" ? "windows" : "posix",
+      locator: home, init_authorized: true,
     });
     handle.store.db.prepare(`
       INSERT INTO bridges (bridge_id, status, capabilities_json, last_seen_at, created_at)
@@ -114,8 +121,9 @@ describe("runtime tool policy", () => {
     return claimed.delivery_id;
   }
 
+  /** The Bridge reports real absolute paths; tests write home-folder paths relative for brevity. */
   function call(overrides: Partial<RuntimeToolCallRequest>): RuntimeToolCallRequest {
-    return {
+    const request: RuntimeToolCallRequest = {
       operation_id: "engine.tool.filesystem.read",
       tool_call_id: "call-1",
       engine: "copilot",
@@ -129,6 +137,7 @@ describe("runtime tool policy", () => {
       argument_digest: "a".repeat(64),
       ...overrides,
     };
+    return { ...request, paths: request.paths.map((item) => item === null || isAbsolute(item) ? item : join(home, item)) };
   }
 
   function evaluate(deliveryId: string, request: RuntimeToolCallRequest) {
@@ -139,7 +148,7 @@ describe("runtime tool policy", () => {
     );
   }
 
-  it("is unrestricted by default, and records every call as a decision", async () => {
+  it("is unrestricted inside the Workspace by default, and records every call as a decision", async () => {
     const all = grant(["engine.tool.filesystem.read", "engine.tool.filesystem.write", "engine.tool.process.execute", "engine.tool.network.fetch"]);
     publishDefinition({ capability_grant_ids: [all.grant_id] });
     const deliveryId = await runningDelivery();
@@ -154,19 +163,114 @@ describe("runtime tool policy", () => {
     }) }]);
 
     const decision = (request: Partial<RuntimeToolCallRequest>) => evaluate(deliveryId, call(request)).decision;
-    // Paths outside the Workspace, or unreported, are allowed when no folder limit was chosen.
-    expect(decision({ paths: [null] })).toBe("allow");
-    expect(decision({ paths: [] })).toBe("allow");
+    // File tools stay inside the Workspace's folders by default; the Actor needs no scope for that.
+    expect(evaluate(deliveryId, call({ paths: [null] })).refusal?.rule_id).toBe("authority.tool_path_unresolved");
+    expect(evaluate(deliveryId, call({ paths: [] })).refusal?.rule_id).toBe("authority.tool_path_missing");
+    expect(decision({ paths: ["."] })).toBe("allow");
     expect(decision({ operation_id: "engine.tool.filesystem.write", native_tools: ["apply_patch"] })).toBe("allow");
     expect(decision({ operation_id: "engine.tool.network.fetch", native_tools: ["web_fetch"], paths: [], urls: ["ftp://anywhere.test/"] })).toBe("allow");
     const sh = { operation_id: "engine.tool.process.execute", native_tools: ["powershell"], paths: [] as string[] };
     expect(decision({ ...sh, executables: [] })).toBe("allow");
     expect(decision({ ...sh, executables: ["npm", null], write_redirection: true, urls: ["https://anywhere.test/"] })).toBe("allow");
     expect(evaluate(deliveryId, call({ operation_id: "engine.tool.unknown" })).refusal?.rule_id).toBe("authority.tool_operation_unknown");
-    expect(evaluate(deliveryId, call({ sandbox_bypass: true })).refusal?.rule_id).toBe("authority.tool_sandbox_bypass");
+    const bypass = evaluate(deliveryId, call({ sandbox_bypass: true })).refusal;
+    expect(bypass).toMatchObject({ rule_id: "authority.tool_sandbox_bypass", reason: expect.stringMatching(/System access/) });
 
     handle.store.capabilityGrantStore.revokeGrant(all.grant_id);
     expect(evaluate(deliveryId, call({})).refusal?.rule_id).toBe("authority.tool_grant_missing");
+  });
+
+  it("keeps file tools inside the Workspace's folders, and System access lifts that for file tools and bypass", async () => {
+    const all = grant(["engine.tool.filesystem.read", "engine.tool.filesystem.write", "engine.tool.process.execute"]);
+    publishDefinition({ capability_grant_ids: [all.grant_id] });
+    const deliveryId = await runningDelivery();
+    const second = join(realpathSync.native(tmp), "second");
+    const elsewhere = join(realpathSync.native(tmp), "elsewhere");
+    mkdirSync(second); mkdirSync(elsewhere);
+    const access = handle.store.workspaceAccessStore;
+    const outcome = (request: Partial<RuntimeToolCallRequest>) => {
+      const result = evaluate(deliveryId, call(request));
+      return result.refusal?.rule_id ?? result.decision;
+    };
+    const write = { operation_id: "engine.tool.filesystem.write", native_tools: ["edit"] };
+
+    // Inside the home folder: allowed. Outside every folder: refused, for reading and writing.
+    expect(outcome({ paths: ["src/app.ts"] })).toBe("allow");
+    expect(outcome({ ...write, paths: ["src/new.ts"] })).toBe("allow");
+    const blocked = evaluate(deliveryId, call({ paths: [join(elsewhere, "private-notes.txt")] }));
+    expect(blocked.refusal).toMatchObject({ rule_id: "authority.tool_path_outside_workspace",
+      reason: expect.stringMatching(/Add that folder to the Workspace, or turn on System access/) });
+    expect(outcome({ ...write, paths: [join(second, "a.ts")] })).toBe("authority.tool_path_outside_workspace");
+    // Outside paths are counted, never named, in what Floe keeps and pushes.
+    const kept = handle.store.policyStore.getEvaluation(blocked.evaluation_id)!.facts!.tool!;
+    expect(kept).toMatchObject({ paths: [], outside_path_count: 1 });
+    expect(JSON.stringify([kept, pushed])).not.toContain("private-notes");
+    // Shell is not confined by the folder boundary: nothing reports what a command touches.
+    expect(outcome({ operation_id: "engine.tool.process.execute", native_tools: ["powershell"], paths: [join(elsewhere, "x")], executables: ["git"] }))
+      .toBe("allow");
+
+    // A second folder becomes reachable once added, and stops being reachable once removed.
+    const added = access.addFolder({ workspace_id: WS, path: second, principal_id: OPERATOR });
+    expect(added.folders.map((folder) => [folder.path, folder.home])).toEqual([[home, true], [second, false]]);
+    expect(outcome({ ...write, paths: [join(second, "a.ts")] })).toBe("allow");
+    expect(handle.store.policyStore.getEvaluation(evaluate(deliveryId, call({ paths: [join(second, "a.ts")] })).evaluation_id)!
+      .facts!.tool!.paths).toEqual([join(second, "a.ts").split("\\").join("/")]);
+    expect(outcome({ paths: [join(elsewhere, "x")] })).toBe("authority.tool_path_outside_workspace");
+    access.removeFolder({ workspace_id: WS, folder_id: added.folders[1]!.folder_id, principal_id: OPERATOR });
+    expect(outcome({ ...write, paths: [join(second, "a.ts")] })).toBe("authority.tool_path_outside_workspace");
+
+    // System access: file tools reach anywhere, and a sandbox bypass request may be allowed.
+    expect(outcome({ sandbox_bypass: true })).toBe("authority.tool_sandbox_bypass");
+    access.setSystemAccess({ workspace_id: WS, enabled: true, principal_id: OPERATOR });
+    expect(outcome({ paths: [join(elsewhere, "x")] })).toBe("allow");
+    expect(outcome({ ...write, paths: [join(second, "a.ts")] })).toBe("allow");
+    expect(outcome({ paths: [null] })).toBe("allow");
+    expect(outcome({ sandbox_bypass: true })).toBe("allow");
+    access.setSystemAccess({ workspace_id: WS, enabled: false, principal_id: OPERATOR });
+    expect(outcome({ paths: [join(elsewhere, "x")] })).toBe("authority.tool_path_outside_workspace");
+    expect(access.inspect(WS).records.map((record) => record.kind)).toEqual([
+      "system_access_turned_off", "system_access_turned_on", "folder_removed", "folder_added",
+    ]);
+  });
+
+  it("keeps an Actor's own folder scope inside the home folder even when other folders are added", async () => {
+    const all = grant(["engine.tool.filesystem.read"]);
+    publishDefinition({ capability_grant_ids: [all.grant_id], scope: { paths: ["."] } });
+    const deliveryId = await runningDelivery();
+    const second = join(realpathSync.native(tmp), "second");
+    mkdirSync(second);
+    handle.store.workspaceAccessStore.addFolder({ workspace_id: WS, path: second, principal_id: OPERATOR });
+    expect(evaluate(deliveryId, call({ paths: ["src/app.ts"] })).decision).toBe("allow");
+    expect(evaluate(deliveryId, call({ paths: [join(second, "a.ts")] })).refusal?.rule_id).toBe("authority.tool_path_outside_scope");
+  });
+
+  it("ends a waiting approval, with a reason, when the folder it needed is removed", async () => {
+    const read = grant(["engine.tool.filesystem.read"]);
+    const approval = publishPolicy("approval", [{
+      rule_id: "ask", priority: 1, match: { operation_ids: ["engine.tool.filesystem.read"] },
+      effect: { kind: "require_approval", reason: "Reading needs an answer.", approvers: { mode: "any", principal_ids: [OPERATOR], roles: [] } },
+    }]);
+    publishDefinition({ capability_grant_ids: [read.grant_id],
+      policy_refs: { budget: null, trust: null, approval: { kind: "policy", id: approval.policy_id, revision: approval.policy_revision_id } } });
+    const deliveryId = await runningDelivery();
+    const second = join(realpathSync.native(tmp), "second");
+    mkdirSync(second);
+    const access = handle.store.workspaceAccessStore;
+    const added = access.addFolder({ workspace_id: WS, path: second, principal_id: OPERATOR });
+    const home_call = evaluate(deliveryId, call({ tool_call_id: "home", paths: ["src/app.ts"] }));
+    const asked = evaluate(deliveryId, call({ tool_call_id: "second", paths: [join(second, "a.ts")] }));
+    expect(asked.decision).toBe("require_approval");
+    const broadcasts: string[] = [];
+    handle.store.setBroadcast((type) => broadcasts.push(type));
+
+    const removed = access.removeFolder({ workspace_id: WS, folder_id: added.folders[1]!.folder_id, principal_id: OPERATOR });
+    (handle.store as unknown as { workspaceAccessChanged(access: unknown): void }).workspaceAccessChanged(removed);
+    const request = handle.store.approvalStore.requireRequestForWorkspace(asked.approval_request_ids[0]!, WS);
+    expect(request.status).toBe("invalidated");
+    expect(JSON.stringify(request)).toMatch(/folders or System access changed/);
+    expect(handle.store.approvalStore.requireRequestForWorkspace(home_call.approval_request_ids[0]!, WS).status).toBe("pending");
+    await new Promise((resolve) => queueMicrotask(() => resolve(null)));
+    expect(broadcasts).toEqual(expect.arrayContaining(["approval_invalidated", "workspace_access_changed"]));
   });
 
   it("enforces only the limits a person chose, and refuses what the evidence cannot show", async () => {

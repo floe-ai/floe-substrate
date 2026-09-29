@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CopilotRuntime } from "floe-runtime/adapters/copilot";
-import { EngineToolGate, toolCallFacts, workspaceRelativePath } from "./engine-tool-gate.js";
+import { EngineToolGate, resolvedToolPath, toolCallFacts } from "./engine-tool-gate.js";
 import { FloeRuntimeAdapter, grantedBuiltinTools } from "./floe-runtime-adapter.js";
 
 const DIGEST = "b".repeat(64);
@@ -34,13 +34,22 @@ function decision(overrides: Record<string, unknown>) {
 }
 
 describe("engine tool facts", () => {
-  it("resolves paths inside the Workspace and refuses escapes, including through links", () => {
-    expect(workspaceRelativePath(workspace, "src/a.ts")).toBe("src/a.ts");
-    expect(workspaceRelativePath(workspace, path.join(workspace, "src", "new.ts"))).toBe("src/new.ts");
-    expect(workspaceRelativePath(workspace, ".")).toBe(".");
-    expect(workspaceRelativePath(workspace, "../outside")).toBeNull();
-    expect(workspaceRelativePath(workspace, "escape/secret.txt")).toBeNull();
-    expect(workspaceRelativePath(null, "src/a.ts")).toBeNull();
+  it("resolves every path to its real absolute location, following links, and leaves the boundary to the Bus", () => {
+    const real = realpathSync.native(workspace);
+    const outside = realpathSync.native(path.join(root, "outside"));
+    expect(resolvedToolPath(workspace, "src/a.ts")).toBe(path.join(real, "src", "a.ts"));
+    expect(resolvedToolPath(workspace, path.join(workspace, "src", "new.ts"))).toBe(path.join(real, "src", "new.ts"));
+    expect(resolvedToolPath(workspace, ".")).toBe(real);
+    expect(resolvedToolPath(workspace, "../outside")).toBe(outside);
+    expect(resolvedToolPath(workspace, "escape/secret.txt")).toBe(path.join(outside, "secret.txt"));
+    expect(resolvedToolPath(null, "src/a.ts")).toBeNull();
+    expect(resolvedToolPath(workspace, "  ")).toBeNull();
+  });
+
+  it("reports the working folder for a read that names no path, and nothing for a write", () => {
+    const real = realpathSync.native(workspace);
+    expect(toolCallFacts(permission("read", { paths: [] }), workspace).paths).toEqual([real]);
+    expect(toolCallFacts(permission("write", { paths: [] }, "engine.tool.filesystem.write"), workspace).paths).toEqual([]);
   });
 
   it("reads shell evidence from the complete command text, keyed on the operation", () => {
@@ -52,7 +61,7 @@ describe("engine tool facts", () => {
     }, "engine.tool.process.execute"), workspace);
     expect(facts).toMatchObject({
       operation_id: "engine.tool.process.execute", tool_call_id: "call-1", engine: "copilot",
-      paths: ["src/a.ts"], executables: ["git", "curl", null],
+      paths: [path.join(realpathSync.native(workspace), "src", "a.ts")], executables: ["git", "curl", null],
       urls: ["https://example.com/a", "https://b.example/x"],
       write_redirection: true, sandbox_bypass: true, argument_digest: DIGEST,
     });
@@ -220,7 +229,8 @@ describe("FloeRuntimeAdapter engine tools", () => {
     expect(createdConfig!.availableTools).toEqual(expect.arrayContaining(grantedBuiltinTools(["engine.tool.filesystem.read"])));
     if (process.platform !== "win32") return;
     expect(evaluate).toHaveBeenCalledWith("delivery-1", expect.objectContaining({
-      operation_id: "engine.tool.filesystem.read", native_tools: ["view"], paths: ["src/a.ts"],
+      operation_id: "engine.tool.filesystem.read", native_tools: ["view"],
+      paths: [path.join(realpathSync.native(workspace), "src", "a.ts")],
     }));
     expect(permissionResult).toMatchObject({ permissionDecision: "deny" });
     expect(JSON.parse((permissionResult as { permissionDecisionReason: string }).permissionDecisionReason))

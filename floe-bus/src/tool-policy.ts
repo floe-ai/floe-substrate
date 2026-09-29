@@ -7,6 +7,7 @@ import {
   type CapabilityGrantTarget,
 } from "./capability-grants.js";
 import type { ToolCallPolicyFacts } from "./tool-policy-facts.js";
+import { isAbsoluteCanonicalPath, pathUnder } from "./workspace-paths.js";
 
 /** Canonical operations an engine adapter may map a native built-in tool onto. */
 export const ENGINE_TOOL_OPERATIONS = {
@@ -35,6 +36,7 @@ export type ToolAuthorityDenialCode =
   | "tool_path_missing"
   | "tool_path_unresolved"
   | "tool_path_outside_scope"
+  | "tool_path_outside_workspace"
   | "tool_target_not_granted"
   | "tool_shell_ambiguous"
   | "tool_network_not_granted"
@@ -44,10 +46,20 @@ export function isEngineToolOperation(operationId: string): operationId is Engin
   return TOOL_OPERATION_IDS.has(operationId);
 }
 
+/** The Workspace's default boundary for file tools on this host. */
+export type ToolWorkspaceBoundary = Readonly<{
+  /** Canonical absolute paths of the Workspace's folders other than its home folder. */
+  folders: readonly string[];
+  /** When on, file tools may reach anywhere and a sandbox bypass may be allowed. */
+  system_access: boolean;
+}>;
+
 /**
- * The authority half of a tool decision. Holding a grant for the operation is
- * enough: an untargeted grant and no declared scope leave the call
- * unrestricted. Restrictions are opt-in (grant targets, the Actor's
+ * The authority half of a tool decision. File tools stay inside the
+ * Workspace's folders unless System access is on; shell commands are not
+ * confined by that boundary, because no engine reports what they touch.
+ * Beyond that, holding a grant for the operation is enough: an untargeted
+ * grant and no declared scope leave the call unrestricted. Restrictions are opt-in (grant targets, the Actor's
  * `scope.paths`); a call is checked only against the restrictions chosen, and
  * is refused when the engine's evidence cannot show that it complies.
  * Policy may then restrict what remains but can never widen it.
@@ -58,13 +70,15 @@ export function decideToolAuthority(input: Readonly<{
   /** Canonical Actor scope paths; null when the Actor chose no folder limit. */
   scope_paths: readonly string[] | null;
   grants: readonly ToolAuthorityGrant[];
+  workspace: ToolWorkspaceBoundary;
 }>): ToolAuthorityDecision {
-  const { operation_id: operationId, facts, scope_paths: scope } = input;
+  const { operation_id: operationId, facts, scope_paths: scope, workspace } = input;
   if (!isEngineToolOperation(operationId)) {
     return deny("tool_operation_unknown", `'${operationId}' is not a governed engine tool operation.`);
   }
-  if (facts.sandbox_bypass) {
-    return deny("tool_sandbox_bypass", "The engine asked to bypass its sandbox; Floe never allows that.");
+  if (facts.sandbox_bypass && !workspace.system_access) {
+    return deny("tool_sandbox_bypass", "The engine asked to bypass its sandbox, which needs this Workspace's System access"
+      + " to be on.");
   }
   const candidates = input.grants.filter((grant) => grant.operation_ids.includes(operationId));
   if (candidates.length === 0) {
@@ -72,6 +86,10 @@ export function decideToolAuthority(input: Readonly<{
   }
   if (operationId === ENGINE_TOOL_OPERATIONS.process_execute) return decideShell(candidates, facts, scope, input.grants);
 
+  if (!workspace.system_access && isFileTool(operationId)) {
+    const refusal = workspaceRefusal(facts, workspace.folders);
+    if (refusal) return refusal;
+  }
   if (scope !== null && touchesFiles(facts, operationId)) {
     const refusal = pathsRefusal(facts, scope.map((id) => ({ kind: FILESYSTEM_PATH_TARGET_KIND, id })), "this Actor's scope", "tool_path_outside_scope");
     if (refusal) return refusal;
@@ -113,7 +131,7 @@ function decideShell(
 function shellNetworkRefusal(facts: ToolCallPolicyFacts, grants: readonly ToolAuthorityGrant[]): ToolAuthorityDecision | null {
   if (facts.destinations.length === 0 && facts.invalid_url_count === 0) return null;
   const fetch = grants.filter((grant) => grant.operation_ids.includes(ENGINE_TOOL_OPERATIONS.network_fetch));
-  if (fetch.some((grant) => grantRefusal(grant, { ...facts, paths: [], unresolved_path_count: 0 }, ENGINE_TOOL_OPERATIONS.network_fetch) === null)) {
+  if (fetch.some((grant) => grantRefusal(grant, { ...facts, paths: [], unresolved_path_count: 0, outside_path_count: 0 }, ENGINE_TOOL_OPERATIONS.network_fetch) === null)) {
     return null;
   }
   return deny("tool_network_not_granted", "The command reaches a network destination this Actor may not fetch.");
@@ -156,9 +174,35 @@ function grantRefusal(grant: ToolAuthorityGrant, facts: ToolCallPolicyFacts, ope
   return null;
 }
 
+function isFileTool(operationId: string): boolean {
+  return operationId === ENGINE_TOOL_OPERATIONS.filesystem_read || operationId === ENGINE_TOOL_OPERATIONS.filesystem_write;
+}
+
+/**
+ * Relative paths are inside the home folder by construction. Absolute paths
+ * were inside another Workspace folder when recorded, and must still be inside
+ * one now, so removing a folder also ends any waiting approval that needed it.
+ */
+function workspaceRefusal(facts: ToolCallPolicyFacts, folders: readonly string[]): ToolAuthorityDecision | null {
+  const outside = facts.outside_path_count > 0 || facts.paths.some((path) =>
+    isAbsoluteCanonicalPath(path) && !folders.some((folder) => pathUnder(folder, path) !== null));
+  if (outside) {
+    return deny("tool_path_outside_workspace", "This call reaches outside the Workspace's folders. Add that folder to the"
+      + " Workspace, or turn on System access, to allow it.");
+  }
+  if (facts.unresolved_path_count > 0) {
+    return deny("tool_path_unresolved", "A path could not be resolved, so it cannot be shown to be inside the Workspace's folders.");
+  }
+  if (facts.paths.length === 0) {
+    return deny("tool_path_missing", "The engine did not report which path this call touches, so it cannot be shown to be"
+      + " inside the Workspace's folders.");
+  }
+  return null;
+}
+
 function touchesFiles(facts: ToolCallPolicyFacts, operationId: string): boolean {
   return operationId === ENGINE_TOOL_OPERATIONS.filesystem_read || operationId === ENGINE_TOOL_OPERATIONS.filesystem_write
-    || facts.paths.length > 0 || facts.unresolved_path_count > 0;
+    || facts.paths.length > 0 || facts.unresolved_path_count > 0 || facts.outside_path_count > 0;
 }
 
 function pathsRefusal(
@@ -167,8 +211,9 @@ function pathsRefusal(
   label: string,
   code: "tool_path_outside_scope" | "tool_target_not_granted",
 ): ToolAuthorityDecision | null {
+  if (facts.outside_path_count > 0) return deny(code, `This call reaches a path outside ${label}.`);
   if (facts.unresolved_path_count > 0) {
-    return deny("tool_path_unresolved", `A path could not be resolved inside the Workspace, so it cannot be shown to be within ${label}.`);
+    return deny("tool_path_unresolved", `A path could not be resolved, so it cannot be shown to be within ${label}.`);
   }
   if (facts.paths.length === 0) {
     return deny("tool_path_missing", `The engine did not report which path this call touches, so it cannot be shown to be within ${label}.`);

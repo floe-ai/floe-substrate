@@ -1141,7 +1141,9 @@ export async function createBusServer(
       // caught_up is where replay ends and live pushes begin, so current state
       // belongs here: no replayed history can arrive after it and contradict it.
       const presence = authority.audience === "bridge_service" ? {}
-        : { connected_bridge_ids: connectedBridgeIds(authority.audience === "workspace_operation" ? authority.workspace_id : null) };
+        : { connected_bridge_ids: connectedBridgeIds(authority.audience === "workspace_operation" ? authority.workspace_id : null),
+          ...(authority.audience === "workspace_operation"
+            ? { workspace_access: store.workspaceAccessStore.inspect(authority.workspace_id) } : {}) };
       client.send(JSON.stringify({
         type: "caught_up",
         payload: { cursor: pushStream.cursorForSequence(highWater), ...presence },
