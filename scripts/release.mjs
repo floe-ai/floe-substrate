@@ -158,7 +158,7 @@ function buildServices() {
 // beside them rather than duplicated.
 const ENTRIES = {
   "floe-cli": ["index.js", "identity/agent-main.js", "identity/client.js", "engines/client.js"],
-  "floe-bus": ["index.js"],
+  "floe-bus": ["index.js", "actor-definition-contract.js"],
   "floe-bridge": ["index.js"],
 };
 // Packages the bundles must not absorb, with why. They stay real installed
@@ -242,7 +242,14 @@ function assemble(version) {
       // entry. Everything else a dist carries (prompts, declarations) ships.
       cpSync(from, join(outDir, pkg, asset), {
         recursive: true,
-        filter: (path) => !/\.js(\.map)?$/.test(path) && !/\.test\.d\.ts$/.test(path),
+        filter: (path) =>
+          !/\.js(\.map)?$/.test(path)
+          && !/\.test\.d\.ts$/.test(path)
+          && (
+            pkg !== "floe-bus"
+            || !path.endsWith(".d.ts")
+            || path.endsWith("actor-definition-contract.d.ts")
+          ),
       });
     }
   }
@@ -264,9 +271,8 @@ function assemble(version) {
     private: false,
     type: "module",
     bin: { [PACKAGE_NAME]: binEntry },
-    // The one library entry a surface imports: how it acts as the person
-    // through the identity agent (docs/reference/identity-agent-protocol.md).
-    // `./package.json` stays exported: surfaces resolve it to find the bin.
+    // Public library entries used by surfaces. `./package.json` stays exported:
+    // surfaces resolve it to find the bin.
     exports: {
       "./identity": {
         types: `./${BIN_PACKAGE}/dist/identity/client.d.ts`,
@@ -276,6 +282,10 @@ function assemble(version) {
       "./engines": {
         types: `./${BIN_PACKAGE}/dist/engines/client.d.ts`,
         default: `./${BIN_PACKAGE}/dist/engines/client.js`,
+      },
+      "./actors": {
+        types: "./floe-bus/dist/actor-definition-contract.d.ts",
+        default: "./floe-bus/dist/actor-definition-contract.js",
       },
       "./package.json": "./package.json",
     },
@@ -512,7 +522,8 @@ function guardUpgradeWhileRunning({ tarball, prefix, port, neutralCwd, home }) {
 
 /**
  * Install a throwaway surface package that depends on the packed artifact the
- * way a real surface does, and drive the identity agent through `floe/identity`.
+ * way a real surface does, verify its public Actor contract, and drive the
+ * identity agent through `floe/identity`.
  */
 function guardSurface({ workRoot, tarball, configPath, port, neutralCwd, home }) {
   const surfaceDir = join(workRoot, "surface");
@@ -528,7 +539,15 @@ function guardSurface({ workRoot, tarball, configPath, port, neutralCwd, home })
   const folder = join(workRoot, "guard-workspace");
   writeFileSync(join(surfaceDir, "surface.mjs"), `
 import { connectIdentity } from "${PACKAGE_NAME}/identity";
+import { validateActorDefinition } from "${PACKAGE_NAME}/actors";
 const step = (message) => console.log("[surface] " + message);
+validateActorDefinition({
+  label: "Release Guard", charter: "Prove the public package contract.",
+  responsibilities: [], instructions: "Validate only.", knowledge_refs: [],
+  capability_grant_ids: [], policy_refs: { budget: null, trust: null, approval: null },
+  escalation_rules: [],
+});
+step("Actor definition contract imported and validated");
 const identity = await connectIdentity({ surface: "release-guard", configPath: ${JSON.stringify(configPath)} });
 if (identity.state.kind !== "none") throw new Error("expected no identity, found " + identity.state.kind);
 const created = await identity.create({ display_name: "Release Guard", passphrase: "guard passphrase" });

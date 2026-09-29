@@ -1,3 +1,8 @@
+/**
+ * @invariant These operations are the semantic public boundary for Actor
+ * lifecycle changes. Creation provenance comes only from authenticated
+ * operation provenance, never from caller-authored input.
+ */
 import {
   ActorDefinitionConflictError,
   ActorDefinitionDraftConflictError,
@@ -143,12 +148,15 @@ const actorSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
   required: [
-    "actor_id", "workspace_id", "status", "current_definition_revision_id",
+    "actor_id", "workspace_id", "created_in_context_id", "created_in_scope_execution_id",
+    "status", "current_definition_revision_id",
     "created_at", "updated_at", "retired_at",
   ],
   properties: {
     actor_id: nonEmptyString,
     workspace_id: nonEmptyString,
+    created_in_context_id: nullableString,
+    created_in_scope_execution_id: nullableString,
     status: { enum: ["active", "retired"] },
     current_definition_revision_id: nullableString,
     created_at: nonEmptyString,
@@ -268,7 +276,11 @@ const actorOnlySchema: JsonSchema = {
 const listInputSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
-  properties: { include_retired: { type: "boolean" } },
+  properties: {
+    include_retired: { type: "boolean" },
+    created_in_context_id: nonEmptyString,
+    created_in_scope_execution_id: nonEmptyString,
+  },
 };
 const inspectInputSchema: JsonSchema = {
   type: "object",
@@ -463,7 +475,11 @@ async function handle<TResult>(work: () => TResult | Promise<TResult>) {
 
 export function listActorsOperation(
   store: ActorDefinitionStore,
-): SemanticOperationDefinition<{ include_retired?: boolean }, ActorListResult> {
+): SemanticOperationDefinition<{
+  include_retired?: boolean;
+  created_in_context_id?: string;
+  created_in_scope_execution_id?: string;
+}, ActorListResult> {
   return {
     operation_id: LIST_ACTORS_OPERATION_ID,
     operation_version: "1",
@@ -482,6 +498,12 @@ export function listActorsOperation(
       result: {
         actors: store.listActors(authorityWorkspaceId(context), {
           include_retired: input.include_retired === true,
+          ...(input.created_in_context_id
+            ? { created_in_context_id: input.created_in_context_id }
+            : {}),
+          ...(input.created_in_scope_execution_id
+            ? { created_in_scope_execution_id: input.created_in_scope_execution_id }
+            : {}),
         }).map((actor) => ({ actor, current_definition: store.getCurrentDefinition(actor.actor_id) })),
       },
       audit_ref: auditRef(context),
@@ -584,6 +606,8 @@ export function createActorOperation(
       try {
         const created = store.createActor({
           workspace_id: authorityWorkspaceId(context),
+          created_in_context_id: actorCreationContextId(store, context),
+          created_in_scope_execution_id: context.provenance.scope_execution_id,
           created_by_principal_id: context.authority.principal_id,
           definition: input.definition,
           ...(input.actor_id ? { actor_id: input.actor_id } : {}),
@@ -617,6 +641,25 @@ export function createActorOperation(
       }
     }),
   };
+}
+
+function actorCreationContextId(
+  store: ActorDefinitionStore,
+  context: OperationExecutionContext,
+): string | null {
+  if (context.provenance.cause_event_id) {
+    const row = store.db.prepare(`
+      SELECT context_id FROM events WHERE event_id = ? AND workspace_id = ?
+    `).get(context.provenance.cause_event_id, authorityWorkspaceId(context)) as { context_id: string } | undefined;
+    if (row) return row.context_id;
+  }
+  if (context.provenance.node_execution_id) {
+    const row = store.db.prepare(`
+      SELECT context_id FROM node_executions WHERE node_execution_id = ?
+    `).get(context.provenance.node_execution_id) as { context_id: string } | undefined;
+    if (row) return row.context_id;
+  }
+  return null;
 }
 
 export function createActorDefinitionDraftOperation(

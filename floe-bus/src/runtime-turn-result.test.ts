@@ -326,7 +326,12 @@ describe("runtime turn results and causal requests", () => {
       request_parent_target_node_id: firstA.target_node_id,
       request_parent_execution_attempt_id: firstAttempt.execution_attempt_id,
     };
-    await emitViaRoute(handle, childRequest);
+    const childRequestEvent = (await emitViaRoute(handle, childRequest)).event;
+    expect(childRequestEvent.metadata).toMatchObject({
+      origin_event_id: started.root_event.event_id,
+      scope_execution_id: firstA.scope_execution_id,
+      node_execution_id: firstA.node_execution_id,
+    });
     const [deliveryB] = store.claimDeliveries("bridge:b", 1, noop);
     store.reportDeliveryStatus({
       bridge_id: "bridge:b",
@@ -461,6 +466,11 @@ describe("runtime turn results and causal requests", () => {
       currentContext: task.context_id,
       parentDelivery: first.delivery_id,
     }))).event;
+    expect(question.metadata).toMatchObject({
+      origin_event_id: task.event_id,
+      scope_execution_id: null,
+      node_execution_id: null,
+    });
     const asked = store.recordRuntimeTurnResult({
       delivery_id: first.delivery_id,
       outcome: "completed",

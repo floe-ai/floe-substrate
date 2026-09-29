@@ -277,18 +277,39 @@ describe("Actor definition semantic operations", () => {
   });
 
   it("creates, revises, publishes, rolls back, retires, and reactivates one Actor idempotently", async () => {
+    db.exec(`
+      CREATE TABLE events (
+        event_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        context_id TEXT NOT NULL
+      );
+      INSERT INTO events (event_id, workspace_id, context_id)
+      VALUES ('event:task', 'workspace:one', 'context:task');
+    `);
     const createRequest = request(
       CREATE_ACTOR_OPERATION_ID,
       { actor_id: "actor:builder", definition: definition("Builder v1") },
       "create-builder",
     );
-    const created = receipt(await registry.invoke(environment(store), createRequest));
+    const created = receipt(await registry.invoke({
+      ...environment(store),
+      provenance: {
+        cause_event_id: "event:task",
+        delivery_ids: ["delivery:task"],
+        execution_attempt_id: "attempt:task",
+        node_execution_id: "node-execution:task",
+        scope_execution_id: "scope-execution:task",
+      },
+    }, createRequest));
     expect(created.state).toBe("completed");
     expect((created.result as any).actor).toMatchObject({
       actor_id: "actor:builder",
       workspace_id: "workspace:one",
+      created_in_context_id: "context:task",
+      created_in_scope_execution_id: "scope-execution:task",
       current_definition_revision_id: null,
     });
+
     expect((created.result as any).draft.created_by_principal_id).toBe("principal:operator");
 
     const replay = await registry.invoke(environment(store), createRequest);
@@ -397,6 +418,46 @@ describe("Actor definition semantic operations", () => {
     expect(store.listRevisions("actor:builder")).toHaveLength(2);
     expect(store.listHeadChanges("actor:builder").map((item) => item.reason))
       .toEqual(["publish", "publish", "rollback"]);
+  });
+
+  it("filters Actors by the Context and ScopeExecution that created them", async () => {
+    store.createActor({
+      actor_id: "actor:context-one",
+      workspace_id: "workspace:one",
+      created_in_context_id: "context:one",
+      created_in_scope_execution_id: "scope-execution:one",
+      created_by_principal_id: "principal:operator",
+      definition: definition("Context one"),
+    });
+    store.createActor({
+      actor_id: "actor:context-two",
+      workspace_id: "workspace:one",
+      created_in_context_id: "context:two",
+      created_in_scope_execution_id: null,
+      created_by_principal_id: "principal:operator",
+      definition: definition("Context two"),
+    });
+
+    const byContext = receipt(await registry.invoke(
+      environment(store),
+      request(LIST_ACTORS_OPERATION_ID, { created_in_context_id: "context:one" }, "list-context-one"),
+    ));
+    expect((byContext.result as any).actors.map((item: any) => item.actor.actor_id))
+      .toEqual(["actor:context-one"]);
+
+    const byExecution = receipt(await registry.invoke(
+      environment(store),
+      request(
+        LIST_ACTORS_OPERATION_ID,
+        { created_in_scope_execution_id: "scope-execution:one" },
+        "list-scope-execution-one",
+      ),
+    ));
+    expect((byExecution.result as any).actors[0].actor).toMatchObject({
+      actor_id: "actor:context-one",
+      created_in_context_id: "context:one",
+      created_in_scope_execution_id: "scope-execution:one",
+    });
   });
 
   it("lists and inspects only the authorised Workspace, with history secondary by default", async () => {

@@ -118,6 +118,47 @@ export class TransportPushStreamStore {
     return sequences.map((sequence) => this.require(sequence));
   }
 
+  drainActorLifecycleOutbox(limit = 1_000): TransportPushEntry[] {
+    if (!tableExists(this.db, "actor_lifecycle_push_outbox")) return [];
+    const rows = this.db.prepare(`
+      SELECT outbox_id, workspace_id, event_type, payload_json, changed_at
+      FROM actor_lifecycle_push_outbox
+      WHERE push_sequence IS NULL
+      ORDER BY outbox_id
+      LIMIT ?
+    `).all(Math.min(Math.max(limit, 1), 10_000)) as Array<{
+      outbox_id: number;
+      workspace_id: string;
+      event_type: string;
+      payload_json: string;
+      changed_at: string;
+    }>;
+    if (rows.length === 0) return [];
+    const sequences: number[] = [];
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const insert = this.db.prepare(`
+        INSERT INTO transport_push_entries (workspace_id, event_type, payload_json, created_at)
+        VALUES (?, ?, ?, ?)
+      `);
+      const acknowledge = this.db.prepare(`
+        UPDATE actor_lifecycle_push_outbox SET push_sequence = ?
+        WHERE outbox_id = ? AND push_sequence IS NULL
+      `);
+      for (const row of rows) {
+        const result = insert.run(row.workspace_id, row.event_type, row.payload_json, row.changed_at);
+        const sequence = Number(result.lastInsertRowid);
+        acknowledge.run(sequence, row.outbox_id);
+        sequences.push(sequence);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return sequences.map((sequence) => this.require(sequence));
+  }
+
   latestCursor(): string | null {
     const row = this.db.prepare(`
       SELECT sequence FROM transport_push_entries ORDER BY sequence DESC LIMIT 1

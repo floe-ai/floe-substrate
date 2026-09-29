@@ -8004,8 +8004,12 @@ export class BusStore {
         throw new Error(`Event ArtefactVersion '${versionId}' is unavailable in this Workspace.`);
       }
     }
+    const eventId = `evt_${randomUUID()}`;
+    const metadata = input.type === "request"
+      ? this.requestEventProvenance(input.workspace_id, input.metadata, eventId)
+      : input.metadata;
     const envelope: EventEnvelope = {
-      event_id: `evt_${randomUUID()}`,
+      event_id: eventId,
       type: input.type,
       workspace_id: input.workspace_id,
       source_endpoint_id: input.source_endpoint_id,
@@ -8016,7 +8020,7 @@ export class BusStore {
       destination_json: input.destination,
       content: input.content,
       response,
-      metadata: input.metadata ?? {},
+      metadata,
       artefact_version_ids: artefactVersionIds,
       created_at: now()
     };
@@ -8051,6 +8055,49 @@ export class BusStore {
       role: input.artefact_role ?? "attachment",
     }]);
     return envelope;
+  }
+
+  private requestEventProvenance(
+    workspaceId: string,
+    metadata: Record<string, unknown>,
+    requestEventId: string,
+  ): Record<string, unknown> {
+    const parentDeliveryId = typeof metadata.request_parent_delivery_id === "string"
+      ? metadata.request_parent_delivery_id
+      : null;
+    const parent = parentDeliveryId
+      ? this.db.prepare(`
+          SELECT trigger_event_id, stable_delivery_ids_json
+          FROM delivery_bundles
+          WHERE delivery_id = ? AND workspace_id = ?
+        `).get(parentDeliveryId, workspaceId) as {
+          trigger_event_id: string;
+          stable_delivery_ids_json: string;
+        } | undefined
+      : undefined;
+    const triggerRow = parent
+      ? this.db.prepare("SELECT * FROM events WHERE event_id = ? AND workspace_id = ?")
+          .get(parent.trigger_event_id, workspaceId) as any
+      : null;
+    const trigger = triggerRow ? this.rowToEvent(triggerRow) : null;
+    const stableDeliveryIds = parent
+      ? parseJson<string[]>(parent.stable_delivery_ids_json ?? "[]")
+      : [];
+    const queue = stableDeliveryIds.length > 0
+      ? this.db.prepare(`
+          SELECT scope_execution_id, node_execution_id
+          FROM event_queue WHERE queue_id = ?
+        `).get(stableDeliveryIds[0]) as {
+          scope_execution_id: string | null;
+          node_execution_id: string | null;
+        } | undefined
+      : undefined;
+    return {
+      ...metadata,
+      origin_event_id: trigger ? this.originEventId(trigger) : requestEventId,
+      scope_execution_id: queue?.scope_execution_id ?? null,
+      node_execution_id: queue?.node_execution_id ?? null,
+    };
   }
 
   private resolveDestinations(event: EventEnvelope): string[] {

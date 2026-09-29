@@ -382,8 +382,17 @@ export async function createBusServer(
     } while (entries.length === 1_000);
   }
 
+  function dispatchPendingActorLifecycleChanges(): void {
+    let entries: TransportPushEntry[];
+    do {
+      entries = pushStream.drainActorLifecycleOutbox();
+      for (const entry of entries) sendPushEntry(entry);
+    } while (entries.length === 1_000);
+  }
+
   function broadcast(type: string, payload: Record<string, unknown> = {}): void {
     dispatchPendingNodeStateChanges();
+    dispatchPendingActorLifecycleChanges();
     const entry = pushStream.append({
       workspace_id: resolveBroadcastWorkspaceId(store, payload),
       type,
@@ -401,6 +410,8 @@ export async function createBusServer(
 
   // One bounded startup drain recovers committed transitions after a crash.
   dispatchPendingNodeStateChanges();
+  dispatchPendingActorLifecycleChanges();
+  store.actorDefinitionStore.setLifecyclePushReady(dispatchPendingActorLifecycleChanges);
   app.addHook("onResponse", async () => {
     dispatchPendingNodeStateChanges();
   });
