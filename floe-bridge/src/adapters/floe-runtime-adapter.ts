@@ -10,7 +10,7 @@
  * substrate tools are direct SDK tools.
  */
 import { randomUUID } from "node:crypto";
-import { COPILOT_BUILTIN_TOOL_MANIFEST, CopilotRuntime } from "floe-runtime/adapters/copilot";
+import { COPILOT_BUILTIN_TOOL_MANIFEST, CopilotRuntime, copilotToolCatalogForModel } from "floe-runtime/adapters/copilot";
 import type {
   ActivityEvent,
   CopilotPermissionRequest,
@@ -36,12 +36,16 @@ import { EngineToolGate } from "./engine-tool-gate.js";
 
 type RuntimeFactory = (options: Pick<CopilotRuntimeOptions, "permissionPolicy">) => CopilotRuntime;
 
-/** The pinned manifest's built-ins that the Actor's granted operations may use. */
-export function grantedBuiltinTools(operationIds: readonly string[] = [], platform: NodeJS.Platform = process.platform): string[] {
+/** The pinned manifest's built-ins, in the model's catalog, that the Actor's granted operations may use. */
+export function grantedBuiltinTools(
+  operationIds: readonly string[] = [],
+  model?: string,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
   const manifest = COPILOT_BUILTIN_TOOL_MANIFEST[platform] ?? {};
-  return Object.entries(manifest)
-    .filter(([, descriptor]) => operationIds.includes(descriptor.operationId))
-    .map(([name]) => `builtin:${name}`)
+  return copilotToolCatalogForModel(model, platform)
+    .filter((name) => operationIds.includes(manifest[name]!.operationId))
+    .map((name) => `builtin:${name}`)
     .sort();
 }
 
@@ -244,7 +248,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
 
     const availableTools = [
       ...session.directTools.map(tool => tool.name),
-      ...grantedBuiltinTools(context.engine_tool_operation_ids),
+      ...grantedBuiltinTools(context.engine_tool_operation_ids, model),
     ];
     try {
       await this.throwIfCancelled(session, turn);

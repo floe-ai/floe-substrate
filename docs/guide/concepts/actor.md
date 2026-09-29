@@ -64,10 +64,17 @@ operations, never by the engine's native tool names:
 
 | Operation | Copilot tools |
 |---|---|
-| `engine.tool.filesystem.read` | `view`, `grep`, `glob` |
-| `engine.tool.filesystem.write` | none yet |
-| `engine.tool.process.execute` | `powershell` |
+| `engine.tool.filesystem.read` | `view`, `grep` (Codex models: `rg`), `glob` |
+| `engine.tool.filesystem.write` | `create`, `edit` (Codex models: `apply_patch`) |
+| `engine.tool.process.execute` | `powershell`, `read_powershell`, `stop_powershell`, `list_powershell` |
 | `engine.tool.network.fetch` | `web_fetch` |
+
+Every exposed Copilot tool passes through Floe before it runs. Floe reads the
+complete call: the files a file tool names, the URL a fetch names, and the full
+PowerShell command text. From a command it takes one command name per pipeline
+segment, whether output is redirected to a file, and any literal URLs. Anything
+it cannot name with certainty (a variable, a subexpression, a script block, an
+escape) is counted as unclassified, never guessed.
 
 Every Actor may use every engine tool by default, anywhere the machine allows,
 without prompts. Restrictions are opt-in: a person chooses them for an Actor or
@@ -107,10 +114,14 @@ Limits:
 - The Copilot tool set is proven for Copilot CLI 1.0.83 on Windows only. On
   another platform no built-in tool is offered. If the engine's tool
   catalogue differs from the proven one, the session does not start.
-- Copilot has no governed file-write tool yet, so a write grant exposes nothing.
-- Copilot reports only the command names in a shell call, not the files,
-  addresses or redirections it touches. So a folder limit refuses every shell
-  call, and a command allowlist is checked on those names only.
+- A command names what it runs, not every file it may touch. So a folder limit
+  refuses every shell call. A command allowlist refuses any segment Floe could
+  not name, and any call that only reads or stops an earlier shell.
+- A URL built at run time inside a command is not seen, so a fetch-domain limit
+  on shell is checked against literal URLs only. Use a command allowlist to
+  keep shell off the network.
+- Records keep paths, command names, domains and a digest of the arguments.
+  Command text and file contents are never stored.
 - A path outside the Workspace is recorded as unresolved, not by name.
 - Floe controls side effects, not what the engine's own hidden instructions
   tell the model.

@@ -43,28 +43,30 @@ describe("engine tool facts", () => {
     expect(workspaceRelativePath(null, "src/a.ts")).toBeNull();
   });
 
-  it("reports unclassified shell segments and redirect origins instead of dropping them", () => {
-    const facts = toolCallFacts(permission("shell", {
+  it("reads shell evidence from the complete command text, keyed on the operation", () => {
+    const facts = toolCallFacts(permission("engine.tool.process.execute", {
       paths: ["src/a.ts"],
       urls: ["https://example.com/a"],
-      commandSegments: [{ identifier: "git" }, { identifier: "" }],
-      hasWriteFileRedirection: true,
+      fullCommandText: "git status; curl.exe https://b.example/x > out.txt; & $tool",
       requestSandboxBypass: true,
     }, "engine.tool.process.execute"), workspace);
     expect(facts).toMatchObject({
       operation_id: "engine.tool.process.execute", tool_call_id: "call-1", engine: "copilot",
-      paths: ["src/a.ts"], executables: ["git", null], urls: ["https://example.com/a"],
+      paths: ["src/a.ts"], executables: ["git", "curl", null],
+      urls: ["https://example.com/a", "https://b.example/x"],
       write_redirection: true, sandbox_bypass: true, argument_digest: DIGEST,
     });
-    expect(toolCallFacts(permission("url", { urls: ["https://b.example"], redirectedFrom: "https://a.example" }), workspace).urls)
-      .toEqual(["https://b.example", "https://a.example"]);
+    const read = toolCallFacts(permission("engine.tool.filesystem.read", { paths: ["src/a.ts"], fullCommandText: "git status" }), workspace);
+    expect(read).toMatchObject({ executables: [], write_redirection: false, urls: [] });
   });
 
   it("offers only the pinned built-ins that granted operations cover", () => {
-    expect(grantedBuiltinTools([], "win32")).toEqual([]);
-    expect(grantedBuiltinTools(["engine.tool.filesystem.read"], "win32")).toEqual(["builtin:glob", "builtin:grep", "builtin:view"]);
-    expect(grantedBuiltinTools(["engine.tool.filesystem.write"], "win32")).toEqual([]);
-    expect(grantedBuiltinTools(["engine.tool.filesystem.read"], "linux")).toEqual([]);
+    expect(grantedBuiltinTools([], undefined, "win32")).toEqual([]);
+    expect(grantedBuiltinTools(["engine.tool.filesystem.read"], "gpt-4.1", "win32")).toEqual(["builtin:glob", "builtin:grep", "builtin:view"]);
+    expect(grantedBuiltinTools(["engine.tool.filesystem.write"], undefined, "win32")).toEqual(["builtin:create", "builtin:edit"]);
+    expect(grantedBuiltinTools(["engine.tool.filesystem.write"], "gpt-5.3-codex", "win32")).toEqual(["builtin:apply_patch"]);
+    expect(grantedBuiltinTools(["engine.tool.filesystem.read"], "gpt-5.3-codex", "win32")).toEqual(["builtin:glob", "builtin:rg", "builtin:view"]);
+    expect(grantedBuiltinTools(["engine.tool.filesystem.read"], undefined, "linux")).toEqual([]);
   });
 });
 
@@ -158,15 +160,15 @@ describe("FloeRuntimeAdapter engine tools", () => {
     expect(runs[2][5]).toMatchObject({ sessionId: "sdk-session" });
   });
 
-  it("offers granted built-ins and sends every permission request to the Bus before it runs", async () => {
+  it("offers granted built-ins and sends every tool call to the Bus before it runs", async () => {
     let createdConfig: Record<string, any> | undefined;
     let permissionResult: unknown;
     const session = {
       sessionId: "sdk-session",
       on(handler: (event: unknown) => void) {
         queueMicrotask(async () => {
-          permissionResult = await createdConfig!.onPermissionRequest(
-            { kind: "read", path: path.join(workspace, "src", "a.ts"), toolCallId: "call-7" },
+          permissionResult = await createdConfig!.hooks.onPreToolUse(
+            { toolName: "view", toolArgs: { path: path.join(workspace, "src", "a.ts") } },
             { sessionId: "sdk-session" },
           );
           handler({ type: "assistant.message", data: { content: "done", finishReason: "end_turn" } });
@@ -218,9 +220,10 @@ describe("FloeRuntimeAdapter engine tools", () => {
     expect(createdConfig!.availableTools).toEqual(expect.arrayContaining(grantedBuiltinTools(["engine.tool.filesystem.read"])));
     if (process.platform !== "win32") return;
     expect(evaluate).toHaveBeenCalledWith("delivery-1", expect.objectContaining({
-      operation_id: "engine.tool.filesystem.read", tool_call_id: "call-7", paths: ["src/a.ts"],
+      operation_id: "engine.tool.filesystem.read", native_tools: ["view"], paths: ["src/a.ts"],
     }));
-    expect(permissionResult).toMatchObject({ kind: "reject" });
-    expect(JSON.parse((permissionResult as { feedback: string }).feedback)).toMatchObject({ rule_id: "tool_grant_missing", reason: "no grant" });
+    expect(permissionResult).toMatchObject({ permissionDecision: "deny" });
+    expect(JSON.parse((permissionResult as { permissionDecisionReason: string }).permissionDecisionReason))
+      .toMatchObject({ rule_id: "tool_grant_missing", reason: "no grant" });
   });
 });

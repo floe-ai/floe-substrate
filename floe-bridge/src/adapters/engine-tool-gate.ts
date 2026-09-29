@@ -16,6 +16,10 @@ import type {
   RuntimeToolRefusal,
   RuntimeToolResolution,
 } from "../bus-client.js";
+import { powershellEvidence } from "./powershell-evidence.js";
+
+/** The only shell tool in the pinned manifest reports complete PowerShell text. */
+const SHELL_OPERATION = "engine.tool.process.execute";
 
 type Abandon = "cancelled" | "unavailable";
 
@@ -62,10 +66,9 @@ export function workspaceRelativePath(workspaceLocator: string | null, reported:
 
 export function toolCallFacts(request: CopilotPermissionRequest, workspaceLocator: string | null): RuntimeToolCallRequest {
   const facts = request.facts;
-  const segments = Array.isArray(facts.commandSegments)
-    ? facts.commandSegments as Array<{ identifier?: unknown }>
-    : [];
-  const redirectedFrom = typeof facts.redirectedFrom === "string" ? [facts.redirectedFrom] : [];
+  const shell = request.operationId === SHELL_OPERATION && typeof facts.fullCommandText === "string"
+    ? powershellEvidence(facts.fullCommandText)
+    : null;
   return {
     operation_id: request.operationId ?? "",
     tool_call_id: request.id,
@@ -73,12 +76,9 @@ export function toolCallFacts(request: CopilotPermissionRequest, workspaceLocato
     manifest_version: request.manifestVersion,
     native_tools: [...request.nativeToolCandidates],
     paths: facts.paths.map((reported) => workspaceRelativePath(workspaceLocator, reported)),
-    executables: request.kind === "shell"
-      ? segments.map((segment) =>
-          typeof segment.identifier === "string" && segment.identifier.trim() ? segment.identifier.trim() : null)
-      : [],
-    urls: [...facts.urls, ...redirectedFrom],
-    write_redirection: facts.hasWriteFileRedirection === true,
+    executables: shell?.executables ?? [],
+    urls: [...new Set([...facts.urls, ...(shell?.urls ?? [])])],
+    write_redirection: shell?.write_redirection ?? false,
     sandbox_bypass: facts.requestSandboxBypass === true,
     argument_digest: facts.argumentDigest,
   };

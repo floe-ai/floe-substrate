@@ -82,9 +82,10 @@ export function decideToolAuthority(input: Readonly<{
 }
 
 /**
- * Shell is unrestricted unless a person chose limits. Engines report only
- * command names for shell calls, so a folder limit can never be shown to hold
- * and refuses every shell call; a command allowlist is checked on those names.
+ * Shell is unrestricted unless a person chose limits. Shell evidence names the
+ * commands a call runs, not every file it may touch, so a folder limit can never
+ * be shown to hold and refuses every shell call; a command allowlist is checked
+ * on those names and refuses any command that could not be named.
  */
 function decideShell(
   candidates: readonly ToolAuthorityGrant[],

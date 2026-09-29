@@ -191,7 +191,7 @@ describe("runtime tool policy", () => {
     expect(refused({ ...web, urls: ["ftp://example.com/"] })).toBe("authority.tool_network_not_granted");
     expect(refused({ ...web, urls: ["not a url"] })).toBe("authority.tool_network_not_granted");
 
-    // A folder limit cannot be shown to hold for shell, whose evidence names only commands.
+    // A folder limit cannot be shown to hold for shell, whose evidence names commands, not files.
     const sh = { operation_id: "engine.tool.process.execute", native_tools: ["powershell"], paths: [] as string[] };
     const unconfined = evaluate(deliveryId, call({ ...sh, executables: ["git"] }));
     expect(unconfined).toMatchObject({ decision: "deny", approval_request_ids: [] });
