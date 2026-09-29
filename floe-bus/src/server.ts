@@ -17,11 +17,7 @@ import { BROADCAST_TARGETS, BusStore, ContextAnchorError, ContextNotFoundError, 
 import { PulseScheduler } from "./pulse-scheduler.js";
 import { BUS_VERSION } from "./version.js";
 import { EVENT_INGRESS_CAPABILITY } from "./event-ingress.js";
-import {
-  isValidRenderer,
-  loadScopeProjectionLayout,
-  upsertScopeProjectionLayout
-} from "./scope-projection-layout-store.js";
+import { SCOPE_PROJECTION_LAYOUT_INVALID_CODES } from "./scope-projection-layout-operations.js";
 import { ScopeAlreadyExistsError, ScopeNotEmptyError, ScopeNotFoundError, ScopeReservedIdError } from "./scopes/store.js";
 import {
   ScopeGraphInvalidError,
@@ -771,22 +767,18 @@ export async function createBusServer(
       provenance: verified.provenance,
       resolve_resource: (resource) => store.resolveOperationResource(resource, verified.authority.boundary),
     }, invocation);
+    const status = (code: string) => code.includes("not_found") ? 404
+      : code.includes("grant_required") ? 403
+        : code.includes("invalid") || code.includes("schema") || code === "context_parent_cycle" || code === "scope_id_reserved"
+          || SCOPE_PROJECTION_LAYOUT_INVALID_CODES.includes(code) ? 400
+          : 409;
     if (response.kind === "rejected" || response.kind === "conflict") {
-      const code = response.refusal.code;
-      const status = code.includes("not_found") ? 404
-        : code.includes("grant_required") ? 403
-          : code.includes("invalid") || code.includes("schema") || code === "context_parent_cycle" || code === "scope_id_reserved" ? 400
-            : 409;
-      reply.code(status).send({ error: code, ...response.refusal });
+      reply.code(status(response.refusal.code)).send({ error: response.refusal.code, ...response.refusal });
       return null;
     }
     if (response.receipt.state === "refused") {
       const refusal = response.receipt.refusal!;
-      const status = refusal.code.includes("not_found") ? 404
-        : refusal.code.includes("grant_required") ? 403
-          : refusal.code.includes("invalid") || refusal.code.includes("schema") || refusal.code === "context_parent_cycle" || refusal.code === "scope_id_reserved" ? 400
-            : 409;
-      reply.code(status).send({ error: refusal.code, ...refusal, receipt_id: response.receipt.receipt_id });
+      reply.code(status(refusal.code)).send({ error: refusal.code, ...refusal, receipt_id: response.receipt.receipt_id });
       return null;
     }
     return response.receipt;
@@ -2390,97 +2382,33 @@ export async function createBusServer(
     return locator;
   }
 
-  function mapScopeProjectionLayoutError(err: unknown, reply: any): { error: string; message: string } | null {
-    if (!(err instanceof Error)) return null;
-    switch (err.name) {
-      case "ScopeProjectionLayoutValidationError":
-        reply.code(400);
-        return { error: "scope_projection_layout_validation_error", message: err.message };
-      case "ScopeProjectionLayoutIdMismatchError":
-        reply.code(400);
-        return { error: "scope_projection_layout_id_mismatch", message: err.message };
-      case "ScopeProjectionLayoutRendererInvalidError":
-        reply.code(400);
-        return { error: "scope_projection_layout_renderer_invalid", message: err.message };
-      default:
-        return null;
-    }
-  }
-
+  // Layout routes are shorthand for the layout operations, under the same authority.
+  const layoutParams = z.object({ workspace_id: z.string(), scope_id: z.string(), renderer: z.string() });
   app.get("/v1/workspaces/:workspace_id/scopes/:scope_id/projection/layout/:renderer", async (request, reply) => {
-    if (!requireLocalControl(request, reply)) return reply;
-    const params = z.object({
-      workspace_id: z.string(),
-      scope_id: z.string(),
-      renderer: z.string()
-    }).parse(request.params);
-    if (!isValidRenderer(params.renderer)) {
-      reply.code(400);
-      return { error: "scope_projection_layout_renderer_invalid", message: `renderer '${params.renderer}' is not a valid renderer identity` };
-    }
+    const params = layoutParams.parse(request.params);
     if (!store.getWorkspace(params.workspace_id)) {
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
     }
-    if (!store.getScope(params.workspace_id, params.scope_id)) {
-      return reply.code(404).send({
-        error: "scope_not_found",
-        workspace_id: params.workspace_id,
-        scope_id: params.scope_id
-      });
-    }
-    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
-    if (locator === null) return reply;
-    try {
-      const layout = loadScopeProjectionLayout(locator, params.scope_id, params.renderer);
-      if (!layout) {
-        reply.code(404);
-        return { error: "scope_projection_layout_not_found" };
-      }
-      return { layout };
-    } catch (err) {
-      const mapped = mapScopeProjectionLayoutError(err, reply);
-      if (mapped) return mapped;
-      throw err;
-    }
+    const receipt = await invokeWorkspaceCompatibility(request, reply, {
+      workspace_id: params.workspace_id, operation_id: "scope.projection.layout.get",
+      value: { scope_id: params.scope_id, renderer: params.renderer },
+    });
+    if (!receipt) return reply;
+    const { layout } = receipt.result as { layout: unknown };
+    return layout ? { layout } : reply.code(404).send({ error: "scope_projection_layout_not_found" });
   });
 
   app.put("/v1/workspaces/:workspace_id/scopes/:scope_id/projection/layout/:renderer", async (request, reply) => {
-    if (!requireLocalControl(request, reply)) return reply;
-    const params = z.object({
-      workspace_id: z.string(),
-      scope_id: z.string(),
-      renderer: z.string()
-    }).parse(request.params);
-    if (!isValidRenderer(params.renderer)) {
-      reply.code(400);
-      return { error: "scope_projection_layout_renderer_invalid", message: `renderer '${params.renderer}' is not a valid renderer identity` };
-    }
+    const params = layoutParams.parse(request.params);
     if (!store.getWorkspace(params.workspace_id)) {
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
     }
-    if (!store.getScope(params.workspace_id, params.scope_id)) {
-      return reply.code(404).send({
-        error: "scope_not_found",
-        workspace_id: params.workspace_id,
-        scope_id: params.scope_id
-      });
-    }
-    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
-    if (locator === null) return reply;
-    try {
-      const layout = upsertScopeProjectionLayout(locator, params.scope_id, params.renderer, request.body);
-      broadcast("scope_projection.layout.upserted", {
-        workspace_id: params.workspace_id,
-        scope_id: params.scope_id,
-        source: "api",
-        renderer: params.renderer
-      });
-      return { layout };
-    } catch (err) {
-      const mapped = mapScopeProjectionLayoutError(err, reply);
-      if (mapped) return mapped;
-      throw err;
-    }
+    const receipt = await invokeWorkspaceCompatibility(request, reply, {
+      workspace_id: params.workspace_id, operation_id: "scope.projection.layout.save",
+      value: { scope_id: params.scope_id, renderer: params.renderer, layout: request.body },
+    });
+    if (!receipt) return reply;
+    return { layout: (receipt.result as { layout: unknown }).layout };
   });
 
   app.post("/v1/workspaces/register", async (request, reply) => {

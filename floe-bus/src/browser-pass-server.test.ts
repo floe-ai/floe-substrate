@@ -105,6 +105,30 @@ describe("durable browser pass (A2 live proof)", () => {
     expect([401, 403]).toContain(otherWorkspace.statusCode);
   });
 
+  it("saves a Scope's layout from a person's session and an allowed browser pass, without host control", async () => {
+    const { handle } = await fixture();
+    handle.store.createScope({ workspace_id: WORKSPACE, scope_id: "map", title: "Map" }, () => {});
+    const person = await admitPerson(handle, HOST_TOKEN, WORKSPACE);
+    const layout = (x: number) => ({ schema: "floe.scope-projection.layout.star-map.v1", scope_id: "map",
+      viewport: { x, y: 0, zoom: 1 }, items: { "node:a": { x, y: 10 } } });
+    const url = `/v1/workspaces/${encodeURIComponent(WORKSPACE)}/scopes/map/projection/layout/star-map`;
+
+    const saved = await handle.app.inject({ method: "PUT", url, payload: layout(1),
+      headers: { authorization: ["Bearer", person.token].join(" ") } });
+    expect(saved.statusCode, saved.body).toBe(200);
+
+    const { headers } = await pairBrowser(handle, person.token, WORKSPACE, ORIGIN,
+      ["scope.projection.layout.get", "scope.projection.layout.save"]);
+    const fromBrowser = await handle.app.inject({ method: "PUT", url, payload: layout(2), headers });
+    expect(fromBrowser.statusCode, fromBrowser.body).toBe(200);
+    const read = await handle.app.inject({ url, headers });
+    expect(read.json().layout.viewport.x).toBe(2);
+
+    const { headers: listOnly } = await pairBrowser(handle, person.token, WORKSPACE, "http://127.0.0.1:43129");
+    const refused = await handle.app.inject({ method: "PUT", url, payload: layout(3), headers: listOnly });
+    expect(refused.statusCode, refused.body).toBe(403);
+  });
+
   it("tells a signed-in person about the waiting browser", async () => {
     const { handle } = await fixture();
     const person = await admitPerson(handle, HOST_TOKEN, WORKSPACE);

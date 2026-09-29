@@ -209,6 +209,7 @@ import {
 } from "./identity-workspace-authority.js";
 import { identityWorkspaceAuthorityOperations } from "./identity-workspace-authority-operations.js";
 import { applyBrowserPassSchema, BrowserPassStore } from "./browser-pass.js";
+import { scopeProjectionLayoutOperations } from "./scope-projection-layout-operations.js";
 import { browserPassOperations, type BrowserPairing } from "./browser-pass-operations.js";
 import {
   SqliteCapabilityGrantStore,
@@ -1087,6 +1088,11 @@ export class BusStore {
       identities: this.clientIdentityStore, adoption: () => this.actorAccessAdoption })) operationRegistry.register(operation);
     for (const operation of browserPassOperations({ passes: this.browserPassStore, authorities: this.identityWorkspaceAuthorityStore,
       identities: this.clientIdentityStore, grants: this.capabilityGrantStore, pairing: () => this.browserPairing,
+    })) operationRegistry.register(operation);
+    for (const operation of scopeProjectionLayoutOperations({
+      scopeExists: (workspaceId, scopeId) => this.getScope(workspaceId, scopeId) !== null,
+      locator: (workspaceId) => this.getWorkspaceLocator(workspaceId),
+      broadcast: (type, payload) => this.broadcastFn?.(type, payload),
     })) operationRegistry.register(operation);
     operationRegistry = registerCommandOperations(operationRegistry, this.commandDefinitionStore);
     operationRegistry = registerActorRoleOperations(operationRegistry, this.actorRoleAuthorityStore);

@@ -249,8 +249,12 @@ GET /v1/workspaces/:workspace_id/scopes/:scope_id/projection/layout/:renderer
 PUT /v1/workspaces/:workspace_id/scopes/:scope_id/projection/layout/:renderer
 ```
 
-The layout write is a host-local presentation adapter, not a semantic
-composition operation.
+These routes are shorthand for the Workspace operations
+`scope.projection.layout.get` and `scope.projection.layout.save`
+(`{scope_id, renderer, layout}`). Any session that may act in the Workspace,
+including a person's session or a browser pass allowed those operations, can
+use them; no host control is needed. Each renderer keeps its own layout, and a
+save pushes `scope_projection.layout.upserted` to the Workspace.
 
 ## Canonical Context operations
 
