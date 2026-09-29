@@ -75,7 +75,7 @@ describe("engine tool facts", () => {
     expect(grantedBuiltinTools(["engine.tool.filesystem.write"], undefined, "win32")).toEqual(["builtin:create", "builtin:edit"]);
     expect(grantedBuiltinTools(["engine.tool.filesystem.write"], "gpt-5.3-codex", "win32")).toEqual(["builtin:apply_patch"]);
     expect(grantedBuiltinTools(["engine.tool.filesystem.read"], "gpt-5.3-codex", "win32")).toEqual(["builtin:glob", "builtin:rg", "builtin:view"]);
-    expect(grantedBuiltinTools(["engine.tool.filesystem.read"], undefined, "linux")).toEqual([]);
+    expect(grantedBuiltinTools(["engine.tool.filesystem.read"], undefined, "linux")).toEqual(["builtin:glob", "builtin:grep", "builtin:view"]);
   });
 });
 

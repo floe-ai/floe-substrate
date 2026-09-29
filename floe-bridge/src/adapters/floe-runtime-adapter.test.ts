@@ -292,6 +292,55 @@ describe("FloeRuntimeAdapter SDK route", () => {
     });
   });
 
+  it("confirms quiescence when aborted idle closes the shell activity", async () => {
+    let reportAbortedIdle!: () => void;
+    const runtime = new FakeRuntime();
+    runtime.run = vi.fn(async (...args: any[]) => {
+      await args[3]?.("sdk-session");
+      runtime.emit("activity", {
+        id: "shell-call",
+        kind: "tool",
+        status: "started",
+        title: "shell",
+        startedAt: Date.now(),
+      });
+      await new Promise<void>((resolve) => { reportAbortedIdle = resolve; });
+      runtime.emit("activity", {
+        id: "shell-call",
+        kind: "tool",
+        status: "failed",
+        title: "shell",
+        endedAt: Date.now(),
+        raw: { type: "session.idle", data: { aborted: true } },
+      });
+      throw Object.assign(new Error("cancelled"), { code: "interrupted" });
+    }) as any;
+    const adapter = new FloeRuntimeAdapter({ runtimeFactory: () => runtime as any });
+    const work = adapter.handleBundle(context(), bundle(), undefined);
+    await vi.waitFor(() => expect(runtime.run).toHaveBeenCalled());
+
+    expect(adapter.cancelDelivery("delivery-1")).toBe(true);
+    const cancellation = adapter.waitForDeliveryCancellation("delivery-1");
+    reportAbortedIdle();
+    await expect(work).rejects.toThrow(/\[interrupted\]/);
+    await expect(cancellation).resolves.toMatchObject({
+      outcome: "quiesced",
+      evidence: {
+        timeline: {
+          runtime_quiesced_at: expect.any(String),
+          delivery_settled_at: expect.any(String),
+          tool_activity: [{
+            call_id: "shell-call",
+            lifecycle: "failed",
+            started_at: expect.any(String),
+            ended_at: expect.any(String),
+          }],
+        },
+      },
+    });
+    expect(runtime.close).not.toHaveBeenCalled();
+  });
+
   it("force-retires a session when runtime idle arrives before its shell tool ends", async () => {
     let reportIdle!: () => void;
     let stopTool!: () => void;
