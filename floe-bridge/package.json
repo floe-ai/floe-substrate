@@ -1,6 +1,6 @@
 {
   "name": "floe-bridge",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "private": true,
   "type": "module",
   "bin": {
@@ -20,7 +20,7 @@
     "@github/copilot": "1.0.89",
     "diff": "^9.0.0",
     "floe-cli": "*",
-    "floe-runtime": "github:floe-ai/floe-runtime#9235f6908cf0ba3e3b37d0eb0019cee4dd8bc487",
+    "floe-runtime": "github:floe-ai/floe-runtime#bc7ba03197b14d979fab08671a6e494fb5481266",
     "yaml": "^2.6.0",
     "zod": "^3.24.0",
     "zod-to-json-schema": "^3.25.1"

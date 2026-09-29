@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import { dependencyClosure, ensureStage, isNpmInstalled, pruneStages, runtimeDir, stageOf } from "./staging.js";
 
 const roots: string[] = [];
@@ -109,4 +112,36 @@ describe("staging", () => {
     expect(existsSync(inUse.dir)).toBe(true);
     expect(existsSync(current.dir)).toBe(true);
   });
+
+  it("lets concurrent starts in one process share one stage without failing", async () => {
+    const { floe, home } = consoleInstall();
+    const source = { packageDir: floe, version: "0.3.1", dependencyOf: null };
+    const stages = await Promise.all(Array.from({ length: 6 }, () => ensureStage(home, source)));
+    expect(new Set(stages.map((stage) => stage.dir)).size).toBe(1);
+    expect(readFileSync(stages[0]!.map(join(floe, "floe-bus", "dist", "index.js")), "utf8")).toBe("bus");
+    pruneStages(home, stages[0]!.dir, []);
+    expect(readdirSync(runtimeDir(home))).toEqual([stages[0]!.dir.split(/[\\/]/).at(-1)]);
+  });
+
+  it("lets two separate starts on a clean home race to stage and both succeed", async () => {
+    const { floe, home } = consoleInstall();
+    const tsx = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
+    const staging = pathToFileURL(fileURLToPath(new URL("./staging.ts", import.meta.url))).href;
+    const script = `const { ensureStage } = await import(${JSON.stringify(staging)});
+      const stage = await ensureStage(${JSON.stringify(home)}, { packageDir: ${JSON.stringify(floe)}, version: "0.3.1", dependencyOf: null });
+      process.stdout.write(stage.dir);`;
+    const start = () => new Promise<{ code: number | null; out: string; err: string }>((resolve) => {
+      const child = spawn(process.execPath, ["--import", tsx, "--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"] });
+      let out = "";
+      let err = "";
+      child.stdout.on("data", (chunk) => (out += chunk));
+      child.stderr.on("data", (chunk) => (err += chunk));
+      child.on("close", (code) => resolve({ code, out, err }));
+    });
+    const [first, second] = await Promise.all([start(), start()]);
+    expect(first.err + second.err).not.toMatch(/EPERM|EBUSY|EACCES/);
+    expect([first.code, second.code]).toEqual([0, 0]);
+    expect(first.out).toBe(second.out);
+    expect(stageOf(join(first.out, "tree", "x"))).toMatchObject({ kind: "floe-stage", version: "0.3.1" });
+  }, 60_000);
 });
