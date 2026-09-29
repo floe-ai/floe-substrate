@@ -25,6 +25,7 @@ import {
   materializeSavedConfig,
   type ProjectLoadResult,
 } from "./project.js";
+import { migrateTemplateDefaultScope, type TemplateScopeMigration } from "./template-scope-migration.js";
 import type { RuntimeAdapter } from "./adapters/runtime-adapter.js";
 import { EngineControl, type EngineAccount } from "./engines/engine-control.js";
 import { runtimeEndpointRegistration } from "./runtime-endpoint-registration.js";
@@ -563,6 +564,7 @@ export class BridgeDaemon {
       let importError: string | null = null;
       try {
         ensureProjectTemplate(locator, String(workspace.name ?? "Floe Project"));
+        reportTemplateScopeMigration(workspaceId, migrateTemplateDefaultScope(locator));
         project = loadProject(locator);
         canonicalImport = await this.importProjectConfiguration(workspaceId, bindingId, project);
       } catch (error) {
@@ -1269,4 +1271,12 @@ function extractRuntimeConfig(frontmatter: Record<string, unknown>): AgentRuntim
     model: typeof runtime.model === "string" ? runtime.model : undefined,
     auth_profile: typeof runtime.auth_profile === "string" ? runtime.auth_profile : undefined
   };
+}
+
+function reportTemplateScopeMigration(workspaceId: string, migration: TemplateScopeMigration): void {
+  if (migration.outcome === "removed") {
+    console.log("[floe-bridge] removed Floe's template folder scope; the Floe Actor is unrestricted by default", { workspace_id: workspaceId, path: migration.path });
+  } else if (migration.outcome === "kept_uncertain") {
+    console.warn("[floe-bridge] kept a whole-folder scope Floe cannot attribute to its template", { workspace_id: workspaceId, path: migration.path, reason: migration.reason });
+  }
 }

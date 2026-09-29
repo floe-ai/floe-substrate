@@ -1065,6 +1065,8 @@ export class ApprovalStore {
     workspace_id: string;
     approval_request_id: string;
     invalidated_by_principal_id: string;
+    /** A more specific reason, when the caller knows why the action stopped being current. */
+    stale_action_reason?: string;
   }>): Readonly<{ request: ApprovalRequestRecord; invalidated: boolean }> {
     const request = this.requireRequestForWorkspace(input.approval_request_id, input.workspace_id);
     if (request.status !== "pending") return { request, invalidated: false };
@@ -1077,7 +1079,7 @@ export class ApprovalStore {
       context_id: request.context_id,
       decision_binding: request.decision_binding,
     })) {
-      reason = "The exact action, evidence, authority, or Policy is no longer current.";
+      reason = input.stale_action_reason ?? "The exact action, evidence, authority, or Policy is no longer current.";
     } else {
       const invalidDecision = activeApprovalDecisions(request.decisions)
         .find((decision) => !this.decisionAuthorityIsCurrent(request, decision));

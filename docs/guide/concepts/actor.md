@@ -103,11 +103,28 @@ cancellation. One approval covers one exact call; changed arguments need a new
 decision.
 
 The default Floe Actor of a new local Workspace holds all four engine tool
-operations with no targets and no folder limit. An Actor it creates holds what
-it is handed through `capability.grant.delegate`: an Actor can hand on only
-what it holds, and by default it hands on its engine tool access unchanged. A
+operations with no targets and no folder limit. `actor.create` gives a new
+Actor every engine tool its creator holds, as delegated copies with the
+creator's targets. The creator may narrow this with `engine_tool_operation_ids`
+(`[]` for none) but never widen it: asking for a tool the creator does not hold
+refuses the whole create with `actor_tool_access_widened`. The result's
+`tool_access` lists what was given and anything the creator could not pass on.
+A delegated copy stops working as soon as the grant it came from is revoked. A
 grant may be **delegation-only**: its holder cannot use it, but can delegate a
 subset of it to another Actor.
+
+When access behind a call that is waiting for a person is revoked, the wait
+ends: the call is refused with the reason "The access this request depended on
+was revoked." and the Actor receives that refusal.
+
+Early Floe templates wrote `scope.paths: [./]` into `.floe/agents/floe.md`.
+When a Bridge attaches a Workspace, it removes that scope only if the file's
+whole settings block is exactly what a Floe template wrote, so nothing in it
+was changed by a person. The normal re-import then makes the Actor
+unrestricted. Any other scope is kept. A `./` scope in a settings block that
+differs from every template is also kept, and the Bridge logs a warning naming
+the file. An Actor changed outside its import keeps its current state, because
+the import refuses to overwrite it.
 
 Limits:
 

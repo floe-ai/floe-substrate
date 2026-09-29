@@ -202,6 +202,7 @@ import {
 import {
   SqliteCapabilityGrantStore,
   applyCapabilityGrantSchema,
+  type CapabilityGrantRecord,
 } from "./capability-grants.js";
 import {
   CredentialBrokerService,
@@ -998,7 +999,9 @@ export class BusStore {
       get_event: (eventId) => this.getEvent(eventId),
     });
     this.operationInvocationLedger = new SqliteOperationInvocationLedger(this.db);
-    this.capabilityGrantStore = new SqliteCapabilityGrantStore(this.db);
+    this.capabilityGrantStore = new SqliteCapabilityGrantStore(this.db, {
+      on_revoked: (grant) => this.settleApprovalsAfterRevocation(grant),
+    });
     this.secretRefStore = new SqliteSecretRefStore(this.db);
     const credentialBrokers = process.platform === "win32"
       ? [new WindowsCredentialBroker(
@@ -1034,7 +1037,7 @@ export class BusStore {
     );
     operationRegistry.register(exportArtefactVersionOperation(this.artefactStore,
       workspaceId => this.getWorkspaceLocator(workspaceId)));
-    operationRegistry = registerActorDefinitionOperations(operationRegistry, this.actorDefinitionStore);
+    operationRegistry = registerActorDefinitionOperations(operationRegistry, this.actorDefinitionStore, this.capabilityGrantStore);
     for (const operation of capabilityGrantOperations({ actors: this.actorDefinitionStore,
       grants: this.capabilityGrantStore, refs: this.secretRefStore })) operationRegistry.register(operation);
     operationRegistry = registerCommandOperations(operationRegistry, this.commandDefinitionStore);
@@ -1119,6 +1122,42 @@ export class BusStore {
     });
     this.endpointWatermarkStore = new EndpointWatermarkStore(this.db);
     this.importLegacyScopeCompositions();
+  }
+
+  /**
+   * A pending approval must not outlive the access it would use. After any
+   * revocation, each pending request in the affected Workspace is checked now,
+   * a stale one is closed with its reason, and the change is pushed so a
+   * waiting Bridge settles its call immediately.
+   */
+  private settleApprovalsAfterRevocation(grant: CapabilityGrantRecord): void {
+    const lost = new Set(this.capabilityGrantStore.dependentGrantIds(grant.grant_id));
+    const pending = (grant.boundary.kind === "workspace"
+      ? this.db.prepare("SELECT approval_request_id, workspace_id FROM approval_requests WHERE status = 'pending' AND workspace_id = ?")
+        .all(grant.boundary.workspace_id)
+      : this.db.prepare("SELECT approval_request_id, workspace_id FROM approval_requests WHERE status = 'pending'").all()
+    ) as Array<{ approval_request_id: string; workspace_id: string }>;
+    const invalidated: Array<{ approval_request_id: string; workspace_id: string }> = [];
+    for (const row of pending) {
+      const request = this.approvalStore.requireRequestForWorkspace(row.approval_request_id, row.workspace_id);
+      const result = this.approvalStore.refreshRequestValidity({
+        workspace_id: row.workspace_id,
+        approval_request_id: row.approval_request_id,
+        invalidated_by_principal_id: "system:capability-revocation",
+        ...(request.action.capability_grant_ids.some((id) => lost.has(id))
+          ? { stale_action_reason: "The access this request depended on was revoked." }
+          : {}),
+      });
+      if (result.invalidated) invalidated.push(row);
+    }
+    if (invalidated.length === 0) return;
+    // Push only what committed: a revocation may sit inside a caller's transaction.
+    queueMicrotask(() => {
+      for (const row of invalidated) {
+        const request = this.approvalStore.getRequest(row.approval_request_id);
+        if (request?.status === "invalidated") this.broadcastFn?.("approval_invalidated", { request });
+      }
+    });
   }
 
   /**

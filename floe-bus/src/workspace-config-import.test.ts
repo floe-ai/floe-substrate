@@ -180,6 +180,17 @@ describe("canonical Workspace configuration import", () => {
       .toThrow(/must stay within the Workspace/);
   });
 
+  it("makes the Actor unrestricted when its source file no longer declares a scope", () => {
+    const scoped = actor("floe", { definition: { ...actor("floe").definition, scope: { paths: ["./"] } } });
+    const first = importer().import(WORKSPACE_ID, inventory([scoped])).receipt.imported_actors[0]!;
+    expect(actorDefinitions.requireRevision(first.actor_definition_revision_id).content.scope).toEqual({ paths: ["."] });
+    const unscoped = importer().import(WORKSPACE_ID, inventory([actor("floe")]));
+    expect(unscoped.receipt.outcome).toBe("applied");
+    const current = actorDefinitions.requireRevision(unscoped.receipt.imported_actors[0]!.actor_definition_revision_id);
+    expect(current.actor_definition_revision_id).not.toBe(first.actor_definition_revision_id);
+    expect(current.content.scope ?? null).toBeNull();
+  });
+
   it("creates exact canonical records before runtime use and replays the same inventory without duplicates", () => {
     const imports = importer();
     const first = imports.import(WORKSPACE_ID, inventory());
