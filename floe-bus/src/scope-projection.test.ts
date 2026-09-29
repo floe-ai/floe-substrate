@@ -5,8 +5,10 @@ import { join } from "node:path";
 import YAML from "yaml";
 import { createBusServer } from "./server.js";
 import { defaultConfig, type LocalConfig } from "./config.js";
+import { openAuthenticatedPushStream } from "./event-probe.test-helper.js";
 
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
+const HOST_TOKEN = `scope-projection-host-${"h".repeat(40)}`;
 const substrateTables = [
   "scopes",
   "contexts",
@@ -24,7 +26,10 @@ async function makeServer(): Promise<{ handle: ServerHandle; tmp: string }> {
   const cfgPath = join(tmp, "config.yaml");
   const cfg: LocalConfig = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const handle = await createBusServer(cfgPath, cfg, { unsafe_in_process_test_auth_bypass: true });
+  const handle = await createBusServer(cfgPath, cfg, {
+    unsafe_in_process_test_auth_bypass: true,
+    host_control_token: HOST_TOKEN,
+  });
   await handle.app.ready();
   return { handle, tmp };
 }
@@ -116,17 +121,6 @@ function tableCounts(handle: ServerHandle): Record<string, number> {
     const row = handle.store.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number };
     return [table, row.count];
   }));
-}
-
-async function waitFor<T>(probe: () => Promise<T | null>, timeoutMs = 4_000): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  let last: T | null = null;
-  while (Date.now() < deadline) {
-    last = await probe();
-    if (last) return last;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new Error(`Timed out waiting for condition; last=${JSON.stringify(last)}`);
 }
 
 describe("Scope Projection API", () => {
@@ -316,6 +310,11 @@ describe("Scope Projection API", () => {
     registerEndpoint(handle, workspaceId, floe);
     await createScope(handle, workspaceId, "research");
     const pulseId = "research-generated-delivery";
+    const address = await handle.app.listen({ host: "127.0.0.1", port: 0 });
+    const pushes = await openAuthenticatedPushStream(
+      address.replace(/^http/, "ws") + "/v1/events/stream",
+      { bearer_token: HOST_TOKEN, start_at: "current" },
+    );
 
     const created = await handle.app.inject({
       method: "POST",
@@ -332,14 +331,21 @@ describe("Scope Projection API", () => {
     });
     expect(created.statusCode).toBe(201);
 
-    const firedEvents = await waitFor(async () => {
-      const events = await handle.app.inject({
-        method: "GET",
-        url: `/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&scope_id=research`
-      });
-      const matches = (events.json().events as any[]).filter((event) => event.metadata?.pulse_id === pulseId);
-      return matches.length >= 2 ? matches : null;
-    }, 4_000);
+    await pushes.events.next(
+      (frame) => frame.type === "pulse_fired" && frame.payload?.pulse_id === pulseId,
+      `first ${pulseId} firing`,
+    );
+    await pushes.events.next(
+      (frame) => frame.type === "pulse_fired" && frame.payload?.pulse_id === pulseId,
+      `second ${pulseId} firing`,
+    );
+    const events = await handle.app.inject({
+      method: "GET",
+      url: `/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&scope_id=research`
+    });
+    const firedEvents = (events.json().events as any[])
+      .filter((event) => event.metadata?.pulse_id === pulseId);
+    pushes.socket.close();
     const generatedContextIds = new Set(firedEvents.map((event: any) => event.context_id));
     expect(generatedContextIds.size).toBe(1);
 

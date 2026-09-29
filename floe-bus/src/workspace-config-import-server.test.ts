@@ -1,11 +1,12 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import YAML from "yaml";
 
 import { defaultConfig } from "./config.js";
 import { createBusServer } from "./server.js";
+import { openAuthenticatedPushStream } from "./event-probe.test-helper.js";
 import { emitViaRoute } from "./test-support/emit-via-route.js";
 import { LEGACY_WORKSPACE_MODEL_ACTOR_OPERATION_IDS_V1 } from "./workspace-config-import.js";
 import { applyLocalFloeDelegationPolicy, applyLocalFloeExportPolicy, applyLocalFloeApprovalResponsePolicy, applyLocalFloeToolPolicy, localProductWorkspacePolicy, LOCAL_FLOE_ACTOR_OPERATIONS_V1 } from "./local-product-policy.js";
@@ -296,6 +297,11 @@ describe("authenticated canonical Workspace configuration import", () => {
     // Canonical attachment must remain independent of a refused file import.
     writeFileSync(join(workspace.binding!.locator, ".floe", "floe.yaml"), "[invalid YAML", "utf8");
     const address = await handle.app.listen({ host: "127.0.0.1", port: 0 });
+    const pushes = await openAuthenticatedPushStream(
+      address.replace(/^http/, "ws") + "/v1/events/stream",
+      { bearer_token: HOST_CONTROL_TOKEN, start_at: "current" },
+    );
+    cleanups.push(async () => { pushes.socket.close(); });
     const config = bridgeConfig(workspace.binding!.locator);
     config.bus.http_base_url = address;
     config.bus.ws_base_url = address.replace("http:", "ws:");
@@ -307,7 +313,12 @@ describe("authenticated canonical Workspace configuration import", () => {
     });
     cleanups.push(() => daemon.stop());
     await daemon.start();
-    await vi.waitFor(() => expect((daemon as any).streamCursor).toEqual(expect.any(String)));
+    await pushes.events.next(
+      (frame) => frame.type === "bridge_connected"
+        && frame.payload?.bridge_id === "bridge:workspace-import",
+      "Bridge connection push",
+    );
+    expect((daemon as any).streamCursor).toEqual(expect.any(String));
     await (daemon as any).attachmentPass;
     handle.store.updateEndpointStatus(imported.actor_id, "waiting", () => {});
 
@@ -325,9 +336,14 @@ describe("authenticated canonical Workspace configuration import", () => {
       runtime_profile_revision_id: imported.runtime_profile_revision_id, endpoint_id: actorId,
       status: "resolved", expected_current_binding_id: null, created_by_principal_id: "principal:operator" });
 
-    await vi.waitFor(() => expect(handle.store.getEndpoint(actorId)).toMatchObject({
+    await pushes.events.next(
+      (frame) => frame.type === "endpoint_registered"
+        && frame.payload?.endpoint?.endpoint_id === actorId,
+      `endpoint registration for ${actorId}`,
+    );
+    expect(handle.store.getEndpoint(actorId)).toMatchObject({
       endpoint_id: actorId, bridge_id: "bridge:workspace-import", name: "Independent reviewer",
-    }), { timeout: 3_000 });
+    });
     expect(JSON.parse(handle.store.getEndpoint(actorId).metadata_json)).toMatchObject({
       actor_runtime_binding_id: binding.actor_runtime_binding_id,
     });

@@ -6,16 +6,21 @@ import { DatabaseSync } from "node:sqlite";
 import YAML from "yaml";
 import { createBusServer } from "./server.js";
 import { defaultConfig, type LocalConfig } from "./config.js";
+import { openAuthenticatedPushStream } from "./event-probe.test-helper.js";
 
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
 const BRIDGE = "bridge:pulse-scope";
+const HOST_TOKEN = `pulse-scope-host-${"h".repeat(40)}`;
 
 async function makeServer(): Promise<{ handle: ServerHandle; tmp: string }> {
   const tmp = mkdtempSync(join(tmpdir(), "floe-bus-pulse-scope-"));
   const cfgPath = join(tmp, "config.yaml");
   const cfg: LocalConfig = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const handle = await createBusServer(cfgPath, cfg, { unsafe_in_process_test_auth_bypass: true });
+  const handle = await createBusServer(cfgPath, cfg, {
+    unsafe_in_process_test_auth_bypass: true,
+    host_control_token: HOST_TOKEN,
+  });
   await handle.app.ready();
   return { handle, tmp };
 }
@@ -46,7 +51,10 @@ async function makeServerWithLegacyPulseScopeSchema(): Promise<{ handle: ServerH
     );
   `);
   db.close();
-  const handle = await createBusServer(cfgPath, cfg, { unsafe_in_process_test_auth_bypass: true });
+  const handle = await createBusServer(cfgPath, cfg, {
+    unsafe_in_process_test_auth_bypass: true,
+    host_control_token: HOST_TOKEN,
+  });
   await handle.app.ready();
   return { handle, tmp };
 }
@@ -83,16 +91,6 @@ function registerEndpoint(handle: ServerHandle, workspaceId: string, name: strin
     status: "idle"
   }, () => {});
   return endpointId;
-}
-
-async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 2_000): Promise<T> {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    const result = await fn();
-    if (result) return result;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new Error("Timed out waiting for condition");
 }
 
 describe("Pulse Persistence and Scope propagation", () => {
@@ -368,6 +366,11 @@ describe("Pulse Persistence and Scope propagation", () => {
       created_by_endpoint_id: operator,
       participants: [operator]
     });
+    const address = await handle.app.listen({ host: "127.0.0.1", port: 0 });
+    const pushes = await openAuthenticatedPushStream(
+      address.replace(/^http/, "ws") + "/v1/events/stream",
+      { bearer_token: HOST_TOKEN, start_at: "current" },
+    );
     const triggerAt = () => new Date(Date.now() + 30).toISOString();
 
     const contextSubscriber = await handle.app.inject({
@@ -415,18 +418,23 @@ describe("Pulse Persistence and Scope propagation", () => {
     });
     expect(endpointWithoutContext.statusCode).toBe(201);
 
-    const researchEvents = await waitFor(async () => {
-      const res = await handle.app.inject({
-        method: "GET",
-        url: `/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&scope_id=research`
-      });
-      const events = res.json().events as any[];
-      const matches = events.filter((event) => event.type === "pulse.fired" && [
+    await Promise.all([
+      "context-subscriber-scope",
+      "endpoint-context-scope",
+      "endpoint-pulse-scope",
+    ].map((pulseId) => pushes.events.next(
+      (frame) => frame.type === "pulse_fired" && frame.payload?.pulse_id === pulseId,
+      `pulse ${pulseId} firing`,
+    )));
+    const researchResponse = await handle.app.inject({
+      method: "GET",
+      url: `/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&scope_id=research`
+    });
+    const researchEvents = (researchResponse.json().events as any[]).filter((event) =>
+      event.type === "pulse.fired" && [
         "context-subscriber-scope",
         "endpoint-pulse-scope"
       ].includes(event.metadata?.pulse_id));
-      return matches.length === 2 ? matches : null;
-    });
     expect(researchEvents.map((event) => event.metadata.pulse_id).sort()).toEqual([
       "context-subscriber-scope",
       "endpoint-pulse-scope"
@@ -438,15 +446,12 @@ describe("Pulse Persistence and Scope propagation", () => {
       endpoint_id: floeEndpointId
     });
 
-    const opsEvents = await waitFor(async () => {
-      const res = await handle.app.inject({
-        method: "GET",
-        url: `/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&scope_id=ops`
-      });
-      const events = res.json().events as any[];
-      const endpointEvent = events.find((event) => event.metadata?.pulse_id === "endpoint-context-scope");
-      return endpointEvent ? [endpointEvent] : null;
+    const opsResponse = await handle.app.inject({
+      method: "GET",
+      url: `/v1/events?workspace_id=${encodeURIComponent(workspaceId)}&scope_id=ops`
     });
+    const opsEvents = (opsResponse.json().events as any[])
+      .filter((event) => event.metadata?.pulse_id === "endpoint-context-scope");
     expect(opsEvents[0]).toMatchObject({
       scope_id: "ops",
       context_id: endpointContextId,
@@ -460,5 +465,6 @@ describe("Pulse Persistence and Scope propagation", () => {
     expect(claimed.statusCode).toBe(200);
     const deliveryEvents = (claimed.json().deliveries as any[]).flatMap((delivery) => delivery.events);
     expect(deliveryEvents.find((event) => event.metadata?.pulse_id === "endpoint-context-scope")?.scope_id).toBe("ops");
+    pushes.socket.close();
   });
 });

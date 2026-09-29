@@ -5,6 +5,7 @@ import { join } from "node:path";
 import YAML from "yaml";
 import { createBusServer } from "./server.js";
 import { defaultConfig, type LocalConfig } from "./config.js";
+import { openAuthenticatedPushStream } from "./event-probe.test-helper.js";
 
 const WS = "workspace:pulse-subscribers";
 const OPERATOR = `actor:${WS}:operator`;
@@ -12,6 +13,7 @@ const FLOE = `actor:${WS}:floe`;
 const REVIEWER = `actor:${WS}:reviewer`;
 const BRIDGE = "bridge:pulse-test";
 const OPS_SCOPE = "ops";
+const HOST_TOKEN = `pulse-subscribers-host-${"h".repeat(40)}`;
 
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
 
@@ -20,7 +22,10 @@ async function makeServer(): Promise<{ handle: ServerHandle; cleanup: () => Prom
   const cfgPath = join(tmp, "config.yaml");
   const cfg: LocalConfig = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const handle = await createBusServer(cfgPath, cfg, { unsafe_in_process_test_auth_bypass: true });
+  const handle = await createBusServer(cfgPath, cfg, {
+    unsafe_in_process_test_auth_bypass: true,
+    host_control_token: HOST_TOKEN,
+  });
   await handle.app.ready();
   for (const endpoint_id of [OPERATOR, FLOE]) {
     handle.store.registerEndpoint({
@@ -41,29 +46,33 @@ async function makeServer(): Promise<{ handle: ServerHandle; cleanup: () => Prom
   };
 }
 
-async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 2_000): Promise<T> {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    const result = await fn();
-    if (result) return result;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new Error("Timed out waiting for condition");
-}
-
 describe("Pulse subscribers", () => {
   let handle: ServerHandle;
   let cleanup: () => Promise<void>;
+  let pushes: Awaited<ReturnType<typeof openAuthenticatedPushStream>>;
 
   beforeEach(async () => {
     const made = await makeServer();
     handle = made.handle;
     cleanup = made.cleanup;
+    const address = await handle.app.listen({ host: "127.0.0.1", port: 0 });
+    pushes = await openAuthenticatedPushStream(
+      address.replace(/^http/, "ws") + "/v1/events/stream",
+      { bearer_token: HOST_TOKEN, start_at: "current" },
+    );
   });
 
   afterEach(async () => {
+    pushes.socket.close();
     await cleanup();
   });
+
+  function pulseFired(pulseId: string, ordinal = "") {
+    return pushes.events.next(
+      (frame) => frame.type === "pulse_fired" && frame.payload?.pulse_id === pulseId,
+      `${ordinal}${ordinal ? " " : ""}pulse ${pulseId} firing`,
+    );
+  }
 
   it("context subscriber can anchor a Pulse to an unscoped actor Context", async () => {
     const contextId = handle.store.contextStore.createContext({
@@ -91,11 +100,10 @@ describe("Pulse subscribers", () => {
     expect(createRes.statusCode).toBe(201);
     expect(createRes.json().pulse.scope_id).toBeNull();
 
-    const pulseEvent = await waitFor(async () => {
-      const res = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(contextId)}/events` });
-      const events = res.json().events as any[];
-      return events.find((event) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId) ?? null;
-    });
+    await pulseFired(pulseId);
+    const eventsRes = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(contextId)}/events` });
+    const pulseEvent = (eventsRes.json().events as any[])
+      .find((event) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId);
 
     expect(pulseEvent.scope_id).toBeNull();
     expect(pulseEvent.context_id).toBe(contextId);
@@ -135,17 +143,15 @@ describe("Pulse subscribers", () => {
     expect(createRes.statusCode).toBe(201);
     expect(createRes.json().pulse.scope_id).toBeNull();
 
-    const delivery = await waitFor(async () => {
-      const res = await handle.app.inject({
-        method: "GET",
-        url: `/v1/delivery/claim?bridge_id=${encodeURIComponent(BRIDGE)}&limit=10`
-      });
-      const deliveries = res.json().deliveries as any[];
-      return deliveries.find((candidate) =>
-        candidate.endpoint_id === FLOE &&
-        candidate.events.some((event: any) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId)
-      ) ?? null;
+    await pulseFired(pulseId);
+    const deliveryRes = await handle.app.inject({
+      method: "GET",
+      url: `/v1/delivery/claim?bridge_id=${encodeURIComponent(BRIDGE)}&limit=10`
     });
+    const delivery = (deliveryRes.json().deliveries as any[]).find((candidate) =>
+      candidate.endpoint_id === FLOE &&
+      candidate.events.some((event: any) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId)
+    );
 
     const pulseEvent = delivery.events.find((event: any) => event.metadata?.pulse_id === pulseId);
     expect(pulseEvent.scope_id).toBeNull();
@@ -351,11 +357,10 @@ describe("Pulse subscribers", () => {
     });
     expect(createRes.statusCode).toBe(201);
 
-    const pulseEvent = await waitFor(async () => {
-      const res = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(contextId)}/events` });
-      const events = res.json().events as any[];
-      return events.find((event) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId) ?? null;
-    });
+    await pulseFired(pulseId);
+    const eventsRes = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(contextId)}/events` });
+    const pulseEvent = (eventsRes.json().events as any[])
+      .find((event) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId);
 
     expect(pulseEvent.context_id).toBe(contextId);
     expect(pulseEvent.source_endpoint_id).toBeNull();
@@ -401,17 +406,15 @@ describe("Pulse subscribers", () => {
     });
     expect(createRes.statusCode).toBe(201);
 
-    const delivery = await waitFor(async () => {
-      const res = await handle.app.inject({
-        method: "GET",
-        url: `/v1/delivery/claim?bridge_id=${encodeURIComponent(BRIDGE)}&limit=10`
-      });
-      const deliveries = res.json().deliveries as any[];
-      return deliveries.find((candidate) =>
-        candidate.endpoint_id === FLOE &&
-        candidate.events.some((event: any) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId)
-      ) ?? null;
+    await pulseFired(pulseId);
+    const deliveryRes = await handle.app.inject({
+      method: "GET",
+      url: `/v1/delivery/claim?bridge_id=${encodeURIComponent(BRIDGE)}&limit=10`
     });
+    const delivery = (deliveryRes.json().deliveries as any[]).find((candidate) =>
+      candidate.endpoint_id === FLOE &&
+      candidate.events.some((event: any) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId)
+    );
 
     const pulseEvent = delivery.events.find((event: any) => event.metadata?.pulse_id === pulseId);
     expect(pulseEvent.context_id).toBe(contextId);
@@ -444,12 +447,11 @@ describe("Pulse subscribers", () => {
     });
     expect(createRes.statusCode).toBe(201);
 
-    const pulseEvents = await waitFor(async () => {
-      const res = await handle.app.inject({ method: "GET", url: `/v1/events?workspace_id=${encodeURIComponent(WS)}` });
-      const events = (res.json().events as any[])
-        .filter((event) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId);
-      return events.length >= 2 ? events : null;
-    }, 3_500);
+    await pulseFired(pulseId, "first");
+    await pulseFired(pulseId, "second");
+    const eventsRes = await handle.app.inject({ method: "GET", url: `/v1/events?workspace_id=${encodeURIComponent(WS)}` });
+    const pulseEvents = (eventsRes.json().events as any[])
+      .filter((event) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId);
 
     const contexts = new Set(pulseEvents.map((event) => event.context_id));
     expect(contexts.size).toBe(1);
@@ -497,14 +499,11 @@ describe("Pulse subscribers", () => {
     });
     expect(createRes.statusCode).toBe(201);
 
-    const pulseEvents = await waitFor(async () => {
-      const res = await handle.app.inject({ method: "GET", url: `/v1/events?workspace_id=${encodeURIComponent(WS)}` });
-      const events = (res.json().events as any[])
-        .filter((event) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId);
-      const floeEvents = events.filter((event) => event.destination_json.endpoint_id === FLOE);
-      const reviewerEvents = events.filter((event) => event.destination_json.endpoint_id === REVIEWER);
-      return floeEvents.length >= 2 && reviewerEvents.length >= 2 ? events : null;
-    }, 3_500);
+    await pulseFired(pulseId, "first");
+    await pulseFired(pulseId, "second");
+    const eventsRes = await handle.app.inject({ method: "GET", url: `/v1/events?workspace_id=${encodeURIComponent(WS)}` });
+    const pulseEvents = (eventsRes.json().events as any[])
+      .filter((event) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId);
 
     const contextsByEndpoint = new Map<string, Set<string>>();
     for (const event of pulseEvents) {
@@ -545,16 +544,14 @@ describe("Pulse subscribers", () => {
     });
     expect(createRes.statusCode).toBe(201);
 
-    const firstDelivery = await waitFor(async () => {
-      const res = await handle.app.inject({
-        method: "GET",
-        url: `/v1/delivery/claim?bridge_id=${encodeURIComponent(BRIDGE)}&limit=10`
-      });
-      const deliveries = res.json().deliveries as any[];
-      return deliveries.find((delivery) =>
-        delivery.events.some((event: any) => event.metadata?.pulse_id === pulseId)
-      ) ?? null;
-    }, 3_500);
+    await pulseFired(pulseId, "first");
+    const firstClaim = await handle.app.inject({
+      method: "GET",
+      url: `/v1/delivery/claim?bridge_id=${encodeURIComponent(BRIDGE)}&limit=10`
+    });
+    const firstDelivery = (firstClaim.json().deliveries as any[]).find((delivery) =>
+      delivery.events.some((event: any) => event.metadata?.pulse_id === pulseId)
+    );
     const firstEvent = firstDelivery.events.find((event: any) => event.metadata?.pulse_id === pulseId);
     const generatedContextId = firstEvent.context_id;
 
@@ -585,16 +582,14 @@ describe("Pulse subscribers", () => {
       payload: { status: "idle" }
     });
 
-    const secondDelivery = await waitFor(async () => {
-      const res = await handle.app.inject({
-        method: "GET",
-        url: `/v1/delivery/claim?bridge_id=${encodeURIComponent(BRIDGE)}&limit=10`
-      });
-      const deliveries = res.json().deliveries as any[];
-      return deliveries.find((delivery) =>
-        delivery.events.some((event: any) => event.metadata?.pulse_id === pulseId)
-      ) ?? null;
-    }, 3_500);
+    await pulseFired(pulseId, "second");
+    const secondClaim = await handle.app.inject({
+      method: "GET",
+      url: `/v1/delivery/claim?bridge_id=${encodeURIComponent(BRIDGE)}&limit=10`
+    });
+    const secondDelivery = (secondClaim.json().deliveries as any[]).find((delivery) =>
+      delivery.events.some((event: any) => event.metadata?.pulse_id === pulseId)
+    );
     const secondEvent = secondDelivery.events.find((event: any) => event.metadata?.pulse_id === pulseId);
     expect(secondEvent.context_id).toBe(generatedContextId);
     expect(secondEvent.destination_json).toEqual({ kind: "endpoint", endpoint_id: FLOE });
@@ -649,21 +644,15 @@ describe("Pulse subscribers", () => {
     });
     expect(createRes.statusCode).toBe(201);
 
-    const delivery = await waitFor(async () => {
-      const renderRes = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(renderContextId)}/events` });
-      const renderEvents = renderRes.json().events as any[];
-      const hasRenderEvent = renderEvents.some((event) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId);
-      const claimRes = await handle.app.inject({
-        method: "GET",
-        url: `/v1/delivery/claim?bridge_id=${encodeURIComponent(BRIDGE)}&limit=10`
-      });
-      const deliveries = claimRes.json().deliveries as any[];
-      const endpointDelivery = deliveries.find((candidate) =>
-        candidate.endpoint_id === FLOE &&
-        candidate.events.some((event: any) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId)
-      );
-      return hasRenderEvent && endpointDelivery ? endpointDelivery : null;
+    await pulseFired(pulseId);
+    const claimRes = await handle.app.inject({
+      method: "GET",
+      url: `/v1/delivery/claim?bridge_id=${encodeURIComponent(BRIDGE)}&limit=10`
     });
+    const delivery = (claimRes.json().deliveries as any[]).find((candidate) =>
+      candidate.endpoint_id === FLOE &&
+      candidate.events.some((event: any) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId)
+    );
 
     const renderEventsRes = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(renderContextId)}/events` });
     const renderEvents = renderEventsRes.json().events as any[];
@@ -720,11 +709,10 @@ describe("Pulse subscribers", () => {
       expect(createRes.statusCode).toBe(201);
       handle.store.addPulseSubscriber(pulseId, { kind: "endpoint" } as any);
 
-      const pulseEvent = await waitFor(async () => {
-        const res = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(contextId)}/events` });
-        const events = res.json().events as any[];
-        return events.find((event) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId) ?? null;
-      });
+      await pulseFired(pulseId);
+      const eventsRes = await handle.app.inject({ method: "GET", url: `/v1/contexts/${encodeURIComponent(contextId)}/events` });
+      const pulseEvent = (eventsRes.json().events as any[])
+        .find((event) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId);
 
       expect(pulseEvent.destination_json).toEqual({ kind: "context", context_id: contextId });
       const deliveriesRes = await handle.app.inject({
