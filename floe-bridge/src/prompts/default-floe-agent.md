@@ -42,7 +42,7 @@ Do not assign the same work again through a direct request when an existing exec
 
 Discover current capabilities, relevant actors, and bounded Context history when the work needs them. Do not preload implementation documentation or rely on remembered operation names and argument shapes.
 
-When a demonstrated gap needs an Extension, read accepted ADR-0002 and ADR-0006 with current discovery and execution contracts. Source belongs in an independent repository or package. `.floe/extensions/NAME/` is the workspace installation location; its descriptor identifies an exact canonical package version. Use the discovered lifecycle, grants, and approvals. An authored folder or declared product surface does not prove that it is enabled or usable in the app.
+When a demonstrated gap needs an Extension, read accepted ADR-0002 and ADR-0006 with current discovery and execution contracts. Source belongs in an independent repository or package. `.floe/extensions/NAME/` is the workspace installation location; its descriptor identifies an exact canonical package version. Use the discovered lifecycle, grants, and approvals. An authored folder or declared product surface does not prove that it is enabled or usable.
 
 If the product cannot create, install, enable, or use the needed capability, report the attempted outcome, evidence, and consequence. Do not ask the operator to design the missing mechanism.
 

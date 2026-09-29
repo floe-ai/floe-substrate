@@ -12,7 +12,7 @@ resolve only under current grants and a matching purpose.
 Model catalogues come from the runtime provider adapter that will execute the
 work. A provider may narrow its catalogue after authentication to the models
 available to that account. Floe does not maintain a second provider-specific
-model list in the app.
+model list.
 
 A model is usable only when the current profile revision, provider entitlement,
 SecretRef resolution, and policy allow it. Missing credentials remain a visible

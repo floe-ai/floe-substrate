@@ -56,7 +56,11 @@ scope:
 You are Floe, ...
 ```
 
-Fields: `schema`, `agent_id`, `label`, `runtime.engine`, `extensions` (list of [[Extension]] names bound to this actor), `skills`, `mcp`, `pulse.inherit`, `scope`.
+Fields: `schema`, `agent_id`, `label`, `runtime.model` (optional override of the engine's default model), `extensions` (list of [[Extension]] names bound to this actor), `skills`, `mcp`, `pulse.inherit`, `scope`.
+
+The engine an Actor runs on is not chosen here. It follows from the runtime
+adapter of the Bridge that runs the Actor, and the Bridge reports it on the
+Actor's endpoint as `metadata.engine` (for example `copilot`).
 
 ## `.floe/floe.yaml` and runtime composition
 
@@ -72,7 +76,7 @@ not treated as a usable Runtime. Actors omitted from a later inventory are
 preserved rather than silently retired.
 
 Runtime attachment separately reads current published Actors and their saved
-runtime bindings. Changing an Actor or model through the app therefore survives
+runtime bindings. Changing an Actor or model through Bus operations therefore survives
 restart even when an older file import conflicts. The refused import remains
 available as evidence and cannot replace the saved settings. Unimported file
 changes do not start legacy Event sources. Disabled or retired runtimes remain

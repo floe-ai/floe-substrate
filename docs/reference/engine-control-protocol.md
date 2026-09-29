@@ -69,6 +69,15 @@ Draw the button from `action`, and show `message`:
 The Bridge checks each engine when it starts, after a sign-in finishes, after a
 turn on that engine fails, and when a surface calls `refresh`. It never polls.
 
+### Which engine an Actor uses
+
+Each Actor's endpoint carries `metadata.engine` (parsed `metadata` on
+`GET /v1/endpoints`; inside `metadata_json` on the `endpoint_registered` push):
+the `engine` id whose state gates that Actor's work,
+or `null` when its runtime needs no engine. The Bridge that runs the Actor sets
+it, so it is absent until a Bridge has attached the Actor. Match it against
+`EngineState.engine` to warn about the right engine before sending work.
+
 ### Work sent while an engine is not ready
 
 Nothing is lost or failed. The Bridge hands the work back to the Bus before the

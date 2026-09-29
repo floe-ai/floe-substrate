@@ -5999,7 +5999,7 @@ export class BusStore {
   /**
    * A message routed to an endpoint with no bound auth profile produces no delivery
    * (see tryCreateDeliveryForEndpoint). Without a signal the message vanishes silently.
-   * Emit visible runtime telemetry so the operator sees that a profile must be selected.
+   * Emit visible runtime telemetry saying the message is waiting and why the Actor cannot run.
    */
   private signalIfRuntimeUnconfigured(event: EventEnvelope, endpointId: string, broadcast: Broadcast): void {
     const endpoint = this.getEndpoint(endpointId);
@@ -6010,6 +6010,11 @@ export class BusStore {
       WHERE endpoint_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1
     `).get(endpointId) as { state: string; last_error: string | null } | undefined;
     const deferredReason = latest?.state === "deferred" ? latest.last_error : null;
+    const binding = this.runtimeProfileStore.getCurrentActorBindingForEndpoint(endpoint.workspace_id, endpointId);
+    const reasons = binding?.status === "unresolved" ? [...binding.unresolved_reasons] : [];
+    const why = reasons.length
+      ? `Its runtime is unresolved (${reasons.join("; ")}).`
+      : binding ? "Its Actor or runtime is not active." : "It has no runtime binding.";
     this.appendRuntimeTelemetry({
       workspace_id: endpoint.workspace_id,
       endpoint_id: endpointId,
@@ -6017,10 +6022,12 @@ export class BusStore {
       payload: {
         code: "runtime_unconfigured",
         trigger_event_id: event.event_id,
+        unresolved_reasons: reasons,
         message: deferredReason
           ? `The message was accepted and is waiting; it will be delivered when this Actor's runtime is ready (${deferredReason}).`
-          : "No auth profile is bound to this agent/workspace, so the message was accepted but not delivered. " +
-            "Connect a model provider in Floe Settings and select it for this workspace to enable replies."
+          : `The message was accepted and is waiting, but this Actor cannot run yet. ${why} ` +
+            "Fix the Actor's definition in the Workspace's .floe/agents folder, or change its runtime binding " +
+            "with the runtime profile operations; the message is delivered once the runtime resolves."
       }
     }, broadcast);
   }
