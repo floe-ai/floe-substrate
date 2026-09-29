@@ -1,6 +1,10 @@
+/**
+ * @invariant These statuses are the transport-safe lifecycle vocabulary.
+ * Producers and consumers must not invent aliases or infer missing transitions.
+ */
 /** Transport-safe execution lifecycle and revision contract, shared by clients. */
 export type ScopeExecutionStatus =
-  | "queued" | "active" | "waiting_external" | "paused"
+  | "queued" | "active" | "waiting_external" | "pausing" | "paused"
   | "blocked" | "completed" | "failed" | "cancelled" | "superseded";
 
 export type NodeExecutionStatus =

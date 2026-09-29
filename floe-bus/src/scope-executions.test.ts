@@ -17,6 +17,7 @@ import {
   type RuntimeProfileContent,
 } from "./runtime-profiles.js";
 import { applyScopeCompositionSchema } from "./scope-compositions.js";
+import { TransportPushStreamStore } from "./transport-push-stream.js";
 
 describe("canonical Scope execution records", () => {
   let db: DatabaseSync;
@@ -962,6 +963,180 @@ describe("canonical Scope execution records", () => {
       .toBe("queued");
   });
 
+  it("pauses an active turn only after quiescence and resumes it as a new attempt", () => {
+    createQueueSchema(db);
+    seedPlacement(db, { revision_id: "revision:active-pause", node_id: "worker", kind: "context" });
+    seedPlacement(db, { revision_id: "revision:active-pause", node_id: "done", kind: "context" });
+    const execution = createExecution(store, "revision:active-pause", "workspace:test");
+    const completed = store.createOrGetNodeExecution({
+      execution_id: execution.execution_id,
+      revision_id: execution.revision_id,
+      node_id: "done",
+      activation_key: "done",
+      context_id: "context:done",
+      status: "completed",
+    });
+    const node = store.createOrGetNodeExecution({
+      execution_id: execution.execution_id,
+      revision_id: execution.revision_id,
+      node_id: "worker",
+      activation_key: "one",
+      context_id: "context:pause-active",
+      status: "ready",
+    });
+    const first = store.startAttempt({
+      node_execution_id: node.node_execution_id,
+      delivery_ids: ["queue:active"],
+      delivery_bundle_id: "bundle:active",
+    });
+    db.prepare(`
+      INSERT INTO delivery_bundles (delivery_id, state, execution_attempt_id)
+      VALUES ('bundle:active', 'injected_to_runtime', ?)
+    `).run(first.attempt_id);
+    db.prepare(`
+      INSERT INTO event_queue (
+        queue_id, state, scope_execution_id, created_at, node_execution_id,
+        delivery_id, lease_expires_at, last_error
+      ) VALUES (
+        'queue:active', 'injected_to_runtime', ?, '2026-09-04T00:00:00.000Z', ?,
+        'bundle:active', '2099-01-01T00:00:00.000Z', NULL
+      )
+    `).run(execution.execution_id, node.node_execution_id);
+
+    const requested = store.pauseExecution({
+      execution_id: execution.execution_id,
+      deadline_ms: 60_000,
+    });
+    expect(requested).toMatchObject({
+      execution: { status: "pausing" },
+      active_delivery_ids: ["bundle:active"],
+    });
+    expect(store.getNodeExecution(node.node_execution_id)?.status).toBe("active");
+
+    const quiesced = store.recordPauseCancellation({
+      workspace_id: "workspace:test",
+      delivery_id: "bundle:active",
+      outcome: "quiesced",
+      evidence: { runtime_turn_id: "turn:one" },
+    });
+    expect(quiesced).toMatchObject({ paused: true, remaining_delivery_ids: [] });
+    expect(store.getAttempt(first.attempt_id)).toMatchObject({
+      status: "outcome_unknown",
+      error: expect.objectContaining({ outcome_unknown: true }),
+    });
+    expect(store.getNodeExecution(node.node_execution_id)).toMatchObject({
+      status: "paused",
+      failure: expect.objectContaining({ outcome_unknown: true }),
+    });
+    expect(store.getNodeExecution(completed.node_execution_id)?.status).toBe("completed");
+
+    store.resumeExecution({ execution_id: execution.execution_id });
+    expect(store.getNodeExecution(node.node_execution_id)).toMatchObject({
+      status: "retrying",
+      failure: expect.objectContaining({
+        code: "resumed_after_interruption",
+        interruption: [expect.objectContaining({ delivery_id: "bundle:active", outcome: "quiesced" })],
+      }),
+    });
+    expect(store.getNodeExecution(completed.node_execution_id)?.status).toBe("completed");
+    expect(db.prepare(`SELECT state, delivery_id FROM event_queue WHERE queue_id = 'queue:active'`).get())
+      .toEqual({ state: "queued", delivery_id: null });
+    const second = store.startAttempt({
+      node_execution_id: node.node_execution_id,
+      delivery_ids: ["queue:active"],
+      delivery_bundle_id: "bundle:resumed",
+    });
+    expect(second).toMatchObject({
+      ordinal: 2,
+      actor_definition_revision_id: node.actor_definition_revision_id,
+      runtime_profile_revision_id: node.runtime_profile_revision_id,
+      actor_runtime_binding_id: node.actor_runtime_binding_id,
+    });
+  });
+
+  it("forces an overdue active turn and waits for confirmed session retirement", () => {
+    createQueueSchema(db);
+    seedPlacement(db, { revision_id: "revision:forced-pause", node_id: "worker", kind: "context" });
+    const execution = createExecution(store, "revision:forced-pause", "workspace:test");
+    const node = store.createOrGetNodeExecution({
+      execution_id: execution.execution_id,
+      revision_id: execution.revision_id,
+      node_id: "worker",
+      activation_key: "one",
+      context_id: "context:forced-pause",
+      status: "ready",
+    });
+    const attempt = store.startAttempt({
+      node_execution_id: node.node_execution_id,
+      delivery_ids: ["queue:forced"],
+      delivery_bundle_id: "bundle:forced",
+    });
+    db.prepare(`
+      INSERT INTO delivery_bundles (delivery_id, state, execution_attempt_id)
+      VALUES ('bundle:forced', 'injected_to_runtime', ?)
+    `)
+      .run(attempt.attempt_id);
+    db.prepare(`
+      INSERT INTO event_queue VALUES (
+        'queue:forced', 'injected_to_runtime', ?, '2026-09-04T00:00:00.000Z', ?,
+        'bundle:forced', NULL, NULL
+      )
+    `).run(execution.execution_id, node.node_execution_id);
+    const requested = store.pauseExecution({ execution_id: execution.execution_id, deadline_ms: 1 });
+    const force = store.claimExpiredPauseDeliveryIds(
+      new Date(Date.parse(requested.deadline_at) + 1).toISOString(),
+    );
+    expect(force).toEqual([{
+      pause_id: requested.pause_id,
+      execution_id: execution.execution_id,
+      delivery_id: "bundle:forced",
+    }]);
+    expect(store.getExecution(execution.execution_id)?.status).toBe("pausing");
+    store.recordPauseCancellation({
+      workspace_id: "workspace:test",
+      delivery_id: "bundle:forced",
+      outcome: "session_retired",
+      evidence: { closed: true },
+    });
+    expect(store.getExecution(execution.execution_id)?.status).toBe("paused");
+  });
+
+  it("records and promotes exactly one replayable push for every NodeExecution revision", () => {
+    seedPlacement(db, { revision_id: "revision:push", node_id: "worker", kind: "context" });
+    const execution = createExecution(store, "revision:push", "workspace:test");
+    const node = store.createOrGetNodeExecution({
+      execution_id: execution.execution_id,
+      revision_id: execution.revision_id,
+      node_id: "worker",
+      activation_key: "one",
+      context_id: "context:push",
+      status: "collecting",
+    });
+    store.setNodeExecutionStatus(node.node_execution_id, "ready");
+    store.setNodeExecutionStatus(node.node_execution_id, "active");
+    store.setNodeExecutionStatus(node.node_execution_id, "failed", {
+      code: "runtime_failed",
+      message: "safe failure",
+    });
+
+    const stream = new TransportPushStreamStore(db);
+    const firstDrain = stream.drainNodeExecutionStateOutbox();
+    expect(firstDrain).toHaveLength(4);
+    expect(firstDrain.map((entry) => entry.payload)).toEqual([
+      expect.objectContaining({ state_revision: 1, from_status: null, to_status: "collecting" }),
+      expect.objectContaining({ state_revision: 2, from_status: "collecting", to_status: "ready" }),
+      expect.objectContaining({ state_revision: 3, from_status: "ready", to_status: "active" }),
+      expect.objectContaining({
+        state_revision: 4,
+        from_status: "active",
+        to_status: "failed",
+        failure: { code: "runtime_failed", message: "safe failure" },
+      }),
+    ]);
+    expect(stream.drainNodeExecutionStateOutbox()).toEqual([]);
+    expect(stream.listAfter({ workspace_id: "workspace:test" })).toHaveLength(4);
+  });
+
   it("retries the same NodeExecution with exact inputs and pins as a new attempt", () => {
     createQueueSchema(db);
     seedPlacement(db, { revision_id: "revision:retry", node_id: "worker", kind: "context" });
@@ -1223,6 +1398,13 @@ function createQueueSchema(db: DatabaseSync): void {
       created_at TEXT NOT NULL,
       node_execution_id TEXT,
       delivery_id TEXT,
+      lease_expires_at TEXT,
+      last_error TEXT
+    );
+    CREATE TABLE IF NOT EXISTS delivery_bundles (
+      delivery_id TEXT PRIMARY KEY,
+      state TEXT NOT NULL,
+      execution_attempt_id TEXT,
       lease_expires_at TEXT,
       last_error TEXT
     );

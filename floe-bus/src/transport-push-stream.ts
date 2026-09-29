@@ -1,3 +1,8 @@
+/**
+ * @invariant This store is the durable ordered push ledger. Transactional
+ * outbox promotion must atomically append one stream entry and acknowledge the
+ * source record so restart recovery cannot lose or duplicate a push.
+ */
 import type { DatabaseSync } from "node:sqlite";
 
 export type TransportPushEntry = Readonly<{
@@ -40,6 +45,77 @@ export class TransportPushStreamStore {
       VALUES (?, ?, ?, ?)
     `).run(input.workspace_id, input.type, JSON.stringify(input.payload), at);
     return this.require(Number(result.lastInsertRowid));
+  }
+
+  /**
+   * Promotes committed NodeExecution transition records into the replay stream.
+   * The insert and outbox acknowledgement share one transaction, so a restart
+   * can neither lose a transition nor append it twice.
+   */
+  drainNodeExecutionStateOutbox(limit = 1_000): TransportPushEntry[] {
+    if (!tableExists(this.db, "node_execution_state_outbox")) return [];
+    const rows = this.db.prepare(`
+      SELECT node_execution_id, state_revision, workspace_id, scope_id,
+             scope_execution_id, composition_revision_id, node_id,
+             from_status, to_status, attempt_id, delivery_id,
+             failure_json, changed_at
+      FROM node_execution_state_outbox
+      WHERE push_sequence IS NULL
+      ORDER BY changed_at, node_execution_id, state_revision
+      LIMIT ?
+    `).all(Math.min(Math.max(limit, 1), 10_000)) as Array<{
+      node_execution_id: string;
+      state_revision: number;
+      workspace_id: string;
+      scope_id: string;
+      scope_execution_id: string;
+      composition_revision_id: string;
+      node_id: string;
+      from_status: string | null;
+      to_status: string;
+      attempt_id: string | null;
+      delivery_id: string | null;
+      failure_json: string | null;
+      changed_at: string;
+    }>;
+    if (rows.length === 0) return [];
+    const sequences: number[] = [];
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const insert = this.db.prepare(`
+        INSERT INTO transport_push_entries (workspace_id, event_type, payload_json, created_at)
+        VALUES (?, 'node_execution_state_changed', ?, ?)
+      `);
+      const acknowledge = this.db.prepare(`
+        UPDATE node_execution_state_outbox SET push_sequence = ?
+        WHERE node_execution_id = ? AND state_revision = ? AND push_sequence IS NULL
+      `);
+      for (const row of rows) {
+        const result = insert.run(row.workspace_id, JSON.stringify({
+          workspace_id: row.workspace_id,
+          scope_id: row.scope_id,
+          scope_execution_id: row.scope_execution_id,
+          composition_revision_id: row.composition_revision_id,
+          node_execution_id: row.node_execution_id,
+          node_id: row.node_id,
+          state_revision: row.state_revision,
+          from_status: row.from_status,
+          to_status: row.to_status,
+          attempt_id: row.attempt_id,
+          delivery_id: row.delivery_id,
+          failure: row.failure_json ? JSON.parse(row.failure_json) : null,
+          changed_at: row.changed_at,
+        }), row.changed_at);
+        const sequence = Number(result.lastInsertRowid);
+        acknowledge.run(sequence, row.node_execution_id, row.state_revision);
+        sequences.push(sequence);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return sequences.map((sequence) => this.require(sequence));
   }
 
   latestCursor(): string | null {
@@ -189,6 +265,7 @@ function rowToEntry(row: PushRow): TransportPushEntry {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("Stored push update payload is invalid.");
   }
+
   return {
     cursor: encodeTransportPushCursor(Number(row.sequence)),
     sequence: Number(row.sequence),
@@ -197,4 +274,10 @@ function rowToEntry(row: PushRow): TransportPushEntry {
     payload: payload as Record<string, unknown>,
     at: row.created_at,
   };
+}
+
+function tableExists(db: DatabaseSync, table: string): boolean {
+  return Boolean(db.prepare(`
+    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
+  `).get(table));
 }

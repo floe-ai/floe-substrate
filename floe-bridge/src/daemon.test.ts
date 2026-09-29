@@ -148,20 +148,70 @@ describe("BridgeDaemon shutdown", () => {
     }
   });
 
-  it("interrupts the exact runtime delivery requested by the Bus", () => {
+  it("interrupts the exact runtime delivery and confirms quiescence to the Bus", async () => {
     const made = makeConfig("fake");
     try {
       const daemon = new BridgeDaemon(made.configPath, made.config);
       const cancelDelivery = vi.fn(() => true);
-      (daemon as any).adapter = { name: "test-adapter", handleBundle: vi.fn(), cancelDelivery };
+      const waitForDeliveryCancellation = vi.fn(async () => ({
+        outcome: "quiesced",
+        evidence: { runtime_turn_id: "turn:active" },
+      }));
+      const reportPauseCancellation = vi.fn(async () => {});
+      (daemon as any).adapter = {
+        name: "test-adapter",
+        handleBundle: vi.fn(),
+        cancelDelivery,
+        waitForDeliveryCancellation,
+      };
+      (daemon as any).bus = { reportPauseCancellation };
 
-      (daemon as any).handleEventStreamMessage({
+      await (daemon as any).handleEventStreamMessage({
         type: "delivery_cancel_requested",
-        payload: { delivery_id: "delivery:active" },
+        payload: { delivery_id: "delivery:active", workspace_id: "workspace:test" },
       });
 
       expect(cancelDelivery).toHaveBeenCalledWith("delivery:active");
+      expect(reportPauseCancellation).toHaveBeenCalledWith({
+        workspace_id: "workspace:test",
+        delivery_id: "delivery:active",
+        outcome: "quiesced",
+        evidence: { runtime_turn_id: "turn:active" },
+      });
       expect((daemon as any).cancelledDeliveries.has("delivery:active")).toBe(true);
+    } finally {
+      made.cleanup();
+    }
+  });
+
+  it("force-retires the exact overdue session and confirms termination", async () => {
+    const made = makeConfig("fake");
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      const forceRetireDelivery = vi.fn(async () => ({
+        outcome: "session_retired",
+        evidence: { session_id: "session:active" },
+      }));
+      const reportPauseCancellation = vi.fn(async () => {});
+      (daemon as any).adapter = {
+        name: "test-adapter",
+        handleBundle: vi.fn(),
+        forceRetireDelivery,
+      };
+      (daemon as any).bus = { reportPauseCancellation };
+
+      await (daemon as any).handleEventStreamMessage({
+        type: "delivery_force_retire_requested",
+        payload: { delivery_id: "delivery:active", workspace_id: "workspace:test" },
+      });
+
+      expect(forceRetireDelivery).toHaveBeenCalledWith("delivery:active");
+      expect(reportPauseCancellation).toHaveBeenCalledWith({
+        workspace_id: "workspace:test",
+        delivery_id: "delivery:active",
+        outcome: "session_retired",
+        evidence: { session_id: "session:active" },
+      });
     } finally {
       made.cleanup();
     }

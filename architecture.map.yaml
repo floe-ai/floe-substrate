@@ -17,6 +17,11 @@ system:
             - floe-bus/src/scopes/**
             - floe-bus/src/endpoint-watermark-store.ts
             - floe-bus/src/scope-projection-layout-store.ts
+            - floe-bus/src/scope-execution-contract.ts
+            - floe-bus/src/scope-executions.ts
+            - floe-bus/src/scope-operations.ts
+            - floe-bus/src/scope-compositions.ts
+            - floe-bus/src/workspace-portability.ts
             - floe-bus/src/event-cursor.ts
             - floe-bus/src/*test*
           writeAuthority:
@@ -31,6 +36,11 @@ system:
                 - floe-bus/src/scopes/**
                 - floe-bus/src/endpoint-watermark-store.ts
                 - floe-bus/src/scope-projection-layout-store.ts
+                - floe-bus/src/scope-execution-contract.ts
+                - floe-bus/src/scope-executions.ts
+                - floe-bus/src/scope-operations.ts
+                - floe-bus/src/scope-compositions.ts
+                - floe-bus/src/workspace-portability.ts
                 - floe-bus/src/event-cursor.ts
                 - floe-bus/src/*test*
         - id: bus-server
@@ -41,6 +51,7 @@ system:
             - floe-bus/src/index.ts
             - floe-bus/src/auth.ts
             - floe-bus/src/config.ts
+            - floe-bus/src/transport-push-stream.ts
             - floe-bus/vitest.config.ts
           writeAuthority:
             allowedModules: []
@@ -53,6 +64,7 @@ system:
                 - floe-bus/src/index.ts
                 - floe-bus/src/auth.ts
                 - floe-bus/src/config.ts
+                - floe-bus/src/transport-push-stream.ts
                 - floe-bus/vitest.config.ts
         - id: fs-api
           name: Workspace FS API

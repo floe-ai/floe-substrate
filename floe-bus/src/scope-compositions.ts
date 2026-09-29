@@ -1,3 +1,7 @@
+/**
+ * @invariant Published Scope composition revisions are immutable; impact
+ * assessment treats every nonterminal execution, including pausing, as active.
+ */
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Binding } from "./bindings.js";
@@ -857,7 +861,7 @@ export class ScopeCompositionStore {
     const current = this.getPublishedRevision(target.workspace_id, target.scope_id);
     const changes = compareScopeCompositionRevisions(current, target);
     const activeStatuses = [
-      "queued", "active", "waiting_external", "paused", "blocked",
+      "queued", "active", "waiting_external", "pausing", "paused", "blocked",
     ];
     const placeholders = activeStatuses.map(() => "?").join(", ");
     const executionSchemaExists = Boolean(this.db.prepare(`

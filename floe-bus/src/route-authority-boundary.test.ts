@@ -94,6 +94,7 @@ const EXPECTED_AUTHORITY: Record<string, TransportRequirement["kind"]> = {
   ["POST /v1/delivery/:delivery_id/tool-policy/evaluate"]: "bridge_service",
   ["POST /v1/delivery/:delivery_id/tool-policy/:evaluation_id/resolve"]: "bridge_service",
   ["POST /v1/delivery/:delivery_id/status"]: "bridge_service",
+  ["POST /v1/delivery/:delivery_id/pause-cancellation"]: "bridge_service",
   ["POST /v1/endpoints/:endpoint_id/status"]: "bridge_service",
   ["POST /v1/endpoints/:endpoint_id/turn-end"]: "bridge_service",
   ["POST /v1/runtime/telemetry"]: "bridge_service",

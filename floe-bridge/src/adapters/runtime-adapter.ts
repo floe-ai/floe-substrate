@@ -1,3 +1,8 @@
+/**
+ * @invariant Runtime adapters interrupt and retire only the exact Delivery
+ * session requested by the Bus, and report completion only after quiescence or
+ * isolated session termination is confirmed.
+ */
 import type { BusClient, DeliveryBundle, RuntimeOperationAuthoritySession } from "../bus-client.js";
 import type { AgentRuntimeConfig } from "../auth.js";
 import type { HookPayload, HookRegistry } from "../hooks.js";
@@ -18,6 +23,10 @@ export type RuntimeContext = {
   engine_tool_operation_ids?: string[];
 };
 
+export type RuntimeCancellationResult =
+  | Readonly<{ outcome: "quiesced"; evidence?: Record<string, unknown> }>
+  | Readonly<{ outcome: "session_retired"; evidence?: Record<string, unknown> }>;
+
 export interface RuntimeAdapter {
   readonly name: string;
   /**
@@ -28,7 +37,11 @@ export interface RuntimeAdapter {
   createEngineAccount?(): EngineAccount;
   handleBundle(context: RuntimeContext, bundle: DeliveryBundle, runtimeConfig?: AgentRuntimeConfig): Promise<void>;
   /** Interrupt one active delivery when the Bus has durably cancelled it. */
-  cancelDelivery?(deliveryId: string): Promise<boolean> | boolean;
+  cancelDelivery?(deliveryId: string): boolean;
+  /** Resolves only after the cancelled runtime confirms quiescence. */
+  waitForDeliveryCancellation?(deliveryId: string): Promise<RuntimeCancellationResult | null>;
+  /** Force-terminate only the isolated session that owns one overdue delivery. */
+  forceRetireDelivery?(deliveryId: string): Promise<RuntimeCancellationResult | null>;
   /** A pushed answer or invalidation for an approval a tool call may be waiting on. */
   approvalChanged?(approvalRequestId: string): void;
   dispose?(reason?: HookPayload<"SessionEnd">["reason"]): Promise<void>;

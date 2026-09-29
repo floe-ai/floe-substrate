@@ -851,6 +851,8 @@ export class BusStore {
   private materializationWaiters = new Map<string, Set<(result: MaterializationReport) => void>>();
   /** Single-shot timer scheduled to fire at the next lease expiry time (D5). */
   private leaseExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Single-shot timer for the nearest durable Scope pause deadline. */
+  private pauseDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
   /** Bounded once-per-process recovery; Command workers are push-driven after this scan. */
   private commandRecoveryStarted = false;
   /** Prevent deferred recovery or dispatch work from touching a closed SQLite handle. */
@@ -1213,6 +1215,7 @@ export class BusStore {
     }
     // Start the lease-expiry scheduler now that we have broadcast available.
     this.scheduleNextLeaseExpiryCheck();
+    this.scheduleNextPauseDeadline();
   }
 
   private async invokeBrokeredExtensionOperation(
@@ -1308,6 +1311,10 @@ export class BusStore {
     if (this.leaseExpiryTimer !== null) {
       clearTimeout(this.leaseExpiryTimer);
       this.leaseExpiryTimer = null;
+    }
+    if (this.pauseDeadlineTimer !== null) {
+      clearTimeout(this.pauseDeadlineTimer);
+      this.pauseDeadlineTimer = null;
     }
     this.commandRuntimeHost.terminateAll();
     this.extensionRuntime.terminateAll();
@@ -2617,12 +2624,61 @@ export class BusStore {
         `ScopeExecution '${input.execution_id}' is unavailable in Workspace '${input.workspace_id}'`,
       );
     }
-    const result = this.scopeExecutionStore.pauseExecution({
+    let result = this.scopeExecutionStore.pauseExecution({
       execution_id: input.execution_id,
       reason: input.reason,
     });
-    broadcast("scope_execution_paused", result);
+    broadcast("scope_execution_pause_requested", result);
+    for (const deliveryId of result.active_delivery_ids) {
+      const attempt = this.scopeExecutionStore.getAttemptForBundle(deliveryId);
+      const busOwned = attempt?.runtime.host_kind === "isolated_command_host";
+      broadcast("delivery_cancel_requested", {
+        workspace_id: input.workspace_id,
+        scope_execution_id: input.execution_id,
+        pause_id: result.pause_id,
+        delivery_id: deliveryId,
+        deadline_at: result.deadline_at,
+        runtime_owner: busOwned ? "bus" : "bridge",
+      });
+      if (busOwned && attempt) {
+        const cancelled = this.commandRuntimeHost.cancel(attempt.attempt_id);
+        this.scopeExecutionStore.recordPauseCancellation({
+          workspace_id: input.workspace_id,
+          delivery_id: deliveryId,
+          outcome: "quiesced",
+          evidence: {
+            host_kind: attempt.runtime.host_kind,
+            attempt_id: attempt.attempt_id,
+            active_host_cancelled: cancelled,
+          },
+        });
+      }
+    }
+    result = this.scopeExecutionStore.pauseExecution({
+      execution_id: input.execution_id,
+      reason: input.reason,
+    });
+    if (result.execution.status === "paused") broadcast("scope_execution_paused", result);
+    this.scheduleNextPauseDeadline();
     this.scheduleNextLeaseExpiryCheck();
+    return result;
+  }
+
+  recordScopePauseCancellation(input: {
+    workspace_id: string;
+    delivery_id: string;
+    outcome: "quiesced" | "session_retired";
+    evidence?: Record<string, unknown>;
+  }, broadcast: Broadcast) {
+    const result = this.scopeExecutionStore.recordPauseCancellation(input);
+    if (!result || result.execution.workspace_id !== input.workspace_id) return result;
+    if (result.paused) {
+      broadcast("scope_execution_paused", {
+        ...result,
+        workspace_id: input.workspace_id,
+      });
+    }
+    this.scheduleNextPauseDeadline();
     return result;
   }
 
@@ -2730,7 +2786,7 @@ export class BusStore {
         `ScopeExecution '${input.execution_id}' is unavailable in Workspace '${input.workspace_id}'`,
       );
     }
-    if (!["queued", "active", "waiting_external", "paused", "blocked"].includes(execution.status)) {
+    if (!["queued", "active", "waiting_external", "pausing", "paused", "blocked"].includes(execution.status)) {
       throw new ScopeExecutionInvalidError(`ScopeExecution '${input.execution_id}' is already ${execution.status}`);
     }
 
@@ -4598,11 +4654,11 @@ export class BusStore {
       }
       cancelledPulseCount = Number((this.db.prepare(`
         SELECT COUNT(*) AS count FROM pulses
-        WHERE workspace_id = ? AND scope_id = ? AND status IN ('active', 'paused')
+        WHERE workspace_id = ? AND scope_id = ? AND status IN ('active', 'pausing', 'paused')
       `).get(workspaceId, scopeId) as { count: number }).count);
       this.db.prepare(`
         UPDATE pulses SET status = 'cancelled', next_fire_at = NULL, updated_at = ?
-        WHERE workspace_id = ? AND scope_id = ? AND status IN ('active', 'paused')
+        WHERE workspace_id = ? AND scope_id = ? AND status IN ('active', 'pausing', 'paused')
       `).run(timestamp, workspaceId, scopeId);
       for (const graph of graphs) {
         this.db.prepare("DELETE FROM context_subscriptions WHERE context_id = ?").run(graph.context_id);
@@ -9092,6 +9148,33 @@ export class BusStore {
     }, delay);
   }
 
+  private scheduleNextPauseDeadline(): void {
+    if (this.pauseDeadlineTimer !== null) {
+      clearTimeout(this.pauseDeadlineTimer);
+      this.pauseDeadlineTimer = null;
+    }
+    const broadcast = this.broadcastFn;
+    if (!broadcast || this.closed) return;
+    const deadline = this.scopeExecutionStore.nextPauseDeadline();
+    if (!deadline) return;
+    const delay = Math.max(0, Date.parse(deadline) - Date.now());
+    this.pauseDeadlineTimer = setTimeout(() => {
+      this.pauseDeadlineTimer = null;
+      for (const row of this.scopeExecutionStore.claimExpiredPauseDeliveryIds()) {
+        const execution = this.scopeExecutionStore.getExecution(row.execution_id);
+        if (!execution) continue;
+        broadcast("delivery_force_retire_requested", {
+          workspace_id: execution.workspace_id,
+          scope_execution_id: execution.execution_id,
+          pause_id: row.pause_id,
+          delivery_id: row.delivery_id,
+          deadline_at: deadline,
+        });
+      }
+      this.scheduleNextPauseDeadline();
+    }, delay);
+  }
+
   private rowToEvent(row: any): EventEnvelope {
     return {
       event_id: row.event_id,
@@ -9301,7 +9384,7 @@ export class BusStore {
 
   private reconcileScopeExecutionStatus(executionId: string): void {
     const execution = this.scopeExecutionStore.getExecution(executionId);
-    if (!execution || ["completed", "failed", "cancelled", "superseded"].includes(execution.status)) return;
+    if (!execution || ["pausing", "paused", "completed", "failed", "cancelled", "superseded"].includes(execution.status)) return;
     const nodes = this.scopeExecutionStore.listNodeExecutions(executionId);
     if (nodes.some((node) => node.status === "failed")) {
       this.scopeExecutionStore.setExecutionStatus(executionId, "failed");
