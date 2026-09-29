@@ -4,6 +4,7 @@ import {
   NETWORK_DOMAIN_TARGET_KIND,
   targetContains,
   type CapabilityGrantRecord,
+  type CapabilityGrantTarget,
 } from "./capability-grants.js";
 import type { ToolCallPolicyFacts } from "./tool-policy-facts.js";
 
@@ -33,45 +34,32 @@ export type ToolAuthorityDenialCode =
   | "tool_grant_missing"
   | "tool_path_missing"
   | "tool_path_unresolved"
-  | "tool_scope_missing"
   | "tool_path_outside_scope"
   | "tool_target_not_granted"
   | "tool_shell_ambiguous"
   | "tool_network_not_granted"
   | "tool_shell_unconfined";
 
-/**
- * Automatic execution needs complete evidence of everything a call touches.
- * No proven engine reports the files, addresses, redirections or background
- * behaviour of a shell command (Copilot CLI 1.0.83 on Windows reports only
- * command names), so a shell call runs only with a person's decision.
- */
-export const SHELL_UNCONFINED_REASON = "This engine does not report which files, addresses or redirections a shell command"
-  + " touches, so each shell call needs a person's approval. Add an Approval Policy rule that requires approval for"
-  + " engine.tool.process.execute.";
-
-export function automaticAllowRefusal(operationId: string): string | null {
-  return operationId === ENGINE_TOOL_OPERATIONS.process_execute ? SHELL_UNCONFINED_REASON : null;
-}
-
 export function isEngineToolOperation(operationId: string): operationId is EngineToolOperationId {
   return TOOL_OPERATION_IDS.has(operationId);
 }
 
 /**
- * The authority half of a tool decision: the intersection of the Actor's live
- * exercisable grants and its filesystem scope, judged on the engine's
- * normalized evidence. Anything missing, unresolved, or ambiguous is refused;
- * policy may then restrict what remains but can never widen it.
+ * The authority half of a tool decision. Holding a grant for the operation is
+ * enough: an untargeted grant and no declared scope leave the call
+ * unrestricted. Restrictions are opt-in (grant targets, the Actor's
+ * `scope.paths`); a call is checked only against the restrictions chosen, and
+ * is refused when the engine's evidence cannot show that it complies.
+ * Policy may then restrict what remains but can never widen it.
  */
 export function decideToolAuthority(input: Readonly<{
   operation_id: string;
   facts: ToolCallPolicyFacts;
-  /** Canonical Actor scope paths; null when the Actor declares no scope. */
+  /** Canonical Actor scope paths; null when the Actor chose no folder limit. */
   scope_paths: readonly string[] | null;
   grants: readonly ToolAuthorityGrant[];
 }>): ToolAuthorityDecision {
-  const { operation_id: operationId, facts } = input;
+  const { operation_id: operationId, facts, scope_paths: scope } = input;
   if (!isEngineToolOperation(operationId)) {
     return deny("tool_operation_unknown", `'${operationId}' is not a governed engine tool operation.`);
   }
@@ -82,56 +70,111 @@ export function decideToolAuthority(input: Readonly<{
   if (candidates.length === 0) {
     return deny("tool_grant_missing", `This Actor holds no live grant for '${operationId}'.`);
   }
+  if (operationId === ENGINE_TOOL_OPERATIONS.process_execute) return decideShell(candidates, facts, scope, input.grants);
 
-  const readsOrWritesFiles = operationId === ENGINE_TOOL_OPERATIONS.filesystem_read
-    || operationId === ENGINE_TOOL_OPERATIONS.filesystem_write;
-  if (facts.unresolved_path_count > 0) {
-    return deny("tool_path_unresolved", "A path could not be resolved inside the Workspace.");
+  if (scope !== null && touchesFiles(facts, operationId)) {
+    const refusal = pathsRefusal(facts, scope.map((id) => ({ kind: FILESYSTEM_PATH_TARGET_KIND, id })), "this Actor's scope", "tool_path_outside_scope");
+    if (refusal) return refusal;
   }
-  if (readsOrWritesFiles && facts.paths.length === 0) {
-    return deny("tool_path_missing", "The engine did not report which path this call touches.");
-  }
-  if (facts.paths.length > 0) {
-    if (input.scope_paths === null) {
-      return deny("tool_scope_missing", "This Actor declares no filesystem scope, so it may not touch files.");
-    }
-    const outside = facts.paths.find((path) => !input.scope_paths!.some((scope) =>
-      targetContains({ kind: FILESYSTEM_PATH_TARGET_KIND, id: scope }, { kind: FILESYSTEM_PATH_TARGET_KIND, id: path })));
-    if (outside !== undefined) {
-      return deny("tool_path_outside_scope", `'${outside}' is outside this Actor's scope.`);
-    }
-  }
+  const refusals = candidates.map((grant) => grantRefusal(grant, facts, operationId));
+  const index = refusals.findIndex((refusal) => refusal === null);
+  return index >= 0 ? { allowed: true, grant_id: candidates[index]!.grant_id } : refusals[0]!;
+}
 
-  if (operationId === ENGINE_TOOL_OPERATIONS.network_fetch) {
+/**
+ * Shell is unrestricted unless a person chose limits. Engines report only
+ * command names for shell calls, so a folder limit can never be shown to hold
+ * and refuses every shell call; a command allowlist is checked on those names.
+ */
+function decideShell(
+  candidates: readonly ToolAuthorityGrant[],
+  facts: ToolCallPolicyFacts,
+  scope: readonly string[] | null,
+  grants: readonly ToolAuthorityGrant[],
+): ToolAuthorityDecision {
+  if (scope !== null) {
+    return deny("tool_shell_unconfined", "This Actor is limited to chosen folders, and this engine does not report which"
+      + " files a shell command touches, so its shell calls cannot be shown to stay inside them.");
+  }
+  let first: ToolAuthorityDecision | null = null;
+  for (const grant of candidates) {
+    const refusal = grantRefusal(grant, facts, ENGINE_TOOL_OPERATIONS.process_execute);
+    if (!refusal) {
+      const network = shellNetworkRefusal(facts, grants);
+      return network ?? { allowed: true, grant_id: grant.grant_id };
+    }
+    first ??= refusal;
+  }
+  return first!;
+}
+
+/** A shell command's reported destinations must satisfy any fetch limits the Actor has. */
+function shellNetworkRefusal(facts: ToolCallPolicyFacts, grants: readonly ToolAuthorityGrant[]): ToolAuthorityDecision | null {
+  if (facts.destinations.length === 0 && facts.invalid_url_count === 0) return null;
+  const fetch = grants.filter((grant) => grant.operation_ids.includes(ENGINE_TOOL_OPERATIONS.network_fetch));
+  if (fetch.some((grant) => grantRefusal(grant, { ...facts, paths: [], unresolved_path_count: 0 }, ENGINE_TOOL_OPERATIONS.network_fetch) === null)) {
+    return null;
+  }
+  return deny("tool_network_not_granted", "The command reaches a network destination this Actor may not fetch.");
+}
+
+function grantRefusal(grant: ToolAuthorityGrant, facts: ToolCallPolicyFacts, operationId: string): ToolAuthorityDecision | null {
+  if (grant.targets.some((target) => !TOOL_TARGET_KINDS.has(target.kind))) {
+    return deny("tool_target_not_granted", `This Actor's grant for '${operationId}' has limits that do not apply to engine tools.`);
+  }
+  const ofKind = (kind: string) => grant.targets.filter((target) => target.kind === kind);
+  const folders = ofKind(FILESYSTEM_PATH_TARGET_KIND);
+  if (folders.length > 0) {
+    if (operationId === ENGINE_TOOL_OPERATIONS.process_execute) {
+      return deny("tool_shell_unconfined", "This Actor's shell access is limited to chosen folders, and this engine does not"
+        + " report which files a shell command touches.");
+    }
+    if (touchesFiles(facts, operationId)) {
+      const refusal = pathsRefusal(facts, folders, "the folders this Actor was granted", "tool_target_not_granted");
+      if (refusal) return refusal;
+    }
+  }
+  const commands = ofKind(EXECUTABLE_TARGET_KIND);
+  if (operationId === ENGINE_TOOL_OPERATIONS.process_execute && commands.length > 0) {
+    const ambiguity = shellAmbiguity(facts);
+    if (ambiguity) return deny("tool_shell_ambiguous", ambiguity);
+    const unlisted = facts.executables.find((name) => !commands.some((target) => targetContains(target, { kind: EXECUTABLE_TARGET_KIND, id: name })));
+    if (unlisted !== undefined) return deny("tool_target_not_granted", `'${unlisted}' is not one of the commands this Actor may run.`);
+  }
+  const domains = ofKind(NETWORK_DOMAIN_TARGET_KIND);
+  if (operationId === ENGINE_TOOL_OPERATIONS.network_fetch && domains.length > 0) {
     if (facts.invalid_url_count > 0 || facts.destinations.length === 0) {
       return deny("tool_network_not_granted", "The fetch destination could not be determined.");
     }
     const unsupported = facts.destinations.find((destination) => !FETCH_SCHEMES.has(destination.scheme));
-    if (unsupported) {
-      return deny("tool_network_not_granted", `The '${unsupported.scheme}' scheme is not allowed for fetches.`);
-    }
+    if (unsupported) return deny("tool_network_not_granted", `The '${unsupported.scheme}' scheme is not allowed for fetches.`);
+    const outside = facts.destinations.find((destination) => !domains.some((target) =>
+      targetContains(target, { kind: NETWORK_DOMAIN_TARGET_KIND, id: destination.host })));
+    if (outside) return deny("tool_target_not_granted", `'${outside.host}' is not one of the domains this Actor may fetch.`);
   }
+  return null;
+}
 
-  if (operationId === ENGINE_TOOL_OPERATIONS.process_execute) {
-    const ambiguity = shellAmbiguity(facts);
-    if (ambiguity) return deny("tool_shell_ambiguous", ambiguity);
-  }
+function touchesFiles(facts: ToolCallPolicyFacts, operationId: string): boolean {
+  return operationId === ENGINE_TOOL_OPERATIONS.filesystem_read || operationId === ENGINE_TOOL_OPERATIONS.filesystem_write
+    || facts.paths.length > 0 || facts.unresolved_path_count > 0;
+}
 
-  const covering = candidates.find((grant) => grantCovers(grant, facts, operationId));
-  if (!covering) {
-    return deny("tool_target_not_granted", `No live grant for '${operationId}' covers every path, command, and destination in this call.`);
+function pathsRefusal(
+  facts: ToolCallPolicyFacts,
+  folders: readonly CapabilityGrantTarget[],
+  label: string,
+  code: "tool_path_outside_scope" | "tool_target_not_granted",
+): ToolAuthorityDecision | null {
+  if (facts.unresolved_path_count > 0) {
+    return deny("tool_path_unresolved", `A path could not be resolved inside the Workspace, so it cannot be shown to be within ${label}.`);
   }
-
-  if (operationId === ENGINE_TOOL_OPERATIONS.process_execute && facts.destinations.length > 0) {
-    const fetchable = facts.destinations.every((destination) => FETCH_SCHEMES.has(destination.scheme))
-      && input.grants.some((grant) =>
-        grant.operation_ids.includes(ENGINE_TOOL_OPERATIONS.network_fetch)
-        && grantCovers(grant, { ...facts, paths: [], executables: [] }, ENGINE_TOOL_OPERATIONS.network_fetch));
-    if (!fetchable) {
-      return deny("tool_network_not_granted", "The command reaches a network destination this Actor may not fetch.");
-    }
+  if (facts.paths.length === 0) {
+    return deny("tool_path_missing", `The engine did not report which path this call touches, so it cannot be shown to be within ${label}.`);
   }
-  return { allowed: true, grant_id: covering.grant_id };
+  const outside = facts.paths.find((path) => !folders.some((folder) =>
+    targetContains(folder, { kind: FILESYSTEM_PATH_TARGET_KIND, id: path })));
+  return outside === undefined ? null : deny(code, `'${outside}' is outside ${label}.`);
 }
 
 function shellAmbiguity(facts: ToolCallPolicyFacts): string | null {
@@ -139,30 +182,9 @@ function shellAmbiguity(facts: ToolCallPolicyFacts): string | null {
     return "The engine could not identify every command in this shell call.";
   }
   if (facts.write_redirection) {
-    return "The command redirects output into a file, which shell grants do not allow.";
-  }
-  if (facts.invalid_url_count > 0) {
-    return "The command mentions a network destination that could not be parsed.";
+    return "The command redirects output into a file, which a command allowlist does not cover.";
   }
   return null;
-}
-
-function grantCovers(grant: ToolAuthorityGrant, facts: ToolCallPolicyFacts, operationId: string): boolean {
-  if (grant.targets.some((target) => !TOOL_TARGET_KINDS.has(target.kind))) return false;
-  const ofKind = (kind: string) => grant.targets.filter((target) => target.kind === kind);
-  const within = (kind: string, ids: readonly string[]) => {
-    const allowed = ofKind(kind);
-    return ids.every((id) => allowed.some((target) => targetContains(target, { kind, id })));
-  };
-  if (ofKind(FILESYSTEM_PATH_TARGET_KIND).length > 0 && !within(FILESYSTEM_PATH_TARGET_KIND, facts.paths)) return false;
-  if (operationId === ENGINE_TOOL_OPERATIONS.process_execute) {
-    // Automatic shell execution needs an explicit executable allowlist.
-    if (ofKind(EXECUTABLE_TARGET_KIND).length === 0 || !within(EXECUTABLE_TARGET_KIND, facts.executables)) return false;
-  }
-  if (operationId === ENGINE_TOOL_OPERATIONS.network_fetch && ofKind(NETWORK_DOMAIN_TARGET_KIND).length > 0) {
-    if (!within(NETWORK_DOMAIN_TARGET_KIND, facts.destinations.map((destination) => destination.host))) return false;
-  }
-  return true;
 }
 
 function deny(code: ToolAuthorityDenialCode, reason: string): ToolAuthorityDecision {

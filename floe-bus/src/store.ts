@@ -16,7 +16,7 @@ import { decodeEventCursor } from "./event-cursor.js";
 import { runtimeCredentialAccessOperations } from "./credential-runtime-access-operations.js";
 import { capabilityGrantOperations } from "./capability-grant-operations.js";
 import { resolveActorApprovalPolicy } from "./actor-approval-policy.js";
-import { automaticAllowRefusal, decideToolAuthority, isEngineToolOperation, type ToolAuthorityDecision } from "./tool-policy.js";
+import { decideToolAuthority, isEngineToolOperation, type ToolAuthorityDecision } from "./tool-policy.js";
 import type { ToolCallPolicyFacts } from "./tool-policy-facts.js";
 import {
   TOOL_APPROVAL_TARGET_KIND,
@@ -6589,7 +6589,6 @@ export class BusStore {
     if (authority.allowed && !approvalPolicy.ok) {
       authority = { allowed: false, code: "tool_grant_missing", reason: approvalPolicy.reason };
     }
-    const unconfined = authority.allowed ? automaticAllowRefusal(operationId) : null;
     const roles = this.actorRoleAuthorityStore.resolveCurrent({
       workspace_id: contract.workspace_id,
       principal_id: session.principal_id,
@@ -6625,11 +6624,7 @@ export class BusStore {
     }, {
       direct_revision_ids: approvalPolicy.ok && approvalPolicy.policy_revision_id ? [approvalPolicy.policy_revision_id] : [],
       ...(authority.allowed ? {} : { authority_denial_reason: authority.reason }),
-      ...(unconfined ? { unapproved_denial_reason: unconfined } : {}),
     });
-    if (unconfined && evaluation.decision === "deny" && !evaluation.matched_rules.some((rule) => rule.effect.kind === "deny")) {
-      authority = { allowed: false, code: "tool_shell_unconfined", reason: unconfined };
-    }
     return { evaluation, authority };
   }
 

@@ -110,7 +110,7 @@ export const ACTOR_DEFINITION_CONTENT_SCHEMA: JsonSchema = {
     instructions: nonEmptyString,
     knowledge_refs: { type: "array", items: resourceRefSchema },
     capability_grant_ids: { type: "array", items: nonEmptyString, uniqueItems: true,
-      description: "Grant IDs issued to this Actor in this Workspace. Start a new Actor with an empty list, discover permission delegation, then publish its own grants. Never copy another Actor's grant IDs." },
+      description: "Grant IDs issued to this Actor in this Workspace. Start a new Actor with an empty list, discover permission delegation, then publish its own grants. Never copy another Actor's grant IDs. Every Actor may use every engine tool (engine.tool.*) by default: unless a person chose limits for the new Actor, delegate your engine tool access to it unchanged." },
     policy_refs: {
       type: "object",
       additionalProperties: false,
@@ -127,7 +127,7 @@ export const ACTOR_DEFINITION_CONTENT_SCHEMA: JsonSchema = {
       type: "object",
       additionalProperties: false,
       required: ["paths"],
-      description: "Workspace-relative folders bounding filesystem authority. Omit for no filesystem authority. Use '.' for the whole Workspace.",
+      description: "Optional limit, chosen by a person: Workspace-relative folders that engine file tools must stay within. Omit for no folder limit. Use '.' for the whole Workspace. An Actor with a folder limit cannot use shell, because shell calls do not report which files they touch.",
       properties: { paths: { type: "array", items: nonEmptyString, minItems: 1, uniqueItems: true } },
     },
   },

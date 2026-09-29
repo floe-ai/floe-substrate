@@ -139,11 +139,9 @@ describe("runtime tool policy", () => {
     );
   }
 
-  it("allows only what grants and scope both cover, records it, and pushes the decision", async () => {
-    const read = grant(["engine.tool.filesystem.read"], [{ kind: "filesystem_path", id: "src" }]);
-    const fetch = grant(["engine.tool.network.fetch"], [{ kind: "network_domain", id: "example.com" }]);
-    const shell = grant(["engine.tool.process.execute"], [{ kind: "executable", id: "git" }]);
-    publishDefinition({ capability_grant_ids: [read.grant_id, fetch.grant_id, shell.grant_id], scope: { paths: ["src", "docs"] } });
+  it("is unrestricted by default, and records every call as a decision", async () => {
+    const all = grant(["engine.tool.filesystem.read", "engine.tool.filesystem.write", "engine.tool.process.execute", "engine.tool.network.fetch"]);
+    publishDefinition({ capability_grant_ids: [all.grant_id] });
     const deliveryId = await runningDelivery();
 
     const allowed = evaluate(deliveryId, call({}));
@@ -155,14 +153,36 @@ describe("runtime tool policy", () => {
       operation_id: "engine.tool.filesystem.read", decision: "allow", tool_call_id: "call-1",
     }) }]);
 
+    const decision = (request: Partial<RuntimeToolCallRequest>) => evaluate(deliveryId, call(request)).decision;
+    // Paths outside the Workspace, or unreported, are allowed when no folder limit was chosen.
+    expect(decision({ paths: [null] })).toBe("allow");
+    expect(decision({ paths: [] })).toBe("allow");
+    expect(decision({ operation_id: "engine.tool.filesystem.write", native_tools: ["apply_patch"] })).toBe("allow");
+    expect(decision({ operation_id: "engine.tool.network.fetch", native_tools: ["web_fetch"], paths: [], urls: ["ftp://anywhere.test/"] })).toBe("allow");
+    const sh = { operation_id: "engine.tool.process.execute", native_tools: ["powershell"], paths: [] as string[] };
+    expect(decision({ ...sh, executables: [] })).toBe("allow");
+    expect(decision({ ...sh, executables: ["npm", null], write_redirection: true, urls: ["https://anywhere.test/"] })).toBe("allow");
+    expect(evaluate(deliveryId, call({ operation_id: "engine.tool.unknown" })).refusal?.rule_id).toBe("authority.tool_operation_unknown");
+    expect(evaluate(deliveryId, call({ sandbox_bypass: true })).refusal?.rule_id).toBe("authority.tool_sandbox_bypass");
+
+    handle.store.capabilityGrantStore.revokeGrant(all.grant_id);
+    expect(evaluate(deliveryId, call({})).refusal?.rule_id).toBe("authority.tool_grant_missing");
+  });
+
+  it("enforces only the limits a person chose, and refuses what the evidence cannot show", async () => {
+    const read = grant(["engine.tool.filesystem.read"], [{ kind: "filesystem_path", id: "src" }]);
+    const fetch = grant(["engine.tool.network.fetch"], [{ kind: "network_domain", id: "example.com" }]);
+    const shell = grant(["engine.tool.process.execute"], [{ kind: "executable", id: "git" }]);
+    publishDefinition({ capability_grant_ids: [read.grant_id, fetch.grant_id, shell.grant_id], scope: { paths: ["src", "docs"] } });
+    const deliveryId = await runningDelivery();
+
+    expect(evaluate(deliveryId, call({})).decision).toBe("allow");
     const refused = (request: Partial<RuntimeToolCallRequest>) => evaluate(deliveryId, call(request)).refusal?.rule_id;
     expect(refused({ paths: ["docs/readme.md"] })).toBe("authority.tool_target_not_granted");
     expect(refused({ paths: ["other/file.ts"] })).toBe("authority.tool_path_outside_scope");
     expect(refused({ paths: [null] })).toBe("authority.tool_path_unresolved");
     expect(refused({ paths: [] })).toBe("authority.tool_path_missing");
     expect(refused({ operation_id: "engine.tool.filesystem.write", native_tools: ["apply_patch"] })).toBe("authority.tool_grant_missing");
-    expect(refused({ operation_id: "engine.tool.unknown" })).toBe("authority.tool_operation_unknown");
-    expect(refused({ sandbox_bypass: true })).toBe("authority.tool_sandbox_bypass");
 
     const web = { operation_id: "engine.tool.network.fetch", native_tools: ["web_fetch"], paths: [] as string[] };
     expect(evaluate(deliveryId, call({ ...web, urls: ["https://api.example.com/x?token=secret"] })).decision).toBe("allow");
@@ -171,33 +191,36 @@ describe("runtime tool policy", () => {
     expect(refused({ ...web, urls: ["ftp://example.com/"] })).toBe("authority.tool_network_not_granted");
     expect(refused({ ...web, urls: ["not a url"] })).toBe("authority.tool_network_not_granted");
 
+    // A folder limit cannot be shown to hold for shell, whose evidence names only commands.
     const sh = { operation_id: "engine.tool.process.execute", native_tools: ["powershell"], paths: [] as string[] };
-    const unconfined = evaluate(deliveryId, call({ ...sh, executables: ["Git", "git"] }));
-    expect(unconfined.refusal).toMatchObject({ rule_id: "authority.tool_shell_unconfined", reason: expect.stringMatching(/needs a person's approval/) });
-    expect(handle.store.policyStore.getEvaluation(unconfined.evaluation_id)!.decision).toBe("deny");
-    expect(refused({ ...sh, executables: ["git"], urls: ["https://example.com/repo"] })).toBe("authority.tool_shell_unconfined");
-    expect(refused({ ...sh, executables: ["git"], urls: ["https://evil.test/"] })).toBe("authority.tool_network_not_granted");
-    expect(refused({ ...sh, executables: ["git", null] })).toBe("authority.tool_shell_ambiguous");
-    expect(refused({ ...sh, executables: [] })).toBe("authority.tool_shell_ambiguous");
-    expect(refused({ ...sh, executables: ["git"], write_redirection: true })).toBe("authority.tool_shell_ambiguous");
-    expect(refused({ ...sh, executables: ["npm"] })).toBe("authority.tool_target_not_granted");
-    expect(refused({ ...sh, executables: ["git"], paths: ["../outside"] })).toBe("authority.tool_path_outside_scope");
-
-    handle.store.capabilityGrantStore.revokeGrant(read.grant_id);
-    expect(refused({})).toBe("authority.tool_grant_missing");
+    const unconfined = evaluate(deliveryId, call({ ...sh, executables: ["git"] }));
+    expect(unconfined).toMatchObject({ decision: "deny", approval_request_ids: [] });
+    expect(unconfined.refusal).toMatchObject({ rule_id: "authority.tool_shell_unconfined", reason: expect.stringMatching(/chosen folders/) });
   });
 
-  it("refuses every file when the Actor declares no scope", async () => {
-    const read = grant(["engine.tool.filesystem.read"]);
-    publishDefinition({ capability_grant_ids: [read.grant_id] });
+  it("checks a chosen command allowlist on the commands the engine reports", async () => {
+    const shell = grant(["engine.tool.process.execute"], [{ kind: "executable", id: "git" }]);
+    const fetch = grant(["engine.tool.network.fetch"], [{ kind: "network_domain", id: "example.com" }]);
+    publishDefinition({ capability_grant_ids: [shell.grant_id, fetch.grant_id] });
     const deliveryId = await runningDelivery();
-    expect(evaluate(deliveryId, call({})).refusal).toEqual({
-      code: "tool_policy_denied",
-      tool_call_id: "call-1",
-      operation_id: "engine.tool.filesystem.read",
-      rule_id: "authority.tool_scope_missing",
-      reason: "This Actor declares no filesystem scope, so it may not touch files.",
-    });
+    const sh = { operation_id: "engine.tool.process.execute", native_tools: ["powershell"], paths: [] as string[] };
+    const refused = (request: Partial<RuntimeToolCallRequest>) => evaluate(deliveryId, call({ ...sh, ...request })).refusal?.rule_id;
+
+    expect(evaluate(deliveryId, call({ ...sh, executables: ["Git", "git"] })).decision).toBe("allow");
+    expect(evaluate(deliveryId, call({ ...sh, executables: ["git"], urls: ["https://example.com/repo"] })).decision).toBe("allow");
+    expect(refused({ executables: ["git"], urls: ["https://evil.test/"] })).toBe("authority.tool_network_not_granted");
+    expect(refused({ executables: ["git", null] })).toBe("authority.tool_shell_ambiguous");
+    expect(refused({ executables: [] })).toBe("authority.tool_shell_ambiguous");
+    expect(refused({ executables: ["git"], write_redirection: true })).toBe("authority.tool_shell_ambiguous");
+    expect(refused({ executables: ["npm"] })).toBe("authority.tool_target_not_granted");
+  });
+
+  it("refuses shell under a folder limit on its grant, since shell evidence names no files", async () => {
+    const folders = grant(["engine.tool.process.execute"], [{ kind: "filesystem_path", id: "src" }]);
+    publishDefinition({ capability_grant_ids: [folders.grant_id] });
+    const deliveryId = await runningDelivery();
+    const shell = call({ operation_id: "engine.tool.process.execute", native_tools: ["powershell"], paths: [], executables: ["git"] });
+    expect(evaluate(deliveryId, shell).refusal?.rule_id).toBe("authority.tool_shell_unconfined");
   });
 
   it("applies the Actor's pinned Approval Policy and bound policies, which only restrict", async () => {
@@ -328,21 +351,19 @@ describe("runtime tool policy", () => {
     expect(handle.store.approvalStore.getRequest(stale.approval_request_ids[0]!)!.status).toBe("invalidated");
   });
 
-  it("never runs shell automatically, but asks a person when an Approval Policy says so", async () => {
-    const shell = grant(["engine.tool.process.execute"], [{ kind: "executable", id: "git" }]);
+  it("asks a person about shell only when an Approval Policy rule says so", async () => {
+    const shell = grant(["engine.tool.process.execute"]);
     const approval = publishPolicy("approval", [{
       rule_id: "ask-before-shell", priority: 1, match: { operation_ids: ["engine.tool.process.execute"] },
       effect: { kind: "require_approval", reason: "Shell needs a person.", approvers: { mode: "any", principal_ids: [OPERATOR], roles: [] } },
     }]);
     publishDefinition({
-      capability_grant_ids: [shell.grant_id], scope: { paths: ["."] },
+      capability_grant_ids: [shell.grant_id],
       policy_refs: { budget: null, trust: null, approval: { kind: "policy", id: approval.policy_id, revision: approval.policy_revision_id } },
     });
     const deliveryId = await runningDelivery();
-    const sh = { operation_id: "engine.tool.process.execute", native_tools: ["powershell"], paths: [] as string[], executables: ["git"] };
-    const asked = evaluate(deliveryId, call(sh));
+    const asked = evaluate(deliveryId, call({ operation_id: "engine.tool.process.execute", native_tools: ["powershell"], paths: [], executables: ["git"] }));
     expect(asked).toMatchObject({ decision: "require_approval", refusal: null, approval_request_ids: [expect.any(String)] });
-    expect(evaluate(deliveryId, call({ ...sh, executables: ["npm"] })).refusal?.rule_id).toBe("authority.tool_target_not_granted");
   });
 
   it("is reachable only by the owning Bridge with well-formed facts", async () => {
