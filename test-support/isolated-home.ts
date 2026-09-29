@@ -1,0 +1,142 @@
+/**
+ * Every Floe test runs against a throwaway user profile, by construction.
+ *
+ * Floe finds its home the way it does on a person's machine: from the OS user
+ * profile (`~/.floe`, and on Windows `%LOCALAPPDATA%\Floe`). This setup file
+ * runs in every test worker before any test module loads and points the
+ * profile variables at a fresh temporary directory, so a default config, a
+ * `~` path, or a spawned Floe service can only ever reach that directory.
+ *
+ * The guard is the second wall. The real profile is read from the OS account
+ * (not the environment), and any file or SQLite access under the real Floe
+ * home is refused and fails the test run loudly, even if something computes
+ * the real path another way.
+ */
+import { afterAll, afterEach } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { homedir, tmpdir, userInfo } from "node:os";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const require = createRequire(import.meta.url);
+const windows = process.platform === "win32";
+
+type Guard = { protectedRoots: string[]; violations: string[]; isolatedHome: string | null };
+const GUARD_KEY = Symbol.for("floe.test.guard");
+const slot = globalThis as unknown as Record<symbol, Guard | undefined>;
+
+function normal(path: string): string {
+  const full = resolve(path);
+  return windows ? full.toLowerCase() : full;
+}
+
+/** Read once, before any isolation, from the OS account rather than the environment. */
+function realFloeRoots(): string[] {
+  const realHome = userInfo().homedir;
+  const roots = [join(realHome, ".floe")];
+  if (windows) {
+    roots.push(join(realHome, "AppData", "Local", "Floe"));
+    if (process.env.LOCALAPPDATA) roots.push(join(process.env.LOCALAPPDATA, "Floe"));
+  }
+  return [...new Set(roots.map(normal))];
+}
+
+function pathOf(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (value instanceof URL && value.protocol === "file:") return fileURLToPath(value);
+  if (Buffer.isBuffer(value)) return value.toString("utf8");
+  return null;
+}
+
+function check(operation: string, value: unknown): void {
+  const guard = slot[GUARD_KEY];
+  const path = pathOf(value);
+  if (!guard || !path || path === ":memory:") return;
+  const target = normal(path);
+  const separator = windows ? "\\" : "/";
+  if (!guard.protectedRoots.some((root) => target === root || target.startsWith(root + separator))) return;
+  const message = `A test reached the real Floe home: ${operation}(${path}). Tests run against an isolated home (${guard.isolatedHome}).`;
+  guard.violations.push(message);
+  process.stderr.write(`\n[floe test guard] ${message}\n`);
+  throw new Error(message);
+}
+
+const PATH_FUNCTIONS = [
+  "access", "appendFile", "chmod", "copyFile", "cp", "createReadStream", "createWriteStream", "exists",
+  "lstat", "mkdir", "mkdtemp", "open", "opendir", "readdir", "readFile", "readlink", "realpath",
+  "rename", "rm", "rmdir", "stat", "symlink", "truncate", "unlink", "utimes", "watch", "writeFile",
+];
+const TWO_PATHS = new Set(["copyFile", "cp", "rename", "symlink"]);
+
+function wrap(target: Record<string, unknown>, label: string, names: string[]): void {
+  for (const name of names) {
+    const original = target[name] as ((...args: unknown[]) => unknown) & { __floeGuarded?: boolean };
+    if (typeof original !== "function" || original.__floeGuarded) continue;
+    const guarded = function (this: unknown, ...args: unknown[]) {
+      check(`${label}.${name}`, args[0]);
+      if (TWO_PATHS.has(name.replace(/Sync$/, ""))) check(`${label}.${name}`, args[1]);
+      return original.apply(this, args);
+    };
+    Object.assign(guarded, original);
+    Object.defineProperty(guarded, "__floeGuarded", { value: true });
+    target[name] = guarded;
+  }
+}
+
+function installGuard(): void {
+  const fs = require("node:fs") as Record<string, unknown>;
+  wrap(fs, "fs", PATH_FUNCTIONS.flatMap((name) => [name, `${name}Sync`]));
+  wrap(fs.promises as Record<string, unknown>, "fs.promises", PATH_FUNCTIONS);
+
+  const sqlite = require("node:sqlite") as Record<string, unknown>;
+  const Original = sqlite.DatabaseSync as { new (...args: unknown[]): object; __floeGuarded?: boolean };
+  if (!Original.__floeGuarded) {
+    class DatabaseSync extends Original {
+      static __floeGuarded = true;
+      constructor(...args: unknown[]) {
+        check("sqlite.DatabaseSync", args[0]);
+        super(...args);
+      }
+    }
+    Object.defineProperty(sqlite, "DatabaseSync", { value: DatabaseSync, writable: true, configurable: true, enumerable: true });
+  }
+  syncBuiltinESMExports();
+}
+
+function isolateProfile(guard: Guard): void {
+  const home = mkdtempSync(join(tmpdir(), "floe-test-home-"));
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  if (windows) {
+    process.env.APPDATA = join(home, "AppData", "Roaming");
+    process.env.LOCALAPPDATA = join(home, "AppData", "Local");
+  } else {
+    process.env.XDG_CONFIG_HOME = join(home, ".config");
+    process.env.XDG_DATA_HOME = join(home, ".local", "share");
+    process.env.XDG_STATE_HOME = join(home, ".local", "state");
+  }
+  if (normal(homedir()) !== normal(home)) {
+    throw new Error(`Test isolation failed: the user profile still resolves to ${homedir()}, not ${home}.`);
+  }
+  guard.isolatedHome = home;
+}
+
+const guard = slot[GUARD_KEY] ?? (slot[GUARD_KEY] = { protectedRoots: realFloeRoots(), violations: [], isolatedHome: null });
+installGuard();
+isolateProfile(guard);
+
+afterEach(() => {
+  if (guard.violations.length === 0) return;
+  const found = guard.violations.splice(0);
+  throw new Error(`The real Floe home was reached during this test:\n${found.join("\n")}`);
+});
+
+afterAll(() => {
+  if (!guard.isolatedHome) return;
+  try {
+    rmSync(guard.isolatedHome, { recursive: true, force: true, maxRetries: 3 });
+  } catch {
+    // A service a test left running may still hold a file; the OS temp cleaner owns it now.
+  }
+});

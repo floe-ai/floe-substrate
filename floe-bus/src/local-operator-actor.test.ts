@@ -16,7 +16,7 @@ import { operatorActorId, OPERATOR_ACTOR_SLUG } from "./local-operator-actor.js"
  */
 function makeStore(): { store: BusStore; dir: string } {
   const dir = mkdtempSync(join(tmpdir(), "operator-actor-"));
-  const store = new BusStore(join(dir, "bus.sqlite"), defaultConfig());
+  const store = new BusStore(join(dir, "config.yaml"), defaultConfig(dir));
   return { store, dir };
 }
 

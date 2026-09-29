@@ -4,6 +4,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // Every test runs against a throwaway user profile; see the file for the guard.
+    setupFiles: ["../test-support/isolated-home.ts"],
     globals: false,
     // testTimeout/hookTimeout are wall-clock, not CPU time. Vitest forks one
     // worker per core, and the heavier suites here do real synchronous SQLite
