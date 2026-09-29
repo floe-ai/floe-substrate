@@ -166,8 +166,14 @@ floe restart                           # when you want the new version to serve
 
 The running Floe keeps serving the old version until it restarts. `floe`,
 `floe up` and `floe status` say when a newer Floe is installed than the one
-running. A surface gets the same fact from `floe/identity` (`versionNote`), and
-restarting is always the person's choice.
+running. A surface gets the same fact from `floe/identity` (`versionNote`).
+
+A surface can also make the switch for you: `switchToThisVersion()` on its
+`floe/identity` or `floe/engines` connection restarts Floe from the surface's
+copy, the same way `floe restart` does. It only switches to a newer version,
+never back. If an Actor is in the middle of a turn, it does not switch and names
+the turn instead, unless the surface says to interrupt it; queued work carries
+over.
 
 This works from 0.3.1 on. A Floe 0.3.0 or older that is running still blocks
 npm on Windows (`EBUSY`), so stop it once (`floe stop`) for that upgrade.

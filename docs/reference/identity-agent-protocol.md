@@ -43,7 +43,13 @@ const session = await identity.session({}, (event) => {
   `code` is one of the codes in the table below.
 - `identity.agentVersion` is the Floe version serving the machine. If it differs
   from the copy of Floe your surface depends on, `identity.versionNote` says so
-  in words you can show. The running agent is used as is and never restarted.
+  in words you can show. Connecting uses the running agent as is and never
+  restarts it.
+  `switchToThisVersion({ interrupt_running_work? })` asks Floe to run your
+  copy instead, when it is newer. It resolves to `switched` (with any turns it
+  interrupted), `already_serving`, `work_running` (the turns in progress; nothing
+  was stopped) or `refused` (`not_running`, `would_downgrade`, `not_this_floe`,
+  `unknown_version`). After `switched` this connection has closed; connect again.
 - `identity.onClose(listener)` fires if the agent goes away (for example
   `floe stop`). Reconnect with `connectIdentity`.
 - Types ship with the package (`floe/identity` has `.d.ts`).

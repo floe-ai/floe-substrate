@@ -518,7 +518,7 @@ async function guard(version) {
     requireCopilotCli(home);
     log("guard", "PASS — the official Copilot CLI shipped with the artifact and runs from the install");
     guardSurface({ workRoot, tarball: join(workRoot, tarball), configPath, port, neutralCwd, home, account, floeBin });
-    log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label} and left git status clean, an Actor recalled its Context after a Bridge restart, an Actor created at runtime completed its own real turn, a failing step was pushed as failed with a safe reason, and a real turn paused mid-command and resumed`);
+    log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label} and left git status clean, an Actor recalled its Context after a Bridge restart, an Actor created at runtime completed its own real turn, a failing step was pushed as failed with a safe reason, a real turn paused mid-command and resumed, and a version switch saw the running turn`);
     guardUpgradeWhileRunning({ tarball: join(workRoot, tarball), prefix, port, neutralCwd, home });
     requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after npm removed and reinstalled the package" });
     log("guard", "PASS — npm removed and reinstalled the package while Floe kept serving from its stage");
@@ -996,6 +996,13 @@ for (let pauseRun = 1; pauseRun <= PAUSE_RUNS; pauseRun += 1) {
     } } })).execution;
   await markerSeen;
   const commandStarted = Date.now();
+  if (pauseRun === 1) {
+    const turns = await identity.runningTurns();
+    if (!turns.some((turn) => turn.workspace_id === joined.workspace_id)) {
+      throw new Error("a turn was mid-command but runningTurns() did not name it, so a version switch could interrupt it silently: " + JSON.stringify(turns));
+    }
+    step("mid-command, runningTurns() named the turn a version switch would interrupt: " + turns.map((turn) => turn.endpoint_id).join(", "));
+  }
   const nodeReached = (status, label, ms) => until((push) => push.type === "node_execution_state_changed"
     && push.payload.scope_execution_id === run.execution_id && push.payload.node_id === "worker"
     && push.payload.to_status === status, label, ms);
@@ -1021,6 +1028,9 @@ for (let pauseRun = 1; pauseRun <= PAUSE_RUNS; pauseRun += 1) {
   step("pause run " + pauseRun + "/" + PAUSE_RUNS + " stopped without a late completion marker in " + (pausedAt - commandStarted) + "ms");
 }
 step(PAUSE_RUNS + " consecutive real mid-command pauses completed with zero leaks");
+const sameVersion = await identity.switchToThisVersion();
+if (sameVersion.kind !== "already_serving") throw new Error("asking the serving version to switch to itself did not answer already_serving: " + JSON.stringify(sameVersion));
+step("a version switch request to the version already serving changed nothing (already_serving " + sameVersion.version + ")");
 socket.close();
 identity.close();
 `, "utf8");

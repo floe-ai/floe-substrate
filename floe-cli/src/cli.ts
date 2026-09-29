@@ -20,7 +20,6 @@ import {
   isPidRunning,
   readRecords,
   serviceLogPath,
-  stopService,
   SERVICE_NAMES,
   type ServiceName
 } from "./process-manager.js";
@@ -29,7 +28,7 @@ import { probeAgent } from "./identity/connection.js";
 import { registerOperationsCommand } from "./operations-command.js";
 import { registerIdentityCommand } from "./identity-command.js";
 import { defaultRegistrationDependencies, registerFolder } from "./workspace-registration.js";
-import { startAll, waitForBusHealth, isHealthy, ensureSubstrateForClient, runningBusVersion, describeVersionMismatch, floeHome } from "./startup.js";
+import { startAll, stopAll, restartAll, waitForBusHealth, isHealthy, ensureSubstrateForClient, runningBusVersion, describeVersionMismatch, floeHome } from "./startup.js";
 import { thisInstallation, directInstallRequiredMessage } from "./installation.js";
 import {
   registerSurface,
@@ -94,14 +93,13 @@ program.command("start").description("Start local Floe services").action(async (
 
 program.command("stop").description("Stop local Floe services").action(async () => {
   const { configPath, config } = ensureConfig(program.opts().config);
-  stopAllServices(configPath, config);
+  stopAll(configPath, config);
   console.log("Stopped Floe services.");
 });
 
 program.command("restart").description("Restart local Floe services").action(async () => {
   const { configPath, config } = ensureConfig(program.opts().config);
-  stopAllServices(configPath, config);
-  await startAll(configPath, config);
+  await restartAll(configPath, config);
   console.log("Restarted Floe services.");
 });
 
@@ -169,7 +167,7 @@ service.command("status").description("Show whether Floe is installed to auto-st
 
 program.command("uninstall").description("Remove auto-start and stop services; preserve ~/.floe data").action(async () => {
   const { configPath, config } = ensureConfig(program.opts().config);
-  stopAllServices(configPath, config);
+  stopAll(configPath, config);
   const removal = uninstallService();
   console.log(removal.message);
   console.log("Removed Floe service entries. Local data is preserved.");
@@ -184,7 +182,7 @@ program
     const { configPath, config } = ensureConfig(program.opts().config);
 
     // Stop running services before wiping their databases
-    stopAllServices(configPath, config);
+    stopAll(configPath, config);
 
     const includeIdentity = options.includeIdentity === true;
     const plan = buildResetPlan(configPath, config, { includeIdentity });
@@ -565,10 +563,6 @@ async function printStatus(configPath: string, config: LocalConfig): Promise<voi
   console.log(`identity: ${state.kind === "none" || !state.kind ? "none yet" : `${state.display_name} ${state.npub} (${state.kind})`}`);
 }
 
-/** Stop in reverse start order: nothing is left running that depends on a stopped service. */
-function stopAllServices(configPath: string, config: LocalConfig): void {
-  for (const service of [...SERVICE_NAMES].reverse()) stopService(configPath, config, service);
-}
 
 async function registerCurrentWorkspace(configPath: string, config: LocalConfig, locator: string): Promise<void> {
   // The folder belongs to the person signed in here, when there is one. The

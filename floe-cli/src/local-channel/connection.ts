@@ -20,6 +20,8 @@ export type Channel = {
   agentVersion: string | null;
   /** The state carried by the welcome message. */
   welcomeState: Record<string, unknown>;
+  /** The config the surface connected with, when it named one. */
+  configPath?: string;
   /** Replace the message handler once the handshake is complete. */
   onMessage(handler: (message: Record<string, unknown>) => void): void;
   send(message: unknown): void;

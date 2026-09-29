@@ -13,6 +13,7 @@
  * protocol is documented in docs/reference/identity-agent-protocol.md.
  */
 import { ChannelClient } from "../local-channel/client.js";
+export type { RunningTurn, VersionSwitchOutcome } from "../local-channel/client.js";
 import { connectChannel } from "../local-channel/connect.js";
 import { AgentUnavailableError, type AgentChannel } from "./connection.js";
 import { IDENTITY_CHANNEL } from "./protocol.js";
