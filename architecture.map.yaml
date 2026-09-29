@@ -13,6 +13,7 @@ system:
           intent: "Owns all mutable state in SQLite (workspaces, scopes, contexts, events, pulses, watermarks)"
           paths:
             - floe-bus/src/store.ts
+            - floe-bus/src/actor-*.ts
             - floe-bus/src/contexts/**
             - floe-bus/src/scopes/**
             - floe-bus/src/endpoint-watermark-store.ts
@@ -32,6 +33,7 @@ system:
               intent: "Primary store implementation"
               paths:
                 - floe-bus/src/store.ts
+                - floe-bus/src/actor-*.ts
                 - floe-bus/src/contexts/**
                 - floe-bus/src/scopes/**
                 - floe-bus/src/endpoint-watermark-store.ts

@@ -6,6 +6,21 @@ import {
   TransportPushStreamStore,
   decodeTransportPushCursor,
 } from "./transport-push-stream.js";
+import {
+  ActorDefinitionStore,
+  type ActorDefinitionContent,
+} from "./actor-definitions.js";
+
+const actorDefinition: ActorDefinitionContent = {
+  label: "Builder",
+  charter: "Build the requested outcome.",
+  responsibilities: [],
+  instructions: "Build and verify.",
+  knowledge_refs: [],
+  capability_grant_ids: [],
+  policy_refs: { budget: null, trust: null, approval: null },
+  escalation_rules: [],
+};
 
 describe("transport push stream", () => {
   let db: DatabaseSync;
@@ -46,5 +61,44 @@ describe("transport push stream", () => {
 
     const reopened = new TransportPushStreamStore(db);
     expect(reopened.getBridgeCheckpoint("bridge:desktop")).toBe(second.cursor);
+  });
+
+  it("promotes Actor create, publish, and retire outbox records once in order", () => {
+    const actors = new ActorDefinitionStore(db, () => "2026-09-29T12:00:00.000Z");
+    const created = actors.createActor({
+      actor_id: "actor:builder",
+      workspace_id: "workspace:one",
+      created_in_context_id: "context:task",
+      created_in_scope_execution_id: "scope-execution:task",
+      created_by_principal_id: "principal:operator",
+      definition: actorDefinition,
+    });
+    const published = actors.publishDraft({
+      actor_definition_revision_id: created.draft.actor_definition_revision_id,
+      expected_current_revision_id: null,
+      changed_by_principal_id: "principal:operator",
+    });
+    actors.setActorStatus({
+      actor_id: created.actor.actor_id,
+      status: "retired",
+      expected_current_definition_revision_id: published.actor_definition_revision_id,
+    });
+
+    const entries = stream.drainActorLifecycleOutbox();
+    expect(entries.map((entry) => entry.type)).toEqual([
+      "actor_created",
+      "actor_definition_published",
+      "actor_retired",
+    ]);
+    expect(entries[0]?.payload).toMatchObject({
+      workspace_id: "workspace:one",
+      actor: {
+        actor_id: "actor:builder",
+        created_in_context_id: "context:task",
+        created_in_scope_execution_id: "scope-execution:task",
+      },
+    });
+    expect(stream.drainActorLifecycleOutbox()).toEqual([]);
+    expect(stream.listAfter({ workspace_id: "workspace:one" })).toEqual(entries);
   });
 });

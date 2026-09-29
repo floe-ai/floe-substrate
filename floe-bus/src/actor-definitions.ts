@@ -1,72 +1,34 @@
+/**
+ * @invariant This store is the sole write authority for Actor identities and
+ * definition revisions. Lifecycle pushes are retained in its transactional
+ * outbox before any transport projection may announce them.
+ */
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
-export type VersionedResourceRef = Readonly<{
-  kind: string;
-  id: string;
-  revision: string | null;
-}>;
+import {
+  ActorDefinitionValidationError,
+  canonicalActorScopePath,
+  validateActorDefinition,
+  type ActorDefinitionContent,
+} from "./actor-definition-contract.js";
 
-export type ActorResponsibility = Readonly<{
-  responsibility_id: string;
-  title: string;
-  description: string;
-}>;
-
-export type ActorEscalationRule = Readonly<{
-  rule_id: string;
-  when: string;
-  action: "decline" | "delegate" | "escalate" | "signal_unowned";
-  target_actor_id?: string | null;
-}>;
-
-/**
- * The durable, provider-neutral meaning of an Actor. Runtime availability and
- * model/service selection are deliberately absent and live in a replaceable
- * runtime binding.
- */
-export type ActorDefinitionContent = Readonly<{
-  label: string;
-  charter: string;
-  responsibilities: readonly ActorResponsibility[];
-  instructions: string;
-  knowledge_refs: readonly VersionedResourceRef[];
-  capability_grant_ids: readonly string[];
-  policy_refs: Readonly<{
-    budget: VersionedResourceRef | null;
-    trust: VersionedResourceRef | null;
-    approval: VersionedResourceRef | null;
-  }>;
-  escalation_rules: readonly ActorEscalationRule[];
-  /**
-   * Workspace-relative folders that bound this Actor's filesystem authority.
-   * Absent means no filesystem authority at all; grants never widen it.
-   */
-  scope?: ActorScope;
-}>;
-
-export type ActorScope = Readonly<{ paths: readonly string[] }>;
-
-/**
- * Canonical workspace-relative scope path: forward slashes, no leading "./",
- * no trailing slash, and "." for the Workspace root. Returns null when the
- * path is absolute or climbs out of the Workspace.
- */
-export function canonicalActorScopePath(value: string): string | null {
-  const segments: string[] = [];
-  const text = value.trim().replace(/\\/g, "/");
-  if (!text || text.startsWith("/") || /^[a-z]:/i.test(text)) return null;
-  for (const segment of text.split("/")) {
-    if (segment === "" || segment === ".") continue;
-    if (segment === "..") return null;
-    segments.push(segment);
-  }
-  return segments.length ? segments.join("/") : ".";
-}
+export {
+  ActorDefinitionValidationError,
+  canonicalActorScopePath,
+  validateActorDefinition,
+  type ActorDefinitionContent,
+  type ActorEscalationRule,
+  type ActorResponsibility,
+  type ActorScope,
+  type VersionedResourceRef,
+} from "./actor-definition-contract.js";
 
 export type ActorRecord = Readonly<{
   actor_id: string;
   workspace_id: string;
+  created_in_context_id: string | null;
+  created_in_scope_execution_id: string | null;
   status: "active" | "retired";
   current_definition_revision_id: string | null;
   created_at: string;
@@ -98,14 +60,6 @@ export type ActorDefinitionHeadChange = Readonly<{
   changed_by_principal_id: string;
   changed_at: string;
 }>;
-
-export class ActorDefinitionValidationError extends Error {
-  readonly code = "E_ACTOR_DEFINITION_INVALID" as const;
-  constructor(readonly reason: string) {
-    super(`Invalid Actor definition: ${reason}`);
-    this.name = "ActorDefinitionValidationError";
-  }
-}
 
 export class ActorNotFoundError extends Error {
   readonly code = "E_ACTOR_NOT_FOUND" as const;
@@ -160,50 +114,13 @@ export function actorDefinitionDigest(content: ActorDefinitionContent): string {
   return createHash("sha256").update(canonicalJson(content)).digest("hex");
 }
 
-export function validateActorDefinition(content: ActorDefinitionContent): void {
-  nonEmpty("label", content.label);
-  nonEmpty("charter", content.charter);
-  nonEmpty("instructions", content.instructions);
-  unique(content.responsibilities.map((item) => item.responsibility_id), "responsibility id");
-  for (const responsibility of content.responsibilities) {
-    nonEmpty("responsibility title", responsibility.title);
-    nonEmpty("responsibility description", responsibility.description);
-  }
-  unique(content.capability_grant_ids, "CapabilityGrant id");
-  unique(content.escalation_rules.map((item) => item.rule_id), "escalation rule id");
-  for (const ref of content.knowledge_refs) validateRef(ref, "knowledge reference");
-  for (const [name, ref] of Object.entries(content.policy_refs)) {
-    if (ref) validateRef(ref, `${name} policy reference`);
-  }
-  if (content.scope !== undefined) {
-    if (!content.scope || !Array.isArray(content.scope.paths) || content.scope.paths.length === 0) {
-      throw new ActorDefinitionValidationError("scope.paths must list at least one workspace-relative folder");
-    }
-    for (const path of content.scope.paths) {
-      if (typeof path !== "string" || canonicalActorScopePath(path) !== path) {
-        throw new ActorDefinitionValidationError(
-          `scope path '${String(path)}' must be canonical and stay within the Workspace (for example '.' or 'src/app')`,
-        );
-      }
-    }
-    unique(content.scope.paths, "scope path");
-  }
-  for (const rule of content.escalation_rules) {
-    nonEmpty("escalation condition", rule.when);
-    if (rule.action === "delegate" && !rule.target_actor_id?.trim()) {
-      throw new ActorDefinitionValidationError(`delegation rule '${rule.rule_id}' must name a target Actor`);
-    }
-    if (rule.action !== "delegate" && rule.target_actor_id != null) {
-      throw new ActorDefinitionValidationError(`only delegation rule '${rule.rule_id}' may name a target Actor`);
-    }
-  }
-}
-
 export function applyActorDefinitionSchema(db: DatabaseSync): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS actors (
       actor_id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL,
+      created_in_context_id TEXT,
+      created_in_scope_execution_id TEXT,
       status TEXT NOT NULL CHECK (status IN ('active', 'retired')),
       current_definition_revision_id TEXT,
       created_at TEXT NOT NULL,
@@ -245,10 +162,29 @@ export function applyActorDefinitionSchema(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_actor_definition_head_changes_actor
       ON actor_definition_head_changes(actor_id, changed_at, head_change_id);
+
+    CREATE TABLE IF NOT EXISTS actor_lifecycle_push_outbox (
+      outbox_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      workspace_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      changed_at TEXT NOT NULL,
+      push_sequence INTEGER
+    );
+  `);
+  addColumnIfMissing(db, "actors", "created_in_context_id", "TEXT");
+  addColumnIfMissing(db, "actors", "created_in_scope_execution_id", "TEXT");
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_actors_creation_context
+      ON actors(workspace_id, created_in_context_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_actors_creation_scope_execution
+      ON actors(workspace_id, created_in_scope_execution_id, created_at);
   `);
 }
 
 export class ActorDefinitionStore {
+  private lifecyclePushReady: (() => void) | null = null;
+
   constructor(
     readonly db: DatabaseSync,
     private readonly now: () => string = () => new Date().toISOString(),
@@ -260,6 +196,8 @@ export class ActorDefinitionStore {
   createActor(input: Readonly<{
     workspace_id: string;
     actor_id?: string;
+    created_in_context_id?: string | null;
+    created_in_scope_execution_id?: string | null;
     created_by_principal_id: string;
     definition: ActorDefinitionContent;
   }>): { actor: ActorRecord; draft: ActorDefinitionRevision } {
@@ -273,10 +211,18 @@ export class ActorDefinitionStore {
     transaction(this.db, () => {
       this.db.prepare(`
         INSERT INTO actors (
-          actor_id, workspace_id, status, current_definition_revision_id,
+          actor_id, workspace_id, created_in_context_id, created_in_scope_execution_id,
+          status, current_definition_revision_id,
           created_at, updated_at, retired_at
-        ) VALUES (?, ?, 'active', NULL, ?, ?, NULL)
-      `).run(actorId, input.workspace_id, at, at);
+        ) VALUES (?, ?, ?, ?, 'active', NULL, ?, ?, NULL)
+      `).run(
+        actorId,
+        input.workspace_id,
+        input.created_in_context_id ?? null,
+        input.created_in_scope_execution_id ?? null,
+        at,
+        at,
+      );
       draft = this.insertDraft({
         actor_id: actorId,
         workspace_id: input.workspace_id,
@@ -284,7 +230,13 @@ export class ActorDefinitionStore {
         created_by_principal_id: input.created_by_principal_id,
         definition: input.definition,
       });
+      const actor = this.requireActor(actorId);
+      this.queueLifecyclePush("actor_created", {
+        workspace_id: actor.workspace_id,
+        actor,
+      }, at);
     });
+    this.notifyLifecyclePushReady();
     return { actor: this.requireActor(actorId), draft };
   }
 
@@ -353,13 +305,22 @@ export class ActorDefinitionStore {
       }
       throw new ActorDefinitionImmutableError(revision.actor_definition_revision_id);
     }
-    transaction(this.db, () => this.moveHead({
-      revision,
-      expected_current_revision_id: input.expected_current_revision_id,
-      changed_by_principal_id: input.changed_by_principal_id,
-      reason: "publish",
-      publish_at: this.now(),
-    }));
+    transaction(this.db, () => {
+      this.moveHead({
+        revision,
+        expected_current_revision_id: input.expected_current_revision_id,
+        changed_by_principal_id: input.changed_by_principal_id,
+        reason: "publish",
+        publish_at: this.now(),
+      });
+      const actor = this.requireActor(revision.actor_id);
+      this.queueLifecyclePush("actor_definition_published", {
+        workspace_id: actor.workspace_id,
+        actor,
+        revision: this.requireRevision(revision.actor_definition_revision_id),
+      }, actor.updated_at);
+    });
+    this.notifyLifecyclePushReady();
     return this.requireRevision(revision.actor_definition_revision_id);
   }
 
@@ -410,9 +371,19 @@ export class ActorDefinitionStore {
       );
     }
     const at = this.now();
-    this.db.prepare(`
-      UPDATE actors SET status = ?, retired_at = ?, updated_at = ? WHERE actor_id = ?
-    `).run(input.status, input.status === "retired" ? at : null, at, actor.actor_id);
+    transaction(this.db, () => {
+      this.db.prepare(`
+        UPDATE actors SET status = ?, retired_at = ?, updated_at = ? WHERE actor_id = ?
+      `).run(input.status, input.status === "retired" ? at : null, at, actor.actor_id);
+      if (input.status === "retired") {
+        const retired = this.requireActor(actor.actor_id);
+        this.queueLifecyclePush("actor_retired", {
+          workspace_id: retired.workspace_id,
+          actor: retired,
+        }, at);
+      }
+    });
+    if (input.status === "retired") this.notifyLifecyclePushReady();
     return this.requireActor(actor.actor_id);
   }
 
@@ -427,11 +398,31 @@ export class ActorDefinitionStore {
     return actor;
   }
 
-  listActors(workspaceId: string, options: Readonly<{ include_retired?: boolean }> = {}): ActorRecord[] {
-    const rows = options.include_retired
-      ? this.db.prepare(`SELECT * FROM actors WHERE workspace_id = ? ORDER BY created_at, actor_id`).all(workspaceId)
-      : this.db.prepare(`SELECT * FROM actors WHERE workspace_id = ? AND status = 'active' ORDER BY created_at, actor_id`).all(workspaceId);
+  listActors(workspaceId: string, options: Readonly<{
+    include_retired?: boolean;
+    created_in_context_id?: string;
+    created_in_scope_execution_id?: string;
+  }> = {}): ActorRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM actors
+      WHERE workspace_id = ?
+        AND (? = 1 OR status = 'active')
+        AND (? IS NULL OR created_in_context_id = ?)
+        AND (? IS NULL OR created_in_scope_execution_id = ?)
+      ORDER BY created_at, actor_id
+    `).all(
+      workspaceId,
+      options.include_retired ? 1 : 0,
+      options.created_in_context_id ?? null,
+      options.created_in_context_id ?? null,
+      options.created_in_scope_execution_id ?? null,
+      options.created_in_scope_execution_id ?? null,
+    );
     return (rows as any[]).map(rowToActor);
+  }
+
+  setLifecyclePushReady(notify: () => void): void {
+    this.lifecyclePushReady = notify;
   }
 
   getRevision(revisionId: string): ActorDefinitionRevision | null {
@@ -558,12 +549,32 @@ export class ActorDefinitionStore {
       at,
     );
   }
+
+  private queueLifecyclePush(
+    type: "actor_created" | "actor_definition_published" | "actor_retired",
+    payload: Record<string, unknown>,
+    at: string,
+  ): void {
+    this.db.prepare(`
+      INSERT INTO actor_lifecycle_push_outbox (
+        workspace_id, event_type, payload_json, changed_at, push_sequence
+      ) VALUES (?, ?, ?, ?, NULL)
+    `).run(String(payload.workspace_id), type, JSON.stringify(payload), at);
+  }
+
+  private notifyLifecyclePushReady(): void {
+    queueMicrotask(() => this.lifecyclePushReady?.());
+  }
 }
 
 function rowToActor(row: any): ActorRecord {
   return {
     actor_id: String(row.actor_id),
     workspace_id: String(row.workspace_id),
+    created_in_context_id: row.created_in_context_id == null ? null : String(row.created_in_context_id),
+    created_in_scope_execution_id: row.created_in_scope_execution_id == null
+      ? null
+      : String(row.created_in_scope_execution_id),
     status: String(row.status) as ActorRecord["status"],
     current_definition_revision_id: row.current_definition_revision_id == null ? null : String(row.current_definition_revision_id),
     created_at: String(row.created_at),
@@ -590,24 +601,16 @@ function rowToRevision(row: any): ActorDefinitionRevision {
   };
 }
 
-function validateRef(ref: VersionedResourceRef, label: string): void {
-  nonEmpty(`${label} kind`, ref.kind);
-  nonEmpty(`${label} id`, ref.id);
-  if (ref.revision !== null) nonEmpty(`${label} revision`, ref.revision);
-}
-
-function unique(values: readonly string[], label: string): void {
-  const seen = new Set<string>();
-  for (const value of values) {
-    nonEmpty(label, value);
-    if (seen.has(value)) throw new ActorDefinitionValidationError(`duplicate ${label} '${value}'`);
-    seen.add(value);
-  }
-}
-
 function nonEmpty(label: string, value: string): void {
   if (typeof value !== "string" || !value.trim()) {
     throw new ActorDefinitionValidationError(`${label} must not be empty`);
+  }
+}
+
+function addColumnIfMissing(db: DatabaseSync, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!columns.some((item) => item.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 }
 
