@@ -517,8 +517,8 @@ async function guard(version) {
     requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after `floe start`" });
     requireCopilotCli(home);
     log("guard", "PASS — the official Copilot CLI shipped with the artifact and runs from the install");
-    guardSurface({ workRoot, tarball: join(workRoot, tarball), configPath, port, neutralCwd, home, account });
-    log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label} and left git status clean, an Actor created at runtime completed its own real turn, and a real turn paused mid-command and resumed`);
+    guardSurface({ workRoot, tarball: join(workRoot, tarball), configPath, port, neutralCwd, home, account, floeBin });
+    log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label} and left git status clean, an Actor recalled its Context after a Bridge restart, an Actor created at runtime completed its own real turn, a failing step was pushed as failed with a safe reason, and a real turn paused mid-command and resumed`);
     guardUpgradeWhileRunning({ tarball: join(workRoot, tarball), prefix, port, neutralCwd, home });
     requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after npm removed and reinstalled the package" });
     log("guard", "PASS — npm removed and reinstalled the package while Floe kept serving from its stage");
@@ -621,7 +621,7 @@ function guardUpgradeWhileRunning({ tarball, prefix, port, neutralCwd, home }) {
  * way a real surface does, verify its public Actor contract, and drive the
  * identity agent through `floe/identity`.
  */
-function guardSurface({ workRoot, tarball, configPath, port, neutralCwd, home, account }) {
+function guardSurface({ workRoot, tarball, configPath, port, neutralCwd, home, account, floeBin }) {
   const surfaceDir = join(workRoot, "surface");
   mkdirSync(surfaceDir, { recursive: true });
   writeFileSync(join(surfaceDir, "package.json"), JSON.stringify({
@@ -775,6 +775,51 @@ const dirty = git("status", "--porcelain", "--untracked-files=all");
 if (dirty !== "") throw new Error("a full Actor turn changed the person's tracked workspace:\\n" + dirty);
 step("the turn's work log is in .floe/state and git status is clean");
 
+// An Actor's memory of a Context survives a Bridge restart: Floe rebuilds it
+// from the Context's own Events, never from a resumed vendor session. Only the
+// Bridge restarts; the Bus, identity agent and this event stream keep serving.
+const { randomBytes } = await import("node:crypto");
+const codeword = "floe-" + randomBytes(4).toString("hex");
+const memoryContext = (await invoke({
+  operation_id: "context.create", operation_version: "1", input_schema_version: "1", idempotency_key: "guard-memory-context",
+  input: { participants: [{ participant_id: floe }] },
+})).context;
+const askInMemoryContext = async (key, text, label) => {
+  const latest = (await invoke({ operation_id: "context.get", operation_version: "1", input_schema_version: "1",
+    idempotency_key: key + "-get", target: { kind: "context", id: memoryContext.context_id }, input: {} })).context;
+  const asked = await invoke({
+    operation_id: "context.communication.emit", operation_version: "1", input_schema_version: "2",
+    target: { kind: "context", id: memoryContext.context_id }, expected_resource_revision: String(latest.state_revision),
+    idempotency_key: key,
+    input: { event_type: "message", recipient_participant_id: floe, content: { text }, response_expected: true },
+  });
+  const answered = await until((push) => push.type === "event_submitted"
+    && push.payload?.event?.content?.data?.origin === "runtime_turn_result"
+    && push.payload.event.content.data.cause_event_id === asked.event_ref.id, label, 180000);
+  const answer = answered.payload.event.content;
+  if (answer.data.outcome !== "completed") throw new Error(label + " did not complete: " + JSON.stringify(answer));
+  return answer.text;
+};
+await askInMemoryContext("guard-memory-tell", "Remember this codeword for later: " + codeword + ". Reply with the single word: noted",
+  "the turn that was told the codeword");
+step("told the Floe Actor a codeword in its own Context");
+const bridgeRecord = JSON.parse(read(${JSON.stringify(join(home, "services.json"))}, "utf8")).bridge;
+if (!bridgeRecord?.pid) throw new Error("no running Bridge is recorded in services.json");
+if (process.platform === "win32") execFileSync("taskkill", ["/PID", String(bridgeRecord.pid), "/T", "/F"], { stdio: "ignore" });
+else process.kill(-bridgeRecord.pid, "SIGTERM");
+execFileSync(${JSON.stringify(floeBin)}, ["--config", ${JSON.stringify(configPath)}, "start"],
+  { cwd: ${JSON.stringify(neutralCwd)}, stdio: "ignore", shell: process.platform === "win32" });
+const restartedRecord = JSON.parse(read(${JSON.stringify(join(home, "services.json"))}, "utf8")).bridge;
+if (!restartedRecord?.pid || restartedRecord.pid === bridgeRecord.pid) throw new Error("the Bridge did not restart");
+step("restarted only the Bridge (pid " + bridgeRecord.pid + " -> " + restartedRecord.pid + ")");
+const recalled = await askInMemoryContext("guard-memory-recall",
+  "What codeword did I ask you to remember earlier in this conversation? Reply with only the codeword.",
+  "the turn after the Bridge restart");
+if (!recalled.toLowerCase().includes(codeword)) {
+  throw new Error("after a Bridge restart the Actor did not recall its Context: expected " + codeword + ", got " + JSON.stringify(recalled.slice(0, 200)));
+}
+step("after the Bridge restart the Actor recalled the codeword from its Context: " + JSON.stringify(recalled.slice(0, 80)));
+
 // An Actor created at runtime must be reachable like one Floe was installed with:
 // set it up in one step (create, bind to the Floe Actor's runtime, publish), send
 // it work, and see its own real turn complete. An Actor that is created but never
@@ -881,7 +926,7 @@ const failingRuntime = (await invokeAs("completed", { operation_id: "runtime-pro
 const failingActor = (await invokeAs("completed", { operation_id: "actor.setup", idempotency_key: "guard-failing-setup",
   input: { actor_id: "guard-failing", engine_tool_operation_ids: [],
     runtime_profile_revision_id: failingRuntime.runtime_profile_revision_id, definition: {
-    label: "Guard Failing Step", charter: "Fail inside the engine for the release guard.", responsibilities: [],
+    label: "Guard Failing Step", charter: "Fail before its turn for the release guard.", responsibilities: [],
     instructions: "Reply briefly.", knowledge_refs: [], capability_grant_ids: [],
     policy_refs: { budget: null, trust: null, approval: null }, escalation_rules: [],
   } } })).actor;
@@ -923,7 +968,7 @@ if (failedPush.payload.to_status !== "failed") {
 if (!failure || typeof failure.code !== "string" || typeof failure.message !== "string" || failure.message.trim() === "") {
   throw new Error("the failed step's push carries no failure reason: " + JSON.stringify(failedPush.payload));
 }
-if (/[\\r\\n]/.test(failure.message) || /\\bat .+:\\d+:\\d+/.test(failure.message) || failure.message.length > 500) {
+if (/[\\r\\n]/.test(failure.message) || /\\bat .+:\\d+:\\d+/.test(failure.message) || failure.message.length > 300) {
   throw new Error("the failed step's pushed reason is not safe to show: " + JSON.stringify(failure.message));
 }
 const failedExecution = await current({ executionId: failRun.execution_id, idempotencyKey: "guard-fail-inspect" });
