@@ -24,9 +24,11 @@
  *   3. GUARD: pack it, install it globally into an isolated prefix from a working
  *      directory unrelated to this checkout, start Floe from that install, and
  *      complete one real turn through its own Bridge as this machine's Copilot
- *      account, then pause a second real turn mid-command and resume it —
- *      refuse to publish an artifact that installs but cannot start, cannot run
- *      a turn, or cannot interrupt and resume one;
+ *      account, create, publish and bind a new Actor and see its own real turn
+ *      complete, then pause a real turn mid-command and resume it — refuse to
+ *      publish an artifact that installs but cannot start, cannot run a turn,
+ *      cannot host an Actor created at runtime, or cannot interrupt and resume
+ *      a turn;
  *   4. publish (only with --publish): commit the generated artifact to a clone of
  *      the distribution repo, tag it v<version>, and push both. A version that
  *      is already tagged there is refused before anything is built.
@@ -435,7 +437,7 @@ async function guard(version) {
     requireCopilotCli(home);
     log("guard", "PASS — the official Copilot CLI shipped with the artifact and runs from the install");
     guardSurface({ workRoot, tarball: join(workRoot, tarball), configPath, port, neutralCwd, home, account });
-    log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label}, and a real turn paused mid-command and resumed`);
+    log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label}, an Actor created at runtime completed its own real turn, and a real turn paused mid-command and resumed`);
     guardUpgradeWhileRunning({ tarball: join(workRoot, tarball), prefix, port, neutralCwd, home });
     requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after npm removed and reinstalled the package" });
     log("guard", "PASS — npm removed and reinstalled the package while Floe kept serving from its stage");
@@ -657,6 +659,51 @@ const turn = result.payload.event.content;
 if (turn.data.outcome !== "completed") throw new Error("the real turn did not complete: " + JSON.stringify(turn));
 step("real turn completed as ${account.label}: " + JSON.stringify(turn.text.slice(0, 80)));
 
+// An Actor created at runtime must be reachable like one Floe was installed with:
+// create it, publish it, bind it to the Floe Actor's runtime, send it work, and
+// see its own real turn complete. An Actor that is created but never hosted
+// silently swallows every request sent to it.
+const guardActor = (await invoke({ operation_id: "actor.create", operation_version: "1", input_schema_version: "1",
+  idempotency_key: "guard-actor-create", input: { actor_id: "guard-greeter", definition: {
+    label: "Guard Greeter", charter: "Answer the release guard.", responsibilities: [],
+    instructions: "Reply briefly to whatever you are asked.", knowledge_refs: [], capability_grant_ids: [],
+    policy_refs: { budget: null, trust: null, approval: null }, escalation_rules: [],
+  } } }));
+const guardDraft = guardActor.draft;
+const guardPublished = await invoke({ operation_id: "actor.definition.publish", operation_version: "1", input_schema_version: "1",
+  idempotency_key: "guard-actor-publish", target: { kind: "actor_definition_revision", id: guardDraft.actor_definition_revision_id },
+  expected_resource_revision: guardDraft.semantic_digest, input: { expected_current_definition_revision_id: null } });
+const floeBinding = (await invoke({ operation_id: "actor.runtime-binding.inspect", operation_version: "1", input_schema_version: "1",
+  idempotency_key: "guard-floe-binding", target: { kind: "actor", id: floe }, input: {} })).current_binding;
+if (!floeBinding) throw new Error("the Floe Actor has no runtime binding to reuse");
+await invoke({ operation_id: "actor.runtime-binding.create", operation_version: "1", input_schema_version: "1",
+  idempotency_key: "guard-actor-bind", target: { kind: "actor", id: guardActor.actor.actor_id },
+  expected_resource_revision: guardPublished.revision.actor_definition_revision_id,
+  input: { runtime_profile_revision_id: floeBinding.runtime_profile_revision_id, status: "resolved" } });
+step("created, published and bound " + guardActor.actor.actor_id);
+// The Bridge hosts the new Actor in response to the binding; its endpoint is pushed when it is addressable.
+await until((push) => push.type === "endpoint_registered" && push.payload?.endpoint?.endpoint_id === guardActor.actor.actor_id,
+  "the Bridge hosting the created Actor", 30000);
+step("the Bridge is hosting " + guardActor.actor.actor_id);
+const guardContext = (await invoke({
+  operation_id: "context.create", operation_version: "1", input_schema_version: "1", idempotency_key: "guard-actor-context",
+  input: { participants: [{ participant_id: guardActor.actor.actor_id }] },
+})).context;
+const guardSent = await invoke({
+  operation_id: "context.communication.emit", operation_version: "1", input_schema_version: "2",
+  target: { kind: "context", id: guardContext.context_id }, expected_resource_revision: String(guardContext.state_revision),
+  idempotency_key: "guard-actor-turn",
+  input: { event_type: "message", recipient_participant_id: guardActor.actor.actor_id,
+    content: { text: "Reply with the single word: hello" }, response_expected: true },
+});
+const guardResult = await until((push) => push.type === "event_submitted"
+  && push.payload?.event?.content?.data?.origin === "runtime_turn_result"
+  && push.payload.event.content.data.cause_event_id === guardSent.event_ref.id, "the created Actor's turn result", 180000);
+const guardTurn = guardResult.payload.event.content;
+if (guardTurn.data.outcome !== "completed") throw new Error("the created Actor's turn did not complete: " + JSON.stringify(guardTurn));
+step("the created Actor completed its own real turn: " + JSON.stringify(guardTurn.text.slice(0, 80)));
+
+
 // Pause a real turn mid-flight, then resume it. The Floe Actor runs one Scope
 // node whose shell command writes a marker, waits, then writes a second file.
 // The gate pauses the moment the marker appears, so the engine is inside the
@@ -751,7 +798,7 @@ identity.close();
     dumpLog(home, "bridge");
     // The logs are long; restate the surface's own failure last so it is never lost.
     const reason = (run.stderr ?? "").split(/\r?\n/).find((line) => /^\w*Error:/.test(line.trim())) ?? `exit ${run.status}`;
-    throw new Error(`the guard surface could not complete the identity flow, a real turn, and a real pause and resume through the installed artifact: ${reason.trim()}`);
+    throw new Error(`the guard surface could not complete the identity flow, a real turn, a created Actor's real turn, and a real pause and resume through the installed artifact: ${reason.trim()}`);
   }
 }
 

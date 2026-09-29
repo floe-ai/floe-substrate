@@ -298,7 +298,8 @@ const rollbackInputSchema: JsonSchema = {
 };
 const bindingInputProperties = {
   runtime_profile_revision_id: nonEmptyString,
-  endpoint_id: nullableString,
+  endpoint_id: { ...nullableString,
+    description: "Where the Actor receives work. Omit it: the Actor's own ID is its address, and routing resolves the Actor's name there." },
   status: { enum: ["resolved", "unresolved", "disabled"] },
   unresolved_reasons: stringArray,
 };
@@ -969,7 +970,7 @@ export function createActorRuntimeBindingOperation(
     authority_boundary_kinds: ["workspace"],
     category: "runtime-profiles",
     title: "Create Actor Runtime Binding",
-    description: "Bind an unbound Actor to one exact published Runtime Profile revision in this Workspace.",
+    description: "Bind an unbound Actor to one exact published Runtime Profile revision in this Workspace. This is what makes a created Actor reachable: work sent to an unbound Actor waits until it is bound. To run it the way you run, use the runtime_profile_revision_id from your own binding (actor.runtime-binding.inspect on yourself).",
     effects: { mode: "write", reversibility: "reversible", external: false, secret_access: "none" },
     required_grants: [CREATE_ACTOR_RUNTIME_BINDING_OPERATION_ID],
     interaction_constraints: { allowed_modes: ["interactive", "unattended"] },
@@ -992,7 +993,7 @@ export function createActorRuntimeBindingOperation(
       const binding = store.bindActor({
         actor_id: actor.actor_id,
         runtime_profile_revision_id: input.runtime_profile_revision_id,
-        endpoint_id: input.endpoint_id ?? null,
+        endpoint_id: input.endpoint_id ?? actor.actor_id,
         status: input.status,
         unresolved_reasons: input.unresolved_reasons ?? [],
         expected_current_binding_id: null,
@@ -1056,7 +1057,7 @@ export function replaceActorRuntimeBindingOperation(
       const binding = store.bindActor({
         actor_id: previous.actor_id,
         runtime_profile_revision_id: input.runtime_profile_revision_id,
-        endpoint_id: input.endpoint_id ?? null,
+        endpoint_id: input.endpoint_id ?? previous.endpoint_id ?? previous.actor_id,
         status: input.status,
         unresolved_reasons: input.unresolved_reasons ?? [],
         expected_current_binding_id: previous.actor_runtime_binding_id,

@@ -216,7 +216,7 @@ describe("Actor definition semantic operations", () => {
     const create = async (auth: OperationAuthorityContext, extra: Record<string, unknown> = {}, key = "create") =>
       registry.invoke(environment(store, auth as any), request(
         CREATE_ACTOR_OPERATION_ID,
-        { actor_id: "actor:helper", definition: { ...definition("Helper"), capability_grant_ids: [] }, ...extra },
+        { actor_id: "helper", definition: { ...definition("Helper"), capability_grant_ids: [] }, ...extra },
         key,
       ));
 
@@ -227,7 +227,7 @@ describe("Actor definition semantic operations", () => {
       expect(access).toMatchObject({ limited_by_creator: false, granted_operation_ids: ENGINE_IDS, not_granted: [] });
       expect((created.result as any).draft.content.capability_grant_ids).toEqual(access.grant_ids);
       const [grant] = access.grant_ids.map((id: string) => grants.getGrant(id));
-      expect(grant).toMatchObject({ principal_id: "actor:helper", operation_ids: ENGINE_IDS,
+      expect(grant).toMatchObject({ principal_id: "actor:workspace:one:helper", operation_ids: ENGINE_IDS,
         targets: [{ kind: "filesystem_path", id: "src" }] });
     });
 
@@ -241,7 +241,7 @@ describe("Actor definition semantic operations", () => {
 
       const none = receipt(await registry.invoke(environment(store, auth as any), request(
         CREATE_ACTOR_OPERATION_ID,
-        { actor_id: "actor:quiet", definition: { ...definition("Quiet"), capability_grant_ids: [] }, engine_tool_operation_ids: [] },
+        { actor_id: "quiet", definition: { ...definition("Quiet"), capability_grant_ids: [] }, engine_tool_operation_ids: [] },
         "create-quiet",
       )));
       expect((none.result as any).tool_access).toMatchObject({ granted_operation_ids: [], grant_ids: [] });
@@ -252,7 +252,7 @@ describe("Actor definition semantic operations", () => {
       const auth = creator([ENGINE_TOOL_OPERATIONS.filesystem_read]);
       const refused = receipt(await create(auth, { engine_tool_operation_ids: [ENGINE_TOOL_OPERATIONS.process_execute] }));
       expect(refused).toMatchObject({ state: "refused", refusal: { code: "actor_tool_access_widened" } });
-      expect(store.getActor("actor:helper")).toBeNull();
+      expect(store.getActor("actor:workspace:one:helper")).toBeNull();
     });
 
     it("reports the tools it could not pass on when the creator holds fewer", async () => {
@@ -268,7 +268,7 @@ describe("Actor definition semantic operations", () => {
       const created = receipt(await create(auth));
       const childId = (created.result as any).tool_access.grant_ids[0];
       const usable = () => grants.inspectSessionGrantIds({
-        principal_id: "actor:helper", boundary: { kind: "workspace", workspace_id: "workspace:one" }, grant_ids: [childId],
+        principal_id: "actor:workspace:one:helper", boundary: { kind: "workspace", workspace_id: "workspace:one" }, grant_ids: [childId],
       }).active_grants.length;
       expect(usable()).toBe(1);
       grants.revokeGrant(auth.session_capability_grant_ids[1]!, "2026-09-04T03:30:00.000Z");
@@ -288,7 +288,7 @@ describe("Actor definition semantic operations", () => {
     `);
     const createRequest = request(
       CREATE_ACTOR_OPERATION_ID,
-      { actor_id: "actor:builder", definition: definition("Builder v1") },
+      { actor_id: "builder", definition: definition("Builder v1") },
       "create-builder",
     );
     const created = receipt(await registry.invoke({
@@ -303,7 +303,7 @@ describe("Actor definition semantic operations", () => {
     }, createRequest));
     expect(created.state).toBe("completed");
     expect((created.result as any).actor).toMatchObject({
-      actor_id: "actor:builder",
+      actor_id: "actor:workspace:one:builder",
       workspace_id: "workspace:one",
       created_in_context_id: "context:task",
       created_in_scope_execution_id: "scope-execution:task",
@@ -338,7 +338,7 @@ describe("Actor definition semantic operations", () => {
         { definition: definition("Builder v2") },
         "draft-v2",
         {
-          target: { kind: "actor", id: "actor:builder" },
+          target: { kind: "actor", id: "actor:workspace:one:builder" },
           expected_revision: firstRevisionId,
         },
       ),
@@ -381,7 +381,7 @@ describe("Actor definition semantic operations", () => {
         { to_published_revision_id: firstRevisionId },
         "rollback-v1",
         {
-          target: { kind: "actor", id: "actor:builder" },
+          target: { kind: "actor", id: "actor:workspace:one:builder" },
           expected_revision: secondRevisionId,
         },
       ),
@@ -395,7 +395,7 @@ describe("Actor definition semantic operations", () => {
         {},
         "retire-builder",
         {
-          target: { kind: "actor", id: "actor:builder" },
+          target: { kind: "actor", id: "actor:workspace:one:builder" },
           expected_revision: firstRevisionId,
         },
       ),
@@ -409,14 +409,14 @@ describe("Actor definition semantic operations", () => {
         {},
         "reactivate-builder",
         {
-          target: { kind: "actor", id: "actor:builder" },
+          target: { kind: "actor", id: "actor:workspace:one:builder" },
           expected_revision: firstRevisionId,
         },
       ),
     ));
     expect((reactivated.result as any).actor.status).toBe("active");
-    expect(store.listRevisions("actor:builder")).toHaveLength(2);
-    expect(store.listHeadChanges("actor:builder").map((item) => item.reason))
+    expect(store.listRevisions("actor:workspace:one:builder")).toHaveLength(2);
+    expect(store.listHeadChanges("actor:workspace:one:builder").map((item) => item.reason))
       .toEqual(["publish", "publish", "rollback"]);
   });
 
@@ -533,7 +533,7 @@ describe("Actor definition semantic operations", () => {
 
   it("refuses stale expected revisions and invalid Actor definitions without changing retained state", async () => {
     const created = store.createActor({
-      actor_id: "actor:builder",
+      actor_id: "actor:workspace:one:builder",
       workspace_id: "workspace:one",
       created_by_principal_id: "principal:operator",
       definition: definition("Builder"),
@@ -551,7 +551,7 @@ describe("Actor definition semantic operations", () => {
         { definition: definition("Stale") },
         "stale-draft",
         {
-          target: { kind: "actor", id: "actor:builder" },
+          target: { kind: "actor", id: "actor:workspace:one:builder" },
           expected_revision: NO_ACTOR_DEFINITION_REVISION,
         },
       ),
@@ -577,7 +577,7 @@ describe("Actor definition semantic operations", () => {
         },
         "invalid-draft",
         {
-          target: { kind: "actor", id: "actor:builder" },
+          target: { kind: "actor", id: "actor:workspace:one:builder" },
           expected_revision: published.actor_definition_revision_id,
         },
       ),
@@ -586,6 +586,6 @@ describe("Actor definition semantic operations", () => {
       state: "refused",
       refusal: { code: "actor_definition_invalid" },
     });
-    expect(store.listRevisions("actor:builder")).toHaveLength(1);
+    expect(store.listRevisions("actor:workspace:one:builder")).toHaveLength(1);
   });
 });

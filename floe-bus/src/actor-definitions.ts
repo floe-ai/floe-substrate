@@ -109,6 +109,27 @@ export class ActorDefinitionDraftConflictError extends Error {
   }
 }
 
+/**
+ * An Actor's ID is Workspace-qualified: `actor:<workspace_id>:<name>`. It is
+ * also where the Actor receives work, and routing resolves a bare name to it.
+ */
+export function workspaceActorId(workspaceId: string, name: string): string {
+  nonEmpty("workspace_id", workspaceId);
+  nonEmpty("name", name);
+  return `actor:${workspaceId}:${name}`;
+}
+
+/** The name part of a Workspace-qualified Actor ID, accepting either form. */
+export function workspaceActorName(workspaceId: string, nameOrId: string): string {
+  const prefix = `actor:${workspaceId}:`;
+  const name = nameOrId.startsWith(prefix) ? nameOrId.slice(prefix.length) : nameOrId;
+  if (!name || name.includes(":")) {
+    throw new ActorDefinitionValidationError(
+      `Actor name '${nameOrId}' must be a short name without ':' (or an ID in this Workspace, ${prefix}<name>)`);
+  }
+  return name;
+}
+
 export function actorDefinitionDigest(content: ActorDefinitionContent): string {
   validateActorDefinition(content);
   return createHash("sha256").update(canonicalJson(content)).digest("hex");

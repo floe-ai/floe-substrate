@@ -3,6 +3,7 @@
  * lifecycle changes. Creation provenance comes only from authenticated
  * operation provenance, never from caller-authored input.
  */
+import { randomUUID } from "node:crypto";
 import {
   ActorDefinitionConflictError,
   ActorDefinitionDraftConflictError,
@@ -11,6 +12,8 @@ import {
   ActorDefinitionStore,
   ActorDefinitionValidationError,
   ActorNotFoundError,
+  workspaceActorId,
+  workspaceActorName,
   type ActorDefinitionContent,
   type ActorDefinitionHeadChange,
   type ActorDefinitionRevision,
@@ -292,7 +295,8 @@ const createActorInputSchema: JsonSchema = {
   additionalProperties: false,
   required: ["definition"],
   properties: {
-    actor_id: nonEmptyString,
+    actor_id: { ...nonEmptyString,
+      description: "Optional short name, unique in this Workspace, such as 'greeter'. The Actor's ID, and the address it receives work at, become actor:<workspace_id>:<name>." },
     definition: ACTOR_DEFINITION_CONTENT_SCHEMA,
     engine_tool_operation_ids: {
       type: "array",
@@ -594,7 +598,7 @@ export function createActorOperation(
     authority_boundary_kinds: ["workspace"],
     category: "actors",
     title: "Create Actor",
-    description: "Create a stable Actor identity and its first unpublished definition draft in this Workspace. The new Actor may use every engine tool you hold, unless you choose limits.",
+    description: "Create a stable Actor identity and its first unpublished definition draft in this Workspace. The new Actor may use every engine tool you hold, unless you choose limits. It cannot receive work until you publish its definition (actor.definition.publish) and bind it to a runtime (actor.runtime-binding.create).",
     effects: { mode: "write", reversibility: "reversible", external: false, secret_access: "none" },
     required_grants: [CREATE_ACTOR_OPERATION_ID],
     interaction_constraints: { allowed_modes: ["interactive", "unattended"] },
@@ -604,13 +608,24 @@ export function createActorOperation(
     handler: (context, input) => handle(() => {
       store.db.exec("SAVEPOINT create_actor");
       try {
+        const workspaceId = authorityWorkspaceId(context);
+        const actorId = workspaceActorId(workspaceId, input.actor_id
+          ? workspaceActorName(workspaceId, input.actor_id) : `actor_${randomUUID()}`);
+        if (store.getActor(actorId)) {
+          store.db.exec("RELEASE create_actor");
+          return {
+            state: "refused" as const,
+            refusal: refusal("actor_name_taken", `An Actor named ${JSON.stringify(workspaceActorName(workspaceId, actorId))} already exists in this Workspace (${actorId}).`,
+              false, requiredAction("choose_actor_name", "Choose another name", "Create the Actor with a name no other Actor in this Workspace uses, or revise the existing Actor instead.")),
+          };
+        }
         const created = store.createActor({
-          workspace_id: authorityWorkspaceId(context),
+          workspace_id: workspaceId,
           created_in_context_id: actorCreationContextId(store, context),
           created_in_scope_execution_id: context.provenance.scope_execution_id,
           created_by_principal_id: context.authority.principal_id,
           definition: input.definition,
-          ...(input.actor_id ? { actor_id: input.actor_id } : {}),
+          actor_id: actorId,
         });
         const { draft, tool_access } = passOnEngineToolAccess({
           grants,
@@ -754,7 +769,7 @@ export function publishActorDefinitionOperation(
     authority_boundary_kinds: ["workspace"],
     category: "actors",
     title: "Publish Actor definition",
-    description: "Make one draft the Actor's current definition while retaining every published revision.",
+    description: "Make one draft the Actor's current definition while retaining every published revision. A newly created Actor also needs a runtime binding (actor.runtime-binding.create) before it can receive work.",
     effects: { mode: "write", reversibility: "reversible", external: false, secret_access: "none" },
     required_grants: [PUBLISH_ACTOR_DEFINITION_OPERATION_ID],
     interaction_constraints: { allowed_modes: ["interactive", "unattended"] },
