@@ -257,8 +257,14 @@ import {
 import { applyDeliveryOperationAuthoritySchema } from "./delivery-operation-authority.js";
 import { registerArtefactOperations } from "./artefact-operations.js";
 import { exportArtefactVersionOperation } from "./artefact-export.js";
-import { registerActorDefinitionOperations } from "./actor-definition-operations.js";
-import { registerRuntimeProfileOperations } from "./runtime-profile-operations.js";
+import {
+  NO_ACTOR_DEFINITION_REVISION,
+  registerActorDefinitionOperations,
+} from "./actor-definition-operations.js";
+import {
+  NO_RUNTIME_PROFILE_REVISION,
+  registerRuntimeProfileOperations,
+} from "./runtime-profile-operations.js";
 import {
   registerConnectorOperations,
   resolveConnectorOperationResource,
@@ -4034,7 +4040,13 @@ export class BusStore {
     if (target.kind === "actor") {
       const actor = this.actorDefinitionStore.getActor(target.id);
       return actor?.workspace_id === workspaceId
-        ? { ref: { ...target, revision: actor.current_definition_revision_id }, state: actor }
+        ? {
+            ref: {
+              ...target,
+              revision: actor.current_definition_revision_id ?? NO_ACTOR_DEFINITION_REVISION,
+            },
+            state: actor,
+          }
         : null;
     }
     if (target.kind === "actor_definition_revision") {
@@ -4047,7 +4059,10 @@ export class BusStore {
     if (target.kind === "runtime_profile") {
       const profile = this.runtimeProfileStore.getProfile(target.id);
       return profile?.owner.kind === "workspace" && profile.owner.id === workspaceId
-        ? { ref: { ...target, revision: profile.current_revision_id }, state: profile }
+        ? {
+            ref: { ...target, revision: profile.current_revision_id ?? NO_RUNTIME_PROFILE_REVISION },
+            state: profile,
+          }
         : null;
     }
     if (target.kind === "runtime_profile_revision") {
