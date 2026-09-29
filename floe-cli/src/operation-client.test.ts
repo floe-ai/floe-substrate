@@ -1,5 +1,5 @@
+import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-
 import {
   CliAuthorityBrokerUnavailableError,
   CliOperationClient,
@@ -9,6 +9,9 @@ import {
   type CliOperationAuthorityBroker,
   type CliOperationDescriptor,
 } from "./operation-client.js";
+
+/** Locators in the running platform's own form, so selection is tested as it runs there. */
+const at = (...parts: string[]) => join(resolve("/"), ...parts);
 
 const WORKSPACE_ID = "workspace:one";
 
@@ -341,15 +344,15 @@ describe("CLI semantic operation client", () => {
   it("reads the installed broker's flat local Workspace records and preserves an unbound Workspace", async () => {
     const broker = mockBroker();
     broker.listLocalWorkspaces.mockResolvedValue({ workspaces: [
-      { workspace_id: "workspace:one", name: "One", binding_id: "binding:one", locator: "C:\\work\\one", status: "attached" },
+      { workspace_id: "workspace:one", name: "One", binding_id: "binding:one", locator: at("work", "one"), status: "attached" },
       { workspace_id: "workspace:unbound", name: "Unbound", binding_id: null, locator: null },
     ] });
     const workspaces = await new CliOperationClient(broker).listLocalWorkspaces();
     expect(workspaces).toEqual([
-      { workspace_id: "workspace:one", name: "One", binding: { locator: "C:\\work\\one" } },
+      { workspace_id: "workspace:one", name: "One", binding: { locator: at("work", "one") } },
       { workspace_id: "workspace:unbound", name: "Unbound", binding: null },
     ]);
-    expect(selectLocalWorkspace(workspaces, undefined, "C:\\work\\one\\images").workspace_id).toBe("workspace:one");
+    expect(selectLocalWorkspace(workspaces, undefined, at("work", "one", "images")).workspace_id).toBe("workspace:one");
     broker.listLocalWorkspaces.mockResolvedValue({ workspaces: [
       { workspace_id: "workspace:invalid", name: "Invalid", binding_id: null, locator: "C:\\untrusted" },
     ] });
@@ -362,17 +365,17 @@ describe("CLI Workspace selection", () => {
     {
       workspace_id: "workspace:root",
       name: "Root",
-      binding: { locator: "C:\\Development", state: "current" },
+      binding: { locator: at("Development"), state: "current" },
     },
     {
       workspace_id: "workspace:floe",
       name: "Floe",
-      binding: { locator: "C:\\Development\\ai-powered\\floe", state: "current" },
+      binding: { locator: at("Development", "ai-powered", "floe"), state: "current" },
     },
   ];
 
   it("prefers the deepest attached Workspace containing the current directory", () => {
-    expect(selectLocalWorkspace(workspaces, undefined, "C:\\Development\\ai-powered\\floe\\floe-cli"))
+    expect(selectLocalWorkspace(workspaces, undefined, at("Development", "ai-powered", "floe", "floe-cli")))
       .toMatchObject({ workspace_id: "workspace:floe" });
   });
 

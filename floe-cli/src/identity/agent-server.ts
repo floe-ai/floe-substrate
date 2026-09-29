@@ -16,6 +16,7 @@ import {
   proof,
   proofMatches,
   readRunFile,
+  ensureRunDir,
   runFilePath,
   writeRunFile,
 } from "./protocol.js";
@@ -49,6 +50,7 @@ export async function serveAgent(
     handleConnection(agent, socket, secret, log);
   });
 
+  ensureRunDir(options.home);
   await listen(server, address);
   writeRunFile(options.home, {
     protocol: PROTOCOL_VERSION,

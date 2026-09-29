@@ -7,7 +7,7 @@ import { IdentityAgent } from "./agent.js";
 import { serveAgent, type AgentServer } from "./agent-server.js";
 import { AgentUnavailableError, openAgentChannel, probeAgent } from "./connection.js";
 import { IdentityClient } from "./client.js";
-import { agentAddress, frame, lineReader, newAgentSecret, proof, readRunFile, writeRunFile } from "./protocol.js";
+import { agentAddress, ensureRunDir, frame, lineReader, newAgentSecret, proof, readRunFile, writeRunFile } from "./protocol.js";
 import { FAST_SCRYPT, FakeBus } from "./test-support.js";
 
 const cleanup: Array<() => Promise<void> | void> = [];
@@ -66,6 +66,7 @@ describe("identity agent channel", () => {
     const home = mkdtempSync(join(tmpdir(), "floe-agent-squat-"));
     cleanup.push(() => rmSync(home, { recursive: true, force: true }));
     const address = agentAddress(home);
+    ensureRunDir(home);
     const received: Array<Record<string, unknown>> = [];
     const squatter = createServer((socket) => {
       socket.on("data", lineReader((message) => {

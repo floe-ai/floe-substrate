@@ -56,10 +56,15 @@ export function newAgentSecret(): string {
   return randomBytes(32).toString("hex");
 }
 
-export function writeRunFile(home: string, run: RunFile): void {
+/** The run directory holds the run file and, off Windows, the agent's socket. */
+export function ensureRunDir(home: string): void {
   const dir = runDir(home);
   mkdirSync(dir, { recursive: true });
   try { chmodSync(dir, 0o700); } catch { /* Windows: profile ACL */ }
+}
+
+export function writeRunFile(home: string, run: RunFile): void {
+  ensureRunDir(home);
   const path = runFilePath(home);
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, JSON.stringify(run, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
