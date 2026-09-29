@@ -150,9 +150,17 @@ function releaseFromCleanClone() {
   execFileSync("git", ["clone", "--quiet", "--no-hardlinks", "--no-checkout", repoRoot, source], { stdio: "inherit" });
   execFileSync("git", ["checkout", "--quiet", "--detach", commit], { cwd: source, stdio: "inherit" });
   const pins = pinProblems(source);
-  if (pins.length > 0) failWithProblems(`commit ${commit} pins git dependencies inconsistently:`, pins);
+  if (pins.length > 0) {
+    rmSync(workRoot, { recursive: true, force: true });
+    failWithProblems(`commit ${commit} pins git dependencies inconsistently:`, pins);
+  }
   log("source", "installing exactly what package-lock.json records (npm ci)");
-  runNpm(["ci", "--no-audit", "--no-fund"], source);
+  try {
+    runNpm(["ci", "--no-audit", "--no-fund"], source);
+  } catch (error) {
+    rmSync(workRoot, { recursive: true, force: true });
+    fail(`a clean install of commit ${commit} failed: ${error.message}`);
+  }
   const innerArgs = [];
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === "--out") i += 1;
