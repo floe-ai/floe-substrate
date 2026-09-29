@@ -109,8 +109,8 @@ export function deliveryToPrompt(bundle: DeliveryBundle): string {
     "These are the current work references. Source references in inputs describe history. Read the target's current resource revision through capability discovery before changing it.",
   ].join("\n") : "";
 
-  // Only the current causes are included. Older Context events and the actor
-  // directory are available through tools when the work demonstrates a need.
+  // This renderer includes only current causes. A cold runtime session receives
+  // its bounded canonical history separately; warm sessions already retain it.
   const eventLines = bundle.events.map((event) => {
     const text = eventContentToPrompt(event.content, event.artefact_version_ids);
     return `[Input ${event.event_id} / ${event.type}]\n${text}`;

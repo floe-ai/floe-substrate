@@ -427,9 +427,11 @@ export class BridgeDaemon {
     }
     // Slice 0 — context lifecycle hooks
     if (message.type === "context_compacted" && message.payload?.context_id) {
+      await this.adapter.contextHistoryChanged?.(String(message.payload.context_id));
       await this.fireContextLifecycleHook("ContextCompacted", message.payload);
     }
     if (message.type === "context_history_cleared" && message.payload?.context_id) {
+      await this.adapter.contextHistoryChanged?.(String(message.payload.context_id));
       await this.fireContextLifecycleHook("ContextHistoryCleared", message.payload);
     }
     // Slice 1 — dynamic participant hooks

@@ -36,6 +36,7 @@ function context() {
     engine_account: TEST_ACCOUNT,
     bus: {
       async getContext() { return null; },
+      async listContextEvents() { return { events: [], next_cursor: null }; },
       async recordRuntimeTurnResult() { return { request_resolved: false, result_event: { event_id: "result-1" } }; },
       async appendRuntimeTelemetry() {},
     },
@@ -152,6 +153,112 @@ describe("FloeRuntimeAdapter SDK route", () => {
         session_id: "sdk-session",
       },
     });
+  });
+
+  it("rebuilds canonical Context continuity once on a cold session", async () => {
+    const runtime = new FakeRuntime();
+    const ctx = context();
+    const listContextEvents = vi.fn(async () => ({
+      events: [{
+        event_id: "event-old",
+        type: "message",
+        created_at: "2026-09-30T00:00:00.000Z",
+        source_endpoint_id: "actor:workspace:test:operator",
+        correlation_id: null,
+        content: { text: "Remember code ORANGE-417." },
+        artefact_version_ids: [],
+      }],
+      next_cursor: null,
+    }));
+    const telemetry = vi.fn(async () => {});
+    ctx.bus.listContextEvents = listContextEvents;
+    ctx.bus.appendRuntimeTelemetry = telemetry;
+    const adapter = new FloeRuntimeAdapter({ runtimeFactory: () => runtime as any });
+
+    await adapter.handleBundle(ctx, bundle(), undefined);
+    await adapter.handleBundle(ctx, bundle("delivery-2"), undefined);
+
+    expect(listContextEvents).toHaveBeenCalledOnce();
+    expect(runtime.runs[0][1].prompt).toContain("[Floe Context continuity]");
+    expect(runtime.runs[0][1].prompt).toContain("ORANGE-417");
+    expect(runtime.runs[0][1].prompt.match(/Do work/g)).toHaveLength(1);
+    expect(runtime.runs[1][1].prompt).not.toContain("[Floe Context continuity]");
+    expect(telemetry).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "context_continuity_rebuilt",
+      payload: expect.objectContaining({
+        source: "floe_context_events",
+        event_count: 1,
+        token_upper_bound: expect.any(Number),
+      }),
+    }));
+    expect(telemetry.mock.calls.filter(call =>
+      (call as unknown as Array<{ kind?: string }>)[0]?.kind === "context_continuity_rebuilt"
+    )).toHaveLength(1);
+  });
+
+  it("retires cached vendor state when canonical Context history changes", async () => {
+    const runtimes: FakeRuntime[] = [];
+    const ctx = context();
+    const listContextEvents = vi.fn(async () => ({ events: [], next_cursor: null }));
+    ctx.bus.listContextEvents = listContextEvents;
+    const adapter = new FloeRuntimeAdapter({
+      runtimeFactory: () => {
+        const runtime = new FakeRuntime();
+        runtimes.push(runtime);
+        return runtime as any;
+      },
+    });
+
+    await adapter.handleBundle(ctx, bundle(), undefined);
+    await adapter.contextHistoryChanged("context:test");
+    await adapter.handleBundle(ctx, bundle("delivery-2"), undefined);
+
+    expect(runtimes).toHaveLength(2);
+    expect(runtimes[0].close).toHaveBeenCalledOnce();
+    expect(listContextEvents).toHaveBeenCalledTimes(2);
+    expect(runtimes[1].runs[0][5]).toEqual({ scope: "context:test" });
+  });
+
+  it("fails explicitly when canonical Context history exceeds its token budget", async () => {
+    const runtime = new FakeRuntime();
+    const ctx = context();
+    ctx.bus.listContextEvents = vi.fn(async () => ({
+      events: [{
+        event_id: "event-old",
+        type: "message",
+        created_at: "2026-09-30T00:00:00.000Z",
+        source_endpoint_id: "actor:workspace:test:operator",
+        correlation_id: null,
+        content: { text: "x".repeat(9_000) },
+        artefact_version_ids: [],
+      }],
+      next_cursor: null,
+    }));
+    const adapter = new FloeRuntimeAdapter({ runtimeFactory: () => runtime as any });
+
+    await expect(adapter.handleBundle(ctx, bundle(), undefined)).rejects.toThrow(
+      /\[context_continuity_too_large\].*Compact the Context/,
+    );
+    expect(runtime.runs).toHaveLength(0);
+  });
+
+  it("fails without starting memoryless work when Context history is unavailable, then retries", async () => {
+    const runtime = new FakeRuntime();
+    const ctx = context();
+    const listContextEvents = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("Bus history unavailable"), { code: "bus_unavailable" }))
+      .mockResolvedValueOnce({ events: [], next_cursor: null });
+    ctx.bus.listContextEvents = listContextEvents;
+    const adapter = new FloeRuntimeAdapter({ runtimeFactory: () => runtime as any });
+
+    await expect(adapter.handleBundle(ctx, bundle(), undefined)).rejects.toThrow(
+      /\[bus_unavailable\] Bus history unavailable/,
+    );
+    expect(runtime.runs).toHaveLength(0);
+
+    await adapter.handleBundle(ctx, bundle("delivery-2"), undefined);
+    expect(listContextEvents).toHaveBeenCalledTimes(2);
+    expect(runtime.runs).toHaveLength(1);
   });
 
   it("runs each turn as the account readiness admitted, and never reuses a session across accounts", async () => {

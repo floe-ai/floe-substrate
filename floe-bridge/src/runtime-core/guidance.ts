@@ -30,8 +30,8 @@ export function buildSystemPrompt(agentInstructions: string): string {
 }
 
 /**
- * Render the compact causal envelope for one turn. Durable history and actor
- * discovery are deliberately represented as available tools, not prepaid data.
+ * Render the compact causal envelope for one turn. Cold-session continuity is
+ * projected separately; actor discovery remains available through tools.
  */
 export function renderDestinationContext(context: {
   source_endpoint_id: string;

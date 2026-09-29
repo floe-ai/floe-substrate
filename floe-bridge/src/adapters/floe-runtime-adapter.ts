@@ -5,11 +5,13 @@
  * through its own supported flow. This adapter therefore never resolves or
  * brokers a model credential — that is the whole point of replacing pi here.
  *
- * A delivery is rendered to a prompt, run as one SDK turn, and its final
- * message is recorded with telemetry and a work-log entry. Bridge-owned
- * substrate tools are direct SDK tools. Cancellation reports quiesced only
- * after the runtime proves all tool activity terminal; otherwise the owning
- * isolated session must be retired before Floe reports paused.
+ * A cold session is rebuilt once from bounded canonical Context Events; vendor
+ * session state is never the restart authority. A delivery is then rendered to
+ * a prompt, run as one SDK turn, and its final message is recorded with
+ * telemetry and a work-log entry. Bridge-owned substrate tools are direct SDK
+ * tools. Cancellation reports quiesced only after the runtime proves all tool
+ * activity terminal; otherwise the owning isolated session must be retired
+ * before Floe reports paused.
  */
 import { randomUUID } from "node:crypto";
 import { COPILOT_BUILTIN_TOOL_MANIFEST, copilotToolCatalogForModel } from "floe-runtime/adapters/copilot";
@@ -26,8 +28,14 @@ import type { AgentRuntimeConfig } from "../auth.js";
 import type { DeliveryBundle, RuntimeOperationAuthoritySession } from "../bus-client.js";
 import type { RuntimeAdapter, RuntimeContext } from "./runtime-adapter.js";
 import type { HookPayload } from "../hooks.js";
-import type { WorkLogEntry, WorkLogToolEntry } from "../runtime-core/index.js";
-import { buildSystemPrompt, deliveryToPrompt, appendWorkLog, renderHookInjections } from "../runtime-core/index.js";
+import type { ContextContinuityProjection, WorkLogEntry, WorkLogToolEntry } from "../runtime-core/index.js";
+import {
+  buildSystemPrompt,
+  deliveryToPrompt,
+  appendWorkLog,
+  loadContextContinuity,
+  renderHookInjections,
+} from "../runtime-core/index.js";
 import type { EmittedEventSummary, SubstrateTurnAnchor } from "../runtime-core/index.js";
 import { createDirectSubstrateTools } from "./floe-direct-tools.js";
 import type { SubstrateSessionHandle } from "../runtime-core/substrate-tool-definitions.js";
@@ -101,6 +109,8 @@ type FloeSession = {
   /** The exact tool list the live SDK session was created with. */
   offeredTools: string | null;
   model?: string;
+  continuity?: Promise<ContextContinuityProjection>;
+  continuityTelemetryRecorded?: boolean;
   context?: RuntimeContext;
   activeTurn?: FloeTurn;
 };
@@ -207,8 +217,46 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
     turn.operation_authority_session = context.operation_authority_session ?? null;
     session.activeTurn = turn;
 
-    // Scope is retained as structural metadata for the work log; actor
-    // participants and history are deliberately not injected (parity with pi).
+    let continuity: ContextContinuityProjection | null = null;
+    try {
+      if (freshSession && session.contextId !== "no-context") {
+        if (!session.continuity) {
+          const pending = loadContextContinuity(
+            context.bus,
+            session.contextId,
+            new Set(bundle.events.map(event => event.event_id)),
+          );
+          session.continuity = pending;
+          void pending.catch(() => {
+            if (session.continuity === pending) delete session.continuity;
+          });
+        }
+        continuity = await session.continuity;
+      }
+    } catch (error) {
+      if (session.activeTurn === turn) session.activeTurn = undefined;
+      const faultCode = typeof (error as { code?: unknown })?.code === "string"
+        ? (error as { code: string }).code
+        : "context_continuity_failed";
+      const detail = error instanceof Error ? error.message : String(error);
+      turn.finalized = true;
+      turn.settledAt = new Date().toISOString();
+      turn.settle();
+      this.writeWorkLog(context, bundle, turn, "error");
+      throw new TurnFailedError(
+        bundle.delivery_id,
+        turn.source_endpoint_id,
+        bundle.workspace_id,
+        turn.context_id,
+        turn.thread_id,
+        model ?? "(default)",
+        this.name,
+        null,
+        `[${faultCode}] ${detail}`,
+      );
+    }
+
+    // Scope is retained as structural metadata for the work log.
     if (turn.context_id) {
       try {
         const ctx = await context.bus.getContext(turn.context_id);
@@ -255,6 +303,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
     // unchanged.
     const parts: string[] = [];
     if (injectedContext) parts.push(injectedContext);
+    if (continuity?.text) parts.push(continuity.text);
     parts.push(deliveryToPrompt(bundle));
     const prompt = parts.join("\n\n");
 
@@ -273,6 +322,8 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       // Instructions reach the model only as the system message of a new
       // session; a resumed session already holds them, so this is 0 there.
       system_message_bytes: systemMessage.length,
+      continuity_event_count: continuity?.eventCount ?? 0,
+      continuity_token_upper_bound: continuity?.tokenUpperBound ?? 0,
     });
 
     const availableTools = [
@@ -281,6 +332,16 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
     ];
     try {
       await this.throwIfCancelled(session, turn);
+      if (continuity?.eventCount && !session.continuityTelemetryRecorded) {
+        await this.appendTelemetry(context, turn, "context_continuity_rebuilt", {
+          source: "floe_context_events",
+          event_count: continuity.eventCount,
+          token_upper_bound: continuity.tokenUpperBound,
+          token_budget: continuity.tokenBudget,
+          compacted: continuity.compacted,
+        });
+        session.continuityTelemetryRecorded = true;
+      }
       // An SDK session keeps the tool list it was created with; a changed grant
       // set resumes it under the new list instead of reporting catalog drift.
       const offeredTools = JSON.stringify(availableTools);
@@ -488,6 +549,24 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
         await session.runtime.close();
       } catch (err) {
         console.error("[bridge] floe-runtime close failed", { endpoint_id: session.endpointId, error: String(err) });
+      }
+    }
+  }
+
+  async contextHistoryChanged(contextId: string): Promise<void> {
+    const targets = [...this.sessions.entries()].filter(([, session]) => session.contextId === contextId);
+    for (const [key, session] of targets) {
+      const turn = session.activeTurn;
+      if (turn && !turn.settledAt) await turn.settled;
+      if (this.sessions.get(key) === session) this.sessions.delete(key);
+      try {
+        await session.runtime.close();
+      } catch (err) {
+        console.error("[bridge] floe-runtime close failed after Context history changed", {
+          endpoint_id: session.endpointId,
+          context_id: contextId,
+          error: String(err),
+        });
       }
     }
   }

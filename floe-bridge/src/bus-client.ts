@@ -10,7 +10,7 @@ export type EventEnvelope = {
   type: string;
   workspace_id: string;
   scope_id?: string | null;
-  /** Source endpoint that emitted the event. Null for system-originated triggers (pulse, webhook). */
+  /** Source endpoint that emitted the Event. Null for principal- or system-originated Events. */
   source_endpoint_id: string | null;
   thread_id: string;
   context_id?: string | null;

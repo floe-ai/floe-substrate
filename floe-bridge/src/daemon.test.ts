@@ -245,6 +245,34 @@ describe("BridgeDaemon shutdown", () => {
     }
   });
 
+  it("retires runtime Context state when the Bus pushes canonical history changes", async () => {
+    const made = makeConfig("fake");
+    try {
+      const daemon = new BridgeDaemon(made.configPath, made.config);
+      const contextHistoryChanged = vi.fn(async () => {});
+      const fireContextLifecycleHook = vi.fn(async () => {});
+      (daemon as any).adapter = { name: "test-adapter", handleBundle: vi.fn(), contextHistoryChanged };
+      (daemon as any).fireContextLifecycleHook = fireContextLifecycleHook;
+
+      await (daemon as any).handleEventStreamMessage({
+        type: "context_compacted",
+        payload: { context_id: "context:test" },
+      });
+      await (daemon as any).handleEventStreamMessage({
+        type: "context_history_cleared",
+        payload: { context_id: "context:test" },
+      });
+
+      expect(contextHistoryChanged.mock.calls).toEqual([["context:test"], ["context:test"]]);
+      expect(fireContextLifecycleHook.mock.calls.map(call => (call as unknown[])[0])).toEqual([
+        "ContextCompacted",
+        "ContextHistoryCleared",
+      ]);
+    } finally {
+      made.cleanup();
+    }
+  });
+
   it("does not start a pushed delivery when cancellation overtakes execution", async () => {
     const made = makeConfig("fake");
     try {
