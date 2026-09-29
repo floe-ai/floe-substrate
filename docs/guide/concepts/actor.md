@@ -96,8 +96,12 @@ Limits:
   another platform no built-in tool is offered. If the engine's tool
   catalogue differs from the proven one, the session does not start.
 - Copilot has no governed file-write tool yet, so a write grant exposes nothing.
-- Copilot's shell evidence is heuristic. An Actor that needs hard process or
-  filesystem confinement cannot use Copilot's shell tool.
+- A shell call never runs automatically. Copilot reports only the command
+  names in a shell call, not the files, addresses or redirections it touches,
+  so a grant alone cannot confine it. Each shell call needs a person to
+  approve that exact command, through an Approval Policy rule that requires
+  approval for `engine.tool.process.execute`. Without one, the call is refused
+  with `rule_id` `authority.tool_shell_unconfined`.
 - Floe controls side effects, not what the engine's own hidden instructions
   tell the model.
 

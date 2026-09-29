@@ -181,6 +181,11 @@ export type PolicyEvaluationOptions = Readonly<{
    * can only restrict authority, so a present reason always yields deny.
    */
   authority_denial_reason?: string;
+  /**
+   * Refusal applied when no rule requires approval: the action may proceed
+   * only with a decision, never automatically.
+   */
+  unapproved_denial_reason?: string;
 }>;
 
 export type PolicyEvaluationRecord = Readonly<{
@@ -764,6 +769,9 @@ export class PolicyStore {
         ...limit,
       }));
     }));
+    if (denials.length === 0 && approvals.length === 0 && options.unapproved_denial_reason) {
+      denials.push(options.unapproved_denial_reason);
+    }
     const decision: PolicyEvaluationRecord["decision"] = denials.length > 0
       ? "deny"
       : approvals.length > 0

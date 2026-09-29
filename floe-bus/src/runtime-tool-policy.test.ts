@@ -172,8 +172,10 @@ describe("runtime tool policy", () => {
     expect(refused({ ...web, urls: ["not a url"] })).toBe("authority.tool_network_not_granted");
 
     const sh = { operation_id: "engine.tool.process.execute", native_tools: ["powershell"], paths: [] as string[] };
-    expect(evaluate(deliveryId, call({ ...sh, executables: ["Git", "git"] })).decision).toBe("allow");
-    expect(evaluate(deliveryId, call({ ...sh, executables: ["git"], urls: ["https://example.com/repo"] })).decision).toBe("allow");
+    const unconfined = evaluate(deliveryId, call({ ...sh, executables: ["Git", "git"] }));
+    expect(unconfined.refusal).toMatchObject({ rule_id: "authority.tool_shell_unconfined", reason: expect.stringMatching(/needs a person's approval/) });
+    expect(handle.store.policyStore.getEvaluation(unconfined.evaluation_id)!.decision).toBe("deny");
+    expect(refused({ ...sh, executables: ["git"], urls: ["https://example.com/repo"] })).toBe("authority.tool_shell_unconfined");
     expect(refused({ ...sh, executables: ["git"], urls: ["https://evil.test/"] })).toBe("authority.tool_network_not_granted");
     expect(refused({ ...sh, executables: ["git", null] })).toBe("authority.tool_shell_ambiguous");
     expect(refused({ ...sh, executables: [] })).toBe("authority.tool_shell_ambiguous");
@@ -324,6 +326,23 @@ describe("runtime tool policy", () => {
     handle.store.capabilityGrantStore.revokeGrant(read.grant_id);
     expect(resolve(stale.evaluation_id).outcome).toBe("unavailable");
     expect(handle.store.approvalStore.getRequest(stale.approval_request_ids[0]!)!.status).toBe("invalidated");
+  });
+
+  it("never runs shell automatically, but asks a person when an Approval Policy says so", async () => {
+    const shell = grant(["engine.tool.process.execute"], [{ kind: "executable", id: "git" }]);
+    const approval = publishPolicy("approval", [{
+      rule_id: "ask-before-shell", priority: 1, match: { operation_ids: ["engine.tool.process.execute"] },
+      effect: { kind: "require_approval", reason: "Shell needs a person.", approvers: { mode: "any", principal_ids: [OPERATOR], roles: [] } },
+    }]);
+    publishDefinition({
+      capability_grant_ids: [shell.grant_id], scope: { paths: ["."] },
+      policy_refs: { budget: null, trust: null, approval: { kind: "policy", id: approval.policy_id, revision: approval.policy_revision_id } },
+    });
+    const deliveryId = await runningDelivery();
+    const sh = { operation_id: "engine.tool.process.execute", native_tools: ["powershell"], paths: [] as string[], executables: ["git"] };
+    const asked = evaluate(deliveryId, call(sh));
+    expect(asked).toMatchObject({ decision: "require_approval", refusal: null, approval_request_ids: [expect.any(String)] });
+    expect(evaluate(deliveryId, call({ ...sh, executables: ["npm"] })).refusal?.rule_id).toBe("authority.tool_target_not_granted");
   });
 
   it("is reachable only by the owning Bridge with well-formed facts", async () => {

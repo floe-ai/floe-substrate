@@ -37,7 +37,22 @@ export type ToolAuthorityDenialCode =
   | "tool_path_outside_scope"
   | "tool_target_not_granted"
   | "tool_shell_ambiguous"
-  | "tool_network_not_granted";
+  | "tool_network_not_granted"
+  | "tool_shell_unconfined";
+
+/**
+ * Automatic execution needs complete evidence of everything a call touches.
+ * No proven engine reports the files, addresses, redirections or background
+ * behaviour of a shell command (Copilot CLI 1.0.83 on Windows reports only
+ * command names), so a shell call runs only with a person's decision.
+ */
+export const SHELL_UNCONFINED_REASON = "This engine does not report which files, addresses or redirections a shell command"
+  + " touches, so each shell call needs a person's approval. Add an Approval Policy rule that requires approval for"
+  + " engine.tool.process.execute.";
+
+export function automaticAllowRefusal(operationId: string): string | null {
+  return operationId === ENGINE_TOOL_OPERATIONS.process_execute ? SHELL_UNCONFINED_REASON : null;
+}
 
 export function isEngineToolOperation(operationId: string): operationId is EngineToolOperationId {
   return TOOL_OPERATION_IDS.has(operationId);
