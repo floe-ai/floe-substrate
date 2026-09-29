@@ -425,7 +425,10 @@ async function guard(version) {
   // A config isolated from the operator's ~/.floe: its own home, and a distinct
   // port so a bus the operator is already running is not disturbed and cannot
   // masquerade as ours.
-  const port = 5399;
+  const port = Number.parseInt(process.env.FLOE_RELEASE_GUARD_PORT || "5399", 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("FLOE_RELEASE_GUARD_PORT must be a valid TCP port.");
+  }
   const configPath = join(workRoot, "config.yaml");
   writeFileSync(
     configPath,
