@@ -65,6 +65,7 @@ function valid(caseName: LiveToolEvidence["case"] = "emit-success"): LiveToolEvi
         metadata: { runtime_turn_id: "rt_1" },
       },
     },
+    usage: { measurement_scope: "turn", model_calls: 2, tool_calls: 1 },
     delivery_acknowledgement: {
       frame: "delivery_acknowledged",
       payload: { delivery_id: "del_1" },
@@ -85,6 +86,12 @@ describe("exact live tool evidence", () => {
   it("accepts separate exact success and denial cases", () => {
     expect(() => assertExactLiveToolEvidence(valid())).not.toThrow();
     expect(() => assertExactLiveToolEvidence(valid("use-capability-denied"))).not.toThrow();
+  });
+
+  it("rejects a tool-calling turn whose usage covers only one model call", () => {
+    invalid(evidence => { evidence.usage = { measurement_scope: "last_model_call", model_calls: null, tool_calls: null }; });
+    invalid(evidence => { evidence.usage = { measurement_scope: "turn", model_calls: 1, tool_calls: 1 }; });
+    invalid(evidence => { evidence.usage = null; });
   });
 
   it("rejects matching Actor text without an exact tool callback", () => {

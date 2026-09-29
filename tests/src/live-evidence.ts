@@ -49,6 +49,12 @@ export type LiveToolEvidence = {
     event_id: string | null;
     payload: unknown;
   } | null;
+  /** The turn's recorded token usage, as the Bridge labelled it. */
+  usage: {
+    measurement_scope: string | null;
+    model_calls: number | null;
+    tool_calls: number | null;
+  } | null;
   delivery_acknowledgement: {
     frame: "delivery_acknowledged";
     payload: unknown;
@@ -131,6 +137,8 @@ export function assembleLiveToolEvidence(input: LiveEvidenceInputs): Partial<Liv
   const toolCall = calls.length === 1 ? calls[0]! : {};
   const turnRecord = telemetry.find(row => row.kind === "turn_result");
   const turnPayload = telemetryPayload(turnRecord);
+  const usageRecord = telemetry.find(row => row.kind === "usage");
+  const usagePayload = usageRecord ? telemetryPayload(usageRecord) : null;
   const resultEventId = string(turnPayload.result_event_id);
   const resultEvent = input.events.map(record).find(event => event.event_id === resultEventId);
   const runtimeTurnId = string(sdkPayload.runtime_turn_id);
@@ -201,6 +209,11 @@ export function assembleLiveToolEvidence(input: LiveEvidenceInputs): Partial<Liv
       event_id: resultEventId,
       payload: resultEvent ?? null,
     },
+    usage: usagePayload ? {
+      measurement_scope: string(usagePayload.measurement_scope),
+      model_calls: typeof usagePayload.model_calls === "number" ? usagePayload.model_calls : null,
+      tool_calls: typeof usagePayload.tool_calls === "number" ? usagePayload.tool_calls : null,
+    } : null,
     delivery_acknowledgement: acknowledgement ? {
       frame: "delivery_acknowledged",
       payload: acknowledgement.payload ?? null,
@@ -275,6 +288,12 @@ export function assertExactLiveToolEvidence(evidence: Partial<LiveToolEvidence>)
   }
 
   if (!turn_result.event_id || !turn_result.payload) fail("turn-result Event is missing");
+  // A turn that calls a tool makes at least two model calls: one that asks for
+  // the tool and one that answers after it. The recorded figure must cover both.
+  const usage = evidence.usage;
+  if (!usage || usage.measurement_scope !== "turn") fail("turn usage is not recorded as a whole-turn figure");
+  if ((usage?.model_calls ?? 0) < 2) fail(`a tool-calling turn recorded ${usage?.model_calls ?? "no"} model call(s)`);
+  if (usage?.tool_calls !== 1) fail("turn usage does not record the one tool call");
   const turnResultPayload = record(turn_result.payload);
   const turnResultData = eventData(turnResultPayload);
   if (

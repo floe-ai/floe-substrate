@@ -48,12 +48,14 @@ endings. A selected text range does not narrow that identity to the excerpt.
 Publication still checks those bytes; the tools do not promise that a working file
 cannot change after the snapshot.
 
-The Pi adapter records `usage` for each completed model response, including those
-that request tools. New records carry `measurement_scope: model_response` and a
-turn-local `response_index`; `usage_coverage` records the response count when
-`agent_end` is observed. Missing usage remains null. A turn with no coverage
-record has an incomplete measurement, even when some responses were recorded.
-Older usage records contain only the final response and cannot establish a total.
+The floe-runtime adapter records one `usage` record per turn. floe-runtime sums
+input, output, cache-read and cache-write tokens across every model call in the
+turn, including calls that only request tools, and the record carries
+`measurement_scope: turn` with `model_calls`, `tool_calls` and the summed
+`tokens`. The raw runtime usage, including each call in `modelCalls`, is kept
+alongside. A record whose runtime does not report a model call count is labelled
+`last_model_call`, and a turn with no usage is `unmeasured`; neither is ever
+presented as a whole-turn figure.
 
 Cancellation is runtime state, not an actor instruction. The direct conversation
 client invokes `runtime.delivery.cancel` for one exact active response through the

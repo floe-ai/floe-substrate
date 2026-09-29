@@ -22,6 +22,7 @@ import type { EmittedEventSummary, SubstrateTurnAnchor } from "../runtime-core/i
 import { createDirectSubstrateTools } from "./floe-direct-tools.js";
 import type { SubstrateSessionHandle } from "../runtime-core/substrate-tool-definitions.js";
 import { TurnFailedError } from "./turn-failed-error.js";
+import { turnUsage } from "./turn-usage.js";
 
 type FloeTurn = {
   runtime_turn_id: string;
@@ -510,7 +511,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
   private async recordUsage(context: RuntimeContext, turn: FloeTurn, result: RunResult): Promise<void> {
     await this.appendTelemetry(context, turn, "visible_output", { text: turn.visible_output });
     await this.appendTelemetry(context, turn, "usage", {
-      measurement_scope: "turn",
+      ...turnUsage(result.usage),
       usage: result.usage ?? null,
       stop_reason: result.stopReason,
       elapsed_ms: result.elapsedMs,
