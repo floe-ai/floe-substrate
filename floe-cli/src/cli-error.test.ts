@@ -8,7 +8,8 @@ import { promisify } from "node:util";
 import { createRequire } from "node:module";
 import { afterEach, describe, expect, it } from "vitest";
 import YAML from "yaml";
-import { defaultConfig } from "./config.js";
+import { defaultConfig, type LocalConfig } from "./config.js";
+import { isPidRunning, readRecords, SERVICE_NAMES, stopService } from "./process-manager.js";
 
 const runFile = promisify(execFile);
 const cleanup: Array<() => Promise<void> | void> = [];
@@ -35,6 +36,16 @@ function config(path: string, busUrl = "http://127.0.0.1:9"): string {
   const configPath = join(path, "config.yaml");
   writeFileSync(configPath, YAML.stringify(value), "utf8");
   return configPath;
+}
+
+/** `floe start` spawns real services; stop every one it recorded, and prove none survived. */
+function stopsWhatItStarts(configPath: string): void {
+  cleanup.push(() => {
+    const loaded = YAML.parse(readFileSync(configPath, "utf8")) as LocalConfig;
+    const pids = Object.values(readRecords(configPath, loaded)).map((record) => record!.pid);
+    for (const service of [...SERVICE_NAMES].reverse()) stopService(configPath, loaded, service);
+    expect(pids.filter(isPidRunning), "services left running by the test").toEqual([]);
+  });
 }
 
 async function run(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
@@ -107,6 +118,7 @@ describe("CLI terminal failure boundary", () => {
     const port = typeof address === "object" && address ? address.port : 0;
     const root = home();
     const configPath = config(root, `http://127.0.0.1:${port}`);
+    stopsWhatItStarts(configPath);
 
     const result = await run(["--config", configPath, "start"]);
 
@@ -128,6 +140,7 @@ describe("CLI terminal failure boundary", () => {
     const port = typeof address === "object" && address ? address.port : 0;
     const root = home();
     const configPath = config(root, `http://127.0.0.1:${port}`);
+    stopsWhatItStarts(configPath);
 
     const result = await run(["--config", configPath, "start"]);
 
