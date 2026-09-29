@@ -151,6 +151,7 @@ describe("FloeRuntimeAdapter engine tools", () => {
       bridge_id: "bridge:test", engine_account: { label: "tester", host: "https://github.com" }, engine_tool_operation_ids: ops,
       bus: {
         async getContext() { return null; },
+        async listContextEvents() { return { events: [], next_cursor: null }; },
         async recordRuntimeTurnResult() { return { request_resolved: false, result_event: { event_id: "result-1" } }; },
         async appendRuntimeTelemetry() {},
       },
@@ -218,6 +219,7 @@ describe("FloeRuntimeAdapter engine tools", () => {
       engine_tool_operation_ids: ["engine.tool.filesystem.read"],
       bus: {
         async getContext() { return null; },
+        async listContextEvents() { return { events: [], next_cursor: null }; },
         async recordRuntimeTurnResult() { return { request_resolved: false, result_event: { event_id: "result-1" } }; },
         async appendRuntimeTelemetry() {},
         evaluateRuntimeToolCall: evaluate,

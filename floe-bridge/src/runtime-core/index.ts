@@ -1,6 +1,13 @@
 export { SUBSTRATE_GUIDANCE, buildSystemPrompt, renderDestinationContext } from "./guidance.js";
 export { deliveryToPrompt, eventContentToPrompt, eventAttachments } from "./delivery-prompt.js";
 export type { EventAttachment } from "./delivery-prompt.js";
+export {
+  CONTEXT_CONTINUITY_TOKEN_BUDGET,
+  continuityTokenUpperBound,
+  loadContextContinuity,
+  renderContextContinuity,
+} from "./context-continuity.js";
+export type { ContextContinuityProjection } from "./context-continuity.js";
 export { renderHookInjections } from "./hook-injections.js";
 export { toNeutralRef, fromNeutralRef, toNeutralEndpoint } from "./neutral-ref.js";
 export type { NeutralEndpoint } from "./neutral-ref.js";

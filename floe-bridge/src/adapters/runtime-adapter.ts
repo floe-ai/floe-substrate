@@ -46,5 +46,7 @@ export interface RuntimeAdapter {
   forceRetireDelivery?(deliveryId: string): Promise<RuntimeCancellationResult | null>;
   /** A pushed answer or invalidation for an approval a tool call may be waiting on. */
   approvalChanged?(approvalRequestId: string): void;
+  /** Retire runtime state after the Bus pushes a canonical Context-history change. */
+  contextHistoryChanged?(contextId: string): Promise<void>;
   dispose?(reason?: HookPayload<"SessionEnd">["reason"]): Promise<void>;
 }
