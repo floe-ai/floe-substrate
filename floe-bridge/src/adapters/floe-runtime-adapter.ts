@@ -10,10 +10,11 @@
  * substrate tools are direct SDK tools.
  */
 import { randomUUID } from "node:crypto";
-import { COPILOT_BUILTIN_TOOL_MANIFEST, CopilotRuntime, copilotToolCatalogForModel } from "floe-runtime/adapters/copilot";
+import { COPILOT_BUILTIN_TOOL_MANIFEST, copilotToolCatalogForModel } from "floe-runtime/adapters/copilot";
 import type {
   ActivityEvent,
   CopilotPermissionRequest,
+  CopilotRuntime,
   CopilotRuntimeOptions,
   HostTool,
   PermissionPolicyDecision,
@@ -30,11 +31,12 @@ import { createDirectSubstrateTools } from "./floe-direct-tools.js";
 import type { SubstrateSessionHandle } from "../runtime-core/substrate-tool-definitions.js";
 import { TurnFailedError } from "./turn-failed-error.js";
 import { turnUsage } from "./turn-usage.js";
-import { copilotEnvironment, createCopilotAccount } from "../engines/copilot.js";
+import { createCopilotAccount, createCopilotRuntime } from "../engines/copilot.js";
 import type { EngineAccount } from "../engines/engine-control.js";
 import { EngineToolGate } from "./engine-tool-gate.js";
 
-type RuntimeFactory = (options: Pick<CopilotRuntimeOptions, "permissionPolicy">) => CopilotRuntime;
+export type RuntimeFactory = (options: Pick<CopilotRuntimeOptions, "permissionPolicy" | "expectedAccount">) => CopilotRuntime;
+type EngineAccountRef = NonNullable<RuntimeContext["engine_account"]>;
 
 /** The pinned manifest's built-ins, in the model's catalog, that the Actor's granted operations may use. */
 export function grantedBuiltinTools(
@@ -82,6 +84,8 @@ type FloeTurn = {
 
 type FloeSession = {
   runtime: CopilotRuntime;
+  /** The readiness account this runtime was built to run as. */
+  account: EngineAccountRef;
   /** SDK sessionId once run() has started a turn; null until the first turn. */
   sessionId: string | null;
   endpointId: string;
@@ -94,6 +98,10 @@ type FloeSession = {
   context?: RuntimeContext;
   activeTurn?: FloeTurn;
 };
+
+function sameAccount(a: EngineAccountRef, b: EngineAccountRef): boolean {
+  return a.label.toLowerCase() === b.label.toLowerCase() && (a.host ?? "") === (b.host ?? "");
+}
 
 function recordToolActivity(turn: FloeTurn, entry: WorkLogToolEntry): void {
   const existing = entry.call_id ? turn.tool_activity.find(activity => activity.call_id === entry.call_id) : undefined;
@@ -123,10 +131,20 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
   private readonly sessions = new Map<string, FloeSession>();
   private readonly runtimeFactory: RuntimeFactory;
   private readonly toolGate = new EngineToolGate();
-  constructor(options?: { runtimeFactory?: RuntimeFactory }) {
-    // The SDK runtime inherits no credential variables from Floe's environment.
-    this.runtimeFactory = options?.runtimeFactory
-      ?? ((runtimeOptions) => new CopilotRuntime({ ...runtimeOptions, clientOptions: { env: copilotEnvironment() } }));
+  /** Present only on the production engine; a unit-test runtime has no account to sign in to. */
+  readonly createEngineAccount?: () => EngineAccount;
+  /**
+   * Production gives Floe's Copilot folder and gets the real engine. A unit
+   * test gives a stand-in runtime instead; it can never also be a real engine.
+   */
+  constructor(options: { copilotHome: string } | { runtimeFactory: RuntimeFactory }) {
+    if ("copilotHome" in options) {
+      const home = options.copilotHome;
+      this.runtimeFactory = (runtimeOptions) => createCopilotRuntime(home, runtimeOptions);
+      this.createEngineAccount = () => createCopilotAccount(home);
+    } else {
+      this.runtimeFactory = options.runtimeFactory;
+    }
   }
 
   approvalChanged(approvalRequestId: string): void {
@@ -145,10 +163,6 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       workspaceLocator: context.workspace_locator ?? null,
       request,
     });
-  }
-
-  createEngineAccount(): EngineAccount {
-    return createCopilotAccount();
   }
 
   private beginCancellation(session: FloeSession, turn: FloeTurn): void {
@@ -448,10 +462,21 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
     // floe-runtime via continuation.sessionId on run().
     const contextId = bundle.context_id ?? bundle.events[0]?.context_id ?? "no-context";
     const key = `${bundle.endpoint_id}:${contextId}`;
+    const account = context.engine_account;
+    if (!account) {
+      throw Object.assign(new Error("Copilot readiness did not report a signed-in account for this turn."), { code: "engine_account_unknown" });
+    }
     const existing = this.sessions.get(key);
-    if (existing) {
+    if (existing && sameAccount(existing.account, account)) {
       existing.context = context;
       return existing;
+    }
+    if (existing) {
+      // Readiness now reports a different account; the old session never runs again.
+      this.sessions.delete(key);
+      void existing.runtime.close().catch((err) => {
+        console.error("[bridge] floe-runtime close failed", { endpoint_id: existing.endpointId, error: String(err) });
+      });
     }
 
     const session = {
@@ -462,9 +487,11 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       directTools: [],
       offeredTools: null,
       context,
+      account,
     } as Omit<FloeSession, "runtime"> as FloeSession;
     const runtime = this.runtimeFactory({
       permissionPolicy: (request) => this.decideToolCall(session, request),
+      expectedAccount: account,
     });
     session.runtime = runtime;
     const toolHandle: SubstrateSessionHandle = {

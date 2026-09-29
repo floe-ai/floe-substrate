@@ -1,12 +1,12 @@
 /**
- * Pause (A3) and NodeExecution state pushes (A4), proved against the real
- * pinned Copilot CLI through the real Bus, Bridge daemon and runtime adapter.
+ * Pause (A3) and NodeExecution state pushes (A4): Floe's side, with a fake engine.
  *
- * The CLI runs with a local scripted model, so no account is needed and the
- * test decides when a model call answers, fails, or stays open. Every wait is
- * driven by a push on a real Workspace socket or by the model server itself.
+ * The Bus, Bridge daemon, runtime adapter and CopilotRuntime are real; the
+ * engine is a scripted stand-in (test-support/fake-copilot-engine.ts), so the
+ * test decides when a model call answers, fails, or stays open. A real
+ * engine's interrupt of a real turn is proved by the release guard instead.
+ * Every wait is driven by a push on a real Workspace socket or by the engine.
  */
-import http from "node:http";
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,73 +15,25 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import YAML from "yaml";
 import WebSocket from "ws";
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
-import { CopilotClient } from "@github/copilot-sdk";
-import { CopilotRuntime } from "floe-runtime/adapters/copilot";
 
 import { defaultConfig } from "./config.js";
 import { createBusServer } from "./server.js";
 import { localProductWorkspacePolicy } from "./local-product-policy.js";
 import { BridgeDaemon } from "../../floe-bridge/src/daemon.js";
 import { defaultConfig as bridgeConfig } from "../../floe-bridge/src/config.js";
-import { FloeRuntimeAdapter } from "../../floe-bridge/src/adapters/floe-runtime-adapter.js";
-import { copilotEnvironment } from "../../floe-bridge/src/engines/copilot.js";
 import { EngineControl } from "../../floe-bridge/src/engines/engine-control.js";
+import { CopilotRuntime } from "floe-runtime/adapters/copilot";
+import { fakeCopilotEngine, readyFakeEngine } from "./test-support/fake-copilot-engine.js";
 
-const WS_ID = "workspace:scope-pause-real";
+const WS_ID = "workspace:scope-pause-fake";
 const OTHER_WS = "workspace:scope-pause-other";
-const BRIDGE = "bridge:scope-pause-real";
-const HOST_TOKEN = `scope-pause-real-host-${"h".repeat(40)}`;
+const BRIDGE = "bridge:scope-pause-fake";
+const HOST_TOKEN = `scope-pause-fake-host-${"h".repeat(40)}`;
 const MODEL = "gpt-4.1";
 const WAIT = 90_000;
 
 type Handle = Awaited<ReturnType<typeof createBusServer>>;
 type Push = { type: string; payload: any; cursor?: string };
-type Reply = "answer" | "hold" | "fail";
-
-/** An OpenAI-compatible model whose calls answer, fail, or stay open, in the order scripted. */
-function scriptedModel() {
-  const events = new EventEmitter();
-  const plan: Reply[] = [];
-  const bodies: string[] = [];
-  let held: http.ServerResponse | null = null;
-  const server = http.createServer((req, res) => {
-    let body = "";
-    req.on("data", (chunk) => { body += chunk; });
-    req.on("end", () => {
-      const request = JSON.parse(body || "{}");
-      bodies.push(body);
-      const reply = plan.shift() ?? "answer";
-      events.emit("request", reply);
-      if (reply === "fail") {
-        res.writeHead(400, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: { message: "scripted failure", type: "invalid_request_error" } }));
-        return;
-      }
-      const chunk = (choice: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
-        `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 1, model: request.model, choices: [{ index: 0, ...choice }], ...extra })}\n\n`;
-      res.writeHead(200, { "content-type": "text/event-stream" });
-      res.write(chunk({ delta: { role: "assistant", content: "" }, finish_reason: null }));
-      if (reply === "hold") {
-        held = res;
-        res.on("close", () => { if (!res.writableEnded) events.emit("aborted"); });
-        events.emit("held");
-        return;
-      }
-      res.write(chunk({ delta: { content: "done" }, finish_reason: null }));
-      res.write(chunk({ delta: {}, finish_reason: "stop" }, { usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
-      res.end("data: [DONE]\n\n");
-    });
-  });
-  return { server, events, plan, bodies, heldResponse: () => held };
-}
-
-function readyEngine() {
-  const state = {
-    engine: "copilot", phase: "ready", authentication: "signed_in", access: "entitled", reachability: "reachable",
-    action: null, revision: 1, checked_at: new Date().toISOString(), message: "Ready.",
-  } as any;
-  return Object.assign(new EventEmitter(), { currentState: () => state, check: async () => state });
-}
 
 /** A Workspace socket that keeps every push and resolves waits as pushes arrive. */
 class Socket {
@@ -153,11 +105,11 @@ function once(events: EventEmitter, name: string): Promise<unknown> {
   });
 }
 
-describe.runIf(process.platform === "win32")("Scope pause and node pushes through the real pinned Copilot CLI", () => {
+describe("Scope pause and node pushes, Floe's side with a fake engine", () => {
   let root: string;
   let handle: Handle;
   let daemon: BridgeDaemon;
-  let model: ReturnType<typeof scriptedModel>;
+  let model: ReturnType<typeof fakeCopilotEngine>;
   let wsUrl: string;
   let token: string;
   let otherToken: string;
@@ -166,14 +118,12 @@ describe.runIf(process.platform === "win32")("Scope pause and node pushes throug
   let socket: Socket;
 
   beforeAll(async () => {
-    root = mkdtempSync(join(tmpdir(), "floe-scope-pause-real-"));
+    root = mkdtempSync(join(tmpdir(), "floe-scope-pause-fake-"));
     const workspace = join(root, "workspace");
     const other = join(root, "other");
     mkdirSync(workspace, { recursive: true });
     mkdirSync(other, { recursive: true });
-    model = scriptedModel();
-    await new Promise<void>((resolve) => model.server.listen(0, "127.0.0.1", resolve));
-    const modelUrl = `http://127.0.0.1:${(model.server.address() as any).port}`;
+    model = fakeCopilotEngine();
 
     const busHome = join(root, "bus");
     mkdirSync(busHome);
@@ -187,7 +137,7 @@ describe.runIf(process.platform === "win32")("Scope pause and node pushes throug
     for (const [id, locator] of [[WS_ID, workspace], [OTHER_WS, other]] as const) {
       handle.store.workspaceIdentityStore.restoreWorkspace({
         snapshot: { workspace_id: id, name: id, creation_kind: "created", source_workspace_id: null, created_at: at, updated_at: at },
-        binding: { host_id: handle.store.localHostId, platform: "windows", locator, init_authorized: true },
+        binding: { host_id: handle.store.localHostId, platform: process.platform === "win32" ? "windows" : "posix", locator, init_authorized: true },
       });
       const admitted = await handle.app.inject({ method: "POST", url: "/v1/identities",
         headers: { authorization: ["Be", "arer ", HOST_TOKEN].join("") },
@@ -251,26 +201,14 @@ describe.runIf(process.platform === "win32")("Scope pause and node pushes throug
     bridge.bus.ws_base_url = address.replace("http:", "ws:");
     bridge.bridge.bus_url = bridge.bus.ws_base_url;
     bridge.bridge.runtime_adapter = "floe-runtime";
+    bridge.bridge.data_dir = join(root, "bridge");
     daemon = new BridgeDaemon(join(root, "bridge-config.yaml"), bridge, {
       bridge_id: BRIDGE,
       transport_authority: { audience: "bridge_service", bearer_token: bridgeToken },
-      engines: new EngineControl(new Map([["copilot", readyEngine() as any]]), null),
-    });
-    const copilotHome = join(root, "copilot-home");
-    const provider = { type: "openai", baseUrl: `${modelUrl}/v1`, apiKey: "local-test" };
-    (daemon as any).adapter = new FloeRuntimeAdapter({
-      runtimeFactory: (options) => new CopilotRuntime({
-        ...options,
-        clientOptions: { env: copilotEnvironment() },
-        clientFactory: (clientOptions: any) => {
-          const client: any = new CopilotClient({ ...clientOptions, baseDirectory: copilotHome, useLoggedInUser: false });
-          const create = client.createSession.bind(client);
-          const resume = client.resumeSession.bind(client);
-          client.createSession = (sessionConfig: any) => create({ ...sessionConfig, provider });
-          client.resumeSession = (id: string, sessionConfig: any) => resume(id, { ...sessionConfig, provider });
-          return client;
-        },
-      } as any),
+      engines: new EngineControl(new Map([["copilot", readyFakeEngine() as any]]), null),
+      stand_in_engine: (options) => new CopilotRuntime({
+        ...options, client: model.client as any, clientOptions: { baseDirectory: "unused-by-fake-engine" },
+      }),
     });
     await daemon.start();
     await socket.until((push) => push.type === "bridge_connected", "bridge_connected");
@@ -284,7 +222,6 @@ describe.runIf(process.platform === "win32")("Scope pause and node pushes throug
     await step("socket", () => socket?.close());
     await step("bridge", () => daemon?.stop());
     await step("bus", async () => { try { await handle?.app.close(); } catch {} });
-    model?.server.close();
     rmSync(root, { recursive: true, force: true });
   }, 120_000);
 
@@ -356,9 +293,9 @@ describe.runIf(process.platform === "win32")("Scope pause and node pushes throug
     }
   }
 
-  it("A3: pause interrupts the real turn now, holds queued work, and resume reruns only the interrupted node", async () => {
-    model.plan.push("answer", "hold");
-    const requestsBefore = model.bodies.length;
+  it("A3: pause interrupts the running turn now, holds queued work, and resume reruns only the interrupted node", async () => {
+    model.script.push("answer", "hold");
+    const requestsBefore = model.prompts.length;
     const held = once(model.events, "held");
     const { execution } = start("pause-proof");
     await held;
@@ -383,7 +320,7 @@ describe.runIf(process.platform === "win32")("Scope pause and node pushes throug
     const paused = await socket.until((push) => push.type === "scope_execution_paused"
       && push.payload.execution.execution_id === execution.execution_id, "scope_execution_paused");
     expect(paused.payload.execution.status).toBe("paused");
-    expect(model.bodies.length).toBe(requestsBefore + 2);
+    expect(model.prompts.length).toBe(requestsBefore + 2);
 
     const interrupted = handle.store.scopeExecutionStore.getNodeExecution(interruptedNodeId)!;
     const firstAttempts = handle.store.scopeExecutionStore.listAttempts(interruptedNodeId);
@@ -391,7 +328,7 @@ describe.runIf(process.platform === "win32")("Scope pause and node pushes throug
     expect(firstAttempts).toEqual([expect.objectContaining({ status: "outcome_unknown" })]);
     expect(handle.store.scopeExecutionStore.listAttempts(completed.node_execution_id)).toHaveLength(1);
 
-    model.plan.push("answer");
+    model.script.push("answer");
     const resumedRequest = once(model.events, "request");
     const resumed = await control("scope.execution.resume", execution.execution_id, "resume-1");
     expect(resumed.state, JSON.stringify(resumed)).toBe("accepted");
@@ -408,8 +345,8 @@ describe.runIf(process.platform === "win32")("Scope pause and node pushes throug
       actor_runtime_binding_id: attempts[0]!.actor_runtime_binding_id,
     });
     expect(handle.store.scopeExecutionStore.listAttempts(completed.node_execution_id)).toHaveLength(1);
-    expect(model.bodies.length).toBe(requestsBefore + 3);
-    console.log("[A3] resumed turn mentions the interruption:", /interrupt|paused|outcome/i.test(model.bodies.at(-1)!));
+    expect(model.prompts.length).toBe(requestsBefore + 3);
+    console.log("[A3] resumed turn mentions the interruption:", /interrupt|paused|outcome/i.test(model.prompts.at(-1)!));
     console.log("[A3] interrupted attempt evidence:", JSON.stringify(firstAttempts[0]!.error));
     expectOnePushPerRevision(socket, execution.execution_id);
   }, 180_000);
@@ -418,7 +355,7 @@ describe.runIf(process.platform === "win32")("Scope pause and node pushes throug
     const outsider = await Socket.open(wsUrl, otherToken, OTHER_WS);
     const before = socket.cursor;
     await socket.close();
-    model.plan.push("answer", "fail", "fail", "fail", "fail", "fail", "fail");
+    model.script.push("answer", "fail", "fail", "fail", "fail", "fail", "fail");
     const { execution } = start("failure-proof");
     const live = await Socket.open(wsUrl, token, WS_ID, null);
     await live.whenever(() => {

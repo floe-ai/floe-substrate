@@ -23,7 +23,8 @@
  * silently substitute a pricier model: the pre-flight fails loudly and asks for
  * a deliberate re-pick.
  */
-import { CopilotRuntime } from "floe-runtime/adapters/copilot";
+import { createCopilotAccount, createCopilotRuntime } from "../../floe-bridge/src/engines/copilot.js";
+import { pointAtMachineLogin } from "../../floe-bridge/src/test-support/machine-copilot-login.js";
 
 /** The model the live tier pins. See the file header for how it was chosen. */
 export const LIVE_TIER_MODEL = "gpt-5-mini";
@@ -49,23 +50,32 @@ export function announceLiveTierDisabled(): void {
 }
 
 /**
- * Confirm the vendor CLI is reachable and the pinned model is genuinely
- * advertised, returning the model id to pin. Throws a loud, actionable error
+ * Prepare the Bridge's own Copilot folder for a live run and confirm, through
+ * the same readiness and runtime construction the Bridge uses, that it is
+ * signed in and advertises the pinned model. The folder gets this machine's
+ * existing login pointer (never a sign-in). Throws a loud, actionable error
  * otherwise — never silently skips and never silently substitutes a model.
  */
-export async function assertLiveRuntimeReady(): Promise<string> {
-  const runtime: any = new CopilotRuntime();
-  let models: Array<{ modelId: string; _meta?: { copilotEnablement?: string; copilotUsage?: string } }>;
+export async function assertLiveRuntimeReady(copilotFolder: string): Promise<string> {
+  let account: { label: string; host?: string };
   try {
-    models = await runtime.models(process.cwd());
+    pointAtMachineLogin(copilotFolder);
+    const readiness = await createCopilotAccount(copilotFolder).check();
+    if (readiness.phase !== "ready" || !readiness.account) throw new Error(readiness.message);
+    account = readiness.account;
   } catch (error) {
     throw new Error(
-      "Live runtime tier could not reach an authenticated Copilot SDK runtime.\n" +
+      "Live runtime tier could not find a signed-in, entitled Copilot account for Floe.\n" +
       `Underlying error: ${error instanceof Error ? error.message : String(error)}\n` +
-      "Sign in to the GitHub Copilot client on this machine so its supported runtime can " +
-      "authenticate itself; Floe brokers no model credential.\n" +
+      "Sign in with the official Copilot CLI on this machine; Floe brokers no model credential.\n" +
       OPT_OUT_HINT
     );
+  }
+
+  const runtime = createCopilotRuntime(copilotFolder, { expectedAccount: account });
+  let models: Array<{ modelId: string; _meta?: { copilotEnablement?: string; copilotUsage?: string } }>;
+  try {
+    models = await runtime.models(process.cwd()) as typeof models;
   } finally {
     await runtime.close().catch(() => {});
   }

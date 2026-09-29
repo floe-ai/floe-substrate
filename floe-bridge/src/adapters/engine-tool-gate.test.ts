@@ -148,7 +148,7 @@ describe("FloeRuntimeAdapter engine tools", () => {
     });
     const adapter = new FloeRuntimeAdapter({ runtimeFactory: () => runtime as any });
     const ctx = (ops: string[]) => ({
-      bridge_id: "bridge:test", engine_tool_operation_ids: ops,
+      bridge_id: "bridge:test", engine_account: { label: "tester", host: "https://github.com" }, engine_tool_operation_ids: ops,
       bus: {
         async getContext() { return null; },
         async recordRuntimeTurnResult() { return { request_resolved: false, result_event: { event_id: "result-1" } }; },
@@ -188,6 +188,7 @@ describe("FloeRuntimeAdapter engine tools", () => {
       async send() {},
       async disconnect() {},
       rpc: {
+        gitHubAuth: { async getStatus() { return { isAuthenticated: true, authType: "user", login: "tester", host: "https://github.com" }; } },
         permissions: {
           async configure() {},
           async setApproveAll() {},
@@ -209,10 +210,10 @@ describe("FloeRuntimeAdapter engine tools", () => {
     };
     const evaluate = vi.fn(async () => decision({ decision: "deny", refusal: { code: "tool_policy_denied", rule_id: "tool_grant_missing", reason: "no grant" } }));
     const adapter = new FloeRuntimeAdapter({
-      runtimeFactory: (options) => new CopilotRuntime({ ...options, client: client as any }),
+      runtimeFactory: (options) => new CopilotRuntime({ ...options, client: client as any, clientOptions: { baseDirectory: "unused-by-stand-in" } }),
     });
     await adapter.handleBundle({
-      bridge_id: "bridge:test",
+      bridge_id: "bridge:test", engine_account: { label: "tester", host: "https://github.com" },
       workspace_locator: workspace,
       engine_tool_operation_ids: ["engine.tool.filesystem.read"],
       bus: {

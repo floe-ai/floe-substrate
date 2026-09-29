@@ -261,12 +261,12 @@ export function assertExactLiveToolEvidence(evidence: Partial<LiveToolEvidence>)
   if (delivery.final_state !== "acknowledged") fail("final durable delivery state is not acknowledged");
   if (!runtime.turn_id || !runtime.sdk_session_id) fail("runtime turn or SDK session identity is missing");
 
-  if (
-    runtime.offered_tool_names.length !== ALL_TOOLS.length ||
-    ALL_TOOLS.some(tool => !runtime.offered_tool_names?.includes(tool))
-  ) {
+  if (ALL_TOOLS.some(tool => !runtime.offered_tool_names?.includes(tool))) {
     fail("not all direct tools were offered");
   }
+  // An Actor holds full engine tool access by default; nothing else may appear.
+  const unexpected = runtime.offered_tool_names.filter(tool => !ALL_TOOLS.includes(tool) && !tool.startsWith("builtin:"));
+  if (unexpected.length > 0) fail(`unexpected tools were offered: ${unexpected.join(", ")}`);
 
   if (record(delivery_acknowledgement.payload).delivery_id !== delivery.delivery_id) {
     fail("delivery acknowledgement does not reference the delivery");

@@ -6,6 +6,7 @@ import YAML from "yaml";
 import { defaultConfig } from "./config.js";
 import { createBusServer } from "./server.js";
 import { CAPABILITY_GRANT_OPERATION_IDS } from "./capability-grant-operations.js";
+import { NO_ACTOR_DEFINITION_REVISION } from "./actor-definition-operations.js";
 import { CredentialBrokerService, InMemoryCredentialBroker } from "./credential-broker.js";
 import { RUNTIME_CREDENTIAL_PURPOSE } from "./credential-operations.js";
 
@@ -27,7 +28,7 @@ async function fixture(mode: "interactive" | "unattended" = "unattended", publis
   const boundary = { kind: "workspace" as const, workspace_id: workspaceId };
   const principal = "principal:organiser";
   const grant = store.capabilityGrantStore.issueGrant({ principal_id: principal, boundary,
-    operation_ids: [...CAPABILITY_GRANT_OPERATION_IDS, "actor.definition.publish", "context.inspect", "artefact.inspect"],
+    operation_ids: [...CAPABILITY_GRANT_OPERATION_IDS, "actor.definition.publish", "actor.runtime-binding.create", "context.inspect", "artefact.inspect"],
     expires_at: expiry, issuer_id: "policy:test", evidence: [{ kind: "policy", ref: "test:delegation" }] });
   const actor = store.actorDefinitionStore.createActor({ workspace_id: workspaceId,
     created_by_principal_id: principal, definition: { label: "Reviewer", charter: "Review saved work", instructions: "Report evidence",
@@ -66,6 +67,33 @@ describe("authenticated collaborator permission operations", () => {
     expect((await f.invoke("actor.definition.publish", { expected_current_definition_revision_id: null }, {
       target: { kind: "actor_definition_revision", id: draft.actor_definition_revision_id }, expected: draft.semantic_digest,
     })).receipt.state).toBe("completed");
+  });
+
+  it("reports an unpublished Actor with the revision its operations accept", async () => {
+    const f = await fixture("unattended", false);
+    const boundary = f.boundary;
+    const resolved = f.store.resolveOperationResource({ kind: "actor", id: f.actor.actor.actor_id }, boundary);
+    expect(resolved?.ref.revision).toBe(NO_ACTOR_DEFINITION_REVISION);
+    const runtime = f.store.runtimeProfileStore.createProfile({
+      owner: { kind: "workspace", id: boundary.workspace_id }, created_by_principal_id: f.principal,
+      content: { label: "Copilot", backing_kind: "model", adapter_id: "copilot", configuration: {},
+        secret_ref_ids: [], required_capability_ids: [],
+        checkpoint_policy: { mode: "provider_neutral", schema_ref: "floe.runtime-checkpoint.v1" },
+        resource_policy: { max_concurrent_turns: 1 } },
+    });
+    const published = f.store.runtimeProfileStore.publishDraft({
+      runtime_profile_revision_id: runtime.draft.runtime_profile_revision_id,
+      expected_current_revision_id: null, changed_by_principal_id: f.principal,
+    });
+    const bound = await f.invoke("actor.runtime-binding.create", {
+      runtime_profile_revision_id: published.runtime_profile_revision_id, status: "resolved",
+    }, { expected: resolved!.ref.revision });
+    expect(bound, JSON.stringify(bound)).toMatchObject({ receipt: { state: "completed" } });
+    expect(f.store.runtimeProfileStore.getCurrentActorBinding(f.actor.actor.actor_id)?.runtime_profile_revision_id)
+      .toBe(published.runtime_profile_revision_id);
+    const delegated = await f.invoke("capability.grant.delegate", { expires_at: expiry, source_grant_id: f.grant.grant_id,
+      operation_ids: ["artefact.inspect"] }, { expected: resolved!.ref.revision });
+    expect(delegated.receipt.state, JSON.stringify(delegated.receipt.refusal)).toBe("completed");
   });
 
   it("refuses an unpublished expectation if another caller published the Actor in the meantime", async () => {

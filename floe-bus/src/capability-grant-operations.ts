@@ -1,4 +1,5 @@
 import type { ActorDefinitionStore } from "./actor-definitions.js";
+import { NO_ACTOR_DEFINITION_REVISION } from "./actor-definition-operations.js";
 import type { SqliteCapabilityGrantStore } from "./capability-grants.js";
 import type { SqliteSecretRefStore } from "./credential-broker.js";
 import { refusal, requireWorkspaceAuthorityId, type SemanticOperationDefinition } from "./operations.js";
@@ -32,7 +33,7 @@ export function capabilityGrantOperations(deps: Dependencies): SemanticOperation
   const delegate: SemanticOperationDefinition<any, any> = {
     ...common, operation_id: "capability.grant.delegate", required_grants: ["capability.grant.delegate"],
     title: "Delegate permitted access",
-    description: "Issue one Actor its own grant containing only the requested subset of one of your session's grants. Requires explicit delegation permission for that Actor. Source and delegation permission remain live dependencies; revoking either removes delegated access. Account purpose constraints are preserved. For an unpublished Actor, omit expected_resource_revision; otherwise supply its exact current_definition_revision_id. Choose the lifetime explicitly: until_revoked, or expires_at; it may not outlive the source or delegation permission. Add the returned grant ID to the recipient's Actor definition before publishing it; never copy another Actor's grant IDs.",
+    description: "Issue one Actor its own grant containing only the requested subset of one of your session's grants. Requires explicit delegation permission for that Actor. Source and delegation permission remain live dependencies; revoking either removes delegated access. Account purpose constraints are preserved. For an unpublished Actor, omit expected_resource_revision or supply its reported revision 'none'; otherwise supply its exact current_definition_revision_id. Choose the lifetime explicitly: until_revoked, or expires_at; it may not outlive the source or delegation permission. Add the returned grant ID to the recipient's Actor definition before publishing it; never copy another Actor's grant IDs.",
     effects: { mode: "write", reversibility: "reversible", external: false, secret_access: "reference" },
     target: { resource_kinds: ["actor"], expected_revision: "optional" },
     result: resultSchema({ grant: grantSchema, delegation: { type: "object", additionalProperties: false,
@@ -52,7 +53,8 @@ export function capabilityGrantOperations(deps: Dependencies): SemanticOperation
       if (!actor || actor.workspace_id !== workspaceId || actor.status !== "active") {
         return { state: "refused", refusal: refusal("delegation_actor_unavailable", "Select an active Actor in this Workspace.", false, null) };
       }
-      if (context.expected_resource_revision !== actor.current_definition_revision_id) {
+      const expected = context.expected_resource_revision === NO_ACTOR_DEFINITION_REVISION ? null : context.expected_resource_revision;
+      if (expected !== actor.current_definition_revision_id) {
         return { state: "refused", refusal: refusal("delegation_actor_changed", "The Actor changed. Inspect it before delegating access.", true, null) };
       }
       if ((input.until_revoked === true) === (input.expires_at !== undefined)) {

@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FloeRuntimeAdapter } from "../adapters/floe-runtime-adapter.js";
-import { copilotEnvironment, packagedCopilotCliPath } from "./copilot.js";
+import { copilotEnvironment, copilotHome, packagedCopilotCliPath } from "./copilot.js";
+import { defaultConfig } from "../config.js";
 
 const TOKENS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
 const saved = Object.fromEntries(TOKENS.map((name) => [name, process.env[name]]));
@@ -25,7 +26,7 @@ describe("the official Copilot CLI ships with Floe", () => {
       const result = spawnSync(cliPath!, ["--version"], {
         encoding: "utf8",
         timeout: 60_000,
-        env: { ...copilotEnvironment(), COPILOT_HOME: copilotHome },
+        env: copilotEnvironment(copilotHome),
       });
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toMatch(/\d+\.\d+\.\d+/);
@@ -38,9 +39,34 @@ describe("the official Copilot CLI ships with Floe", () => {
 describe("a token in Floe's environment never reaches the engine", () => {
   it("is removed from the environment the turn runtime starts Copilot with", () => {
     for (const name of TOKENS) process.env[name] = `leaked-${name}`;
-    const runtime = (new FloeRuntimeAdapter() as any).runtimeFactory();
-    const env = runtime.clientOptions.env as Record<string, string | undefined>;
-    for (const name of TOKENS) expect(env[name], name).toBeUndefined();
-    expect(env.PATH ?? env.Path).toBe(process.env.PATH ?? process.env.Path);
+    const home = mkdtempSync(join(tmpdir(), "floe-copilot-home-"));
+    try {
+      const runtime = (new FloeRuntimeAdapter({ copilotHome: home }) as any).runtimeFactory({ expectedAccount: { label: "tester", host: "https://github.com" } });
+      const env = runtime.clientOptions.env as Record<string, string | undefined>;
+      for (const name of TOKENS) expect(env[name], name).toBeUndefined();
+      expect(env.PATH ?? env.Path).toBe(process.env.PATH ?? process.env.Path);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("turns, readiness and sign-in share Floe's own Copilot folder", () => {
+  it("is the Bridge's data folder, never the user's own Copilot home", () => {
+    const floeHome = mkdtempSync(join(tmpdir(), "floe-home-"));
+    try {
+      const home = copilotHome(join(floeHome, "config.yaml"), defaultConfig(floeHome));
+      expect(home).toBe(join(floeHome, "bridge", "copilot"));
+      const adapter = new FloeRuntimeAdapter({ copilotHome: home }) as any;
+      const runtime = adapter.runtimeFactory({ expectedAccount: { label: "tester", host: "https://github.com" } });
+      expect(runtime.clientOptions.baseDirectory).toBe(home);
+      expect(runtime.clientOptions.env.COPILOT_HOME).toBe(home);
+      const account = adapter.createEngineAccount();
+      expect(account.clientOptions.baseDirectory).toBe(home);
+      expect(account.environment.COPILOT_HOME).toBe(home);
+      expect(existsSync(home)).toBe(true);
+    } finally {
+      rmSync(floeHome, { recursive: true, force: true });
+    }
   });
 });

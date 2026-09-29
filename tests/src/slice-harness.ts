@@ -26,6 +26,7 @@ import {
   type LiveToolCase,
   type LiveToolEvidence,
 } from "./live-evidence.js";
+import { assertLiveRuntimeReady } from "./live-runtime.js";
 
 /** One runtime-adapter tier the slice can be proven against. */
 export interface SliceTier {
@@ -121,6 +122,10 @@ export class SliceHarness {
         templates_dir: "./templates"
       }
     } as LocalConfig;
+
+    // A live tier runs the Bridge's own engine: its Copilot folder gets this
+    // machine's login pointer, and readiness must pass before anything starts.
+    if (this.tier.live) await assertLiveRuntimeReady(join(this.temp, "bridge", "copilot"));
 
     // Bring up Bus and Bridge through the exact product start sequence: the Bus
     // boots with the broker-owned host-control credential, and the Bridge with a

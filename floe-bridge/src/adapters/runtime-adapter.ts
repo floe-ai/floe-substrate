@@ -21,6 +21,8 @@ export type RuntimeContext = {
   operation_authority_session?: RuntimeOperationAuthoritySession;
   /** Engine tool operations the Actor's live grants cover; the only built-ins offered. */
   engine_tool_operation_ids?: string[];
+  /** The account the engine's readiness admitted this turn under; the turn must run as it. */
+  engine_account?: { label: string; host?: string };
 };
 
 export type RuntimeCancellationResult =

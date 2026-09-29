@@ -22,8 +22,11 @@
  *      build cannot ship);
  *   2. assemble the single package: bundle each service, generate package.json;
  *   3. GUARD: pack it, install it globally into an isolated prefix from a working
- *      directory unrelated to this checkout, and start Floe from that install —
- *      refuse to publish an artifact that installs but cannot start;
+ *      directory unrelated to this checkout, start Floe from that install, and
+ *      complete one real turn through its own Bridge as this machine's Copilot
+ *      account, then pause a second real turn mid-command and resume it —
+ *      refuse to publish an artifact that installs but cannot start, cannot run
+ *      a turn, or cannot interrupt and resume one;
  *   4. publish (only with --publish): commit the generated artifact to a clone of
  *      the distribution repo, tag it v<version>, and push both. A version that
  *      is already tagged there is refused before anything is built.
@@ -50,7 +53,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
@@ -317,7 +320,7 @@ function assemble(version) {
 
 // ── 5. guard: install the artifact and prove it starts ───────────────────────
 
-function guard(version) {
+async function guard(version) {
   log("guard", "packing, installing into an isolated prefix, and starting Floe from that install");
   const workRoot = mkdtempSync(join(tmpdir(), "floe-release-guard-"));
   const prefix = join(workRoot, "prefix");
@@ -326,8 +329,18 @@ function guard(version) {
   mkdirSync(prefix, { recursive: true });
   mkdirSync(home, { recursive: true });
   mkdirSync(neutralCwd, { recursive: true });
-  // The engine's own account home, isolated like the Floe home: the guard must
-  // never read or change the operator's Copilot sign-in.
+  // A release must complete a real turn, built by the installed Bridge exactly
+  // as a user's is. The install's own Copilot folder gets this machine's login
+  // pointer (which account, never a token and never a sign-in); a machine with
+  // no Copilot login cannot release.
+  const { pointAtMachineLogin } = await import(
+    pathToFileURL(join(repoRoot, "floe-bridge", "dist", "test-support", "machine-copilot-login.js")).href
+  );
+  const account = pointAtMachineLogin(join(home, "bridge", "copilot"));
+  log("guard", `the installed Bridge will run its real turn as ${account.label}`);
+
+  // Anything else that looks for a Copilot home gets an isolated one: the guard
+  // must never change the operator's Copilot sign-in.
   process.env.COPILOT_HOME = join(workRoot, "copilot-home");
   mkdirSync(process.env.COPILOT_HOME, { recursive: true });
 
@@ -421,8 +434,8 @@ function guard(version) {
     requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after `floe start`" });
     requireCopilotCli(home);
     log("guard", "PASS — the official Copilot CLI shipped with the artifact and runs from the install");
-    guardSurface({ workRoot, tarball: join(workRoot, tarball), configPath, port, neutralCwd, home });
-    log("guard", "PASS — a surface depending on the artifact used the identity agent and saw engine readiness");
+    guardSurface({ workRoot, tarball: join(workRoot, tarball), configPath, port, neutralCwd, home, account });
+    log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label}, and a real turn paused mid-command and resumed`);
     guardUpgradeWhileRunning({ tarball: join(workRoot, tarball), prefix, port, neutralCwd, home });
     requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after npm removed and reinstalled the package" });
     log("guard", "PASS — npm removed and reinstalled the package while Floe kept serving from its stage");
@@ -525,7 +538,7 @@ function guardUpgradeWhileRunning({ tarball, prefix, port, neutralCwd, home }) {
  * way a real surface does, verify its public Actor contract, and drive the
  * identity agent through `floe/identity`.
  */
-function guardSurface({ workRoot, tarball, configPath, port, neutralCwd, home }) {
+function guardSurface({ workRoot, tarball, configPath, port, neutralCwd, home, account }) {
   const surfaceDir = join(workRoot, "surface");
   mkdirSync(surfaceDir, { recursive: true });
   writeFileSync(join(surfaceDir, "package.json"), JSON.stringify({
@@ -576,7 +589,7 @@ const response = await fetch("http://127.0.0.1:${port}/v1/pending-responses?work
 });
 if (response.status !== 200) throw new Error("the pushed bearer was refused by the bus: " + response.status);
 step("bearer pushed and accepted by the bus (expires " + ready.expires_at + ")");
-identity.close();
+// The bearer lives as long as this identity connection; it stays open for the turn.
 
 const { connectEngines } = await import("${PACKAGE_NAME}/engines");
 const engines = await connectEngines({ surface: "release-guard", configPath: ${JSON.stringify(configPath)} });
@@ -589,11 +602,151 @@ const copilot = settled(engines.state.copilot) ? engines.state.copilot : await n
 });
 step("engine copilot: " + copilot.phase + " (" + copilot.message + ")");
 engines.close();
+if (copilot.phase !== "ready" || copilot.account?.label?.toLowerCase() !== ${JSON.stringify(account.label.toLowerCase())}) {
+  throw new Error("the installed Bridge's engine is not ready as ${account.label}: " + JSON.stringify(copilot));
+}
+
+// One real turn through the installed Bridge: the default Floe Actor answers a
+// message. The engine refuses any session not signed in as the readiness
+// account, so a completed turn ran as ${account.label}.
+const bus = "http://127.0.0.1:${port}";
+const auth = { authorization: "Bearer " + ready.bearer_token, "content-type": "application/json" };
+const invoke = async (body) => {
+  const response = await fetch(bus + "/v1/workspaces/" + encodeURIComponent(joined.workspace_id) + "/operations/invoke", {
+    method: "POST", headers: auth, body: JSON.stringify(body),
+  });
+  const json = await response.json();
+  if (response.status !== 200 || json.receipt?.state !== "completed") throw new Error(body.operation_id + " failed: " + JSON.stringify(json));
+  return json.receipt.result;
+};
+const floe = "actor:" + joined.workspace_id + ":floe";
+const context = (await invoke({
+  operation_id: "context.create", operation_version: "1", input_schema_version: "1", idempotency_key: "guard-context",
+  input: { participants: [{ participant_id: floe }] },
+})).context;
+const socket = new WebSocket(bus.replace("http:", "ws:") + "/v1/events/stream");
+const pushes = [];
+let arrived = () => {};
+let closed = null;
+socket.addEventListener("message", (message) => { pushes.push(JSON.parse(String(message.data))); arrived(); });
+socket.addEventListener("close", (event) => { closed = "the event stream closed (" + event.code + " " + event.reason + ")"; arrived(); });
+await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", reject, { once: true }); });
+socket.send(JSON.stringify({ type: "authenticate", bearer_token: ready.bearer_token, workspace_id: joined.workspace_id }));
+const until = (match, label, ms) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error("no " + label + " within " + ms / 1000 + "s")), ms);
+  const look = () => {
+    const found = pushes.find(match);
+    if (found) { clearTimeout(timer); arrived = () => {}; resolve(found); }
+    else if (closed) { clearTimeout(timer); reject(new Error(closed + " before " + label + "; received " + JSON.stringify(pushes.map((push) => push.type)))); }
+  };
+  arrived = look;
+  look();
+});
+await until((push) => push.type === "caught_up", "stream catch-up", 15000);
+const sent = await invoke({
+  operation_id: "context.communication.emit", operation_version: "1", input_schema_version: "2",
+  target: { kind: "context", id: context.context_id }, expected_resource_revision: String(context.state_revision),
+  idempotency_key: "guard-turn",
+  input: { event_type: "message", recipient_participant_id: floe, content: { text: "Reply with the single word: ready" }, response_expected: true },
+});
+step("asked the default Floe Actor for a reply");
+const result = await until((push) => push.type === "event_submitted"
+  && push.payload?.event?.content?.data?.origin === "runtime_turn_result"
+  && push.payload.event.content.data.cause_event_id === sent.event_ref.id, "turn result", 180000);
+const turn = result.payload.event.content;
+if (turn.data.outcome !== "completed") throw new Error("the real turn did not complete: " + JSON.stringify(turn));
+step("real turn completed as ${account.label}: " + JSON.stringify(turn.text.slice(0, 80)));
+
+// Pause a real turn mid-flight, then resume it. The Floe Actor runs one Scope
+// node whose shell command writes a marker, waits, then writes a second file.
+// The gate pauses the moment the marker appears, so the engine is inside the
+// command. A real interrupt stops the command, so the second file never
+// appears; the rerun after resume finds the marker and finishes at once.
+const { existsSync, watch } = await import("node:fs");
+const { join } = await import("node:path");
+const started = join(${JSON.stringify(folder)}, "guard-pause-started.txt");
+const finished = join(${JSON.stringify(folder)}, "guard-pause-finished.txt");
+const HOLD_SECONDS = 20;
+const command = process.platform === "win32"
+  ? "if (Test-Path '" + started + "') { 'second run' } else { Set-Content -Path '" + started + "' -Value started; Start-Sleep -Seconds " + HOLD_SECONDS + "; Set-Content -Path '" + finished + "' -Value finished }"
+  : "if [ -f '" + started + "' ]; then echo second run; else echo started > '" + started + "'; sleep " + HOLD_SECONDS + "; echo finished > '" + finished + "'; fi";
+const invokeAs = async (state, body) => {
+  const response = await fetch(bus + "/v1/workspaces/" + encodeURIComponent(joined.workspace_id) + "/operations/invoke", {
+    method: "POST", headers: auth, body: JSON.stringify({ operation_version: "1", input_schema_version: "1", ...body }),
+  });
+  const json = await response.json();
+  if (response.status !== 200 || json.receipt?.state !== state) throw new Error(body.operation_id + " failed: " + JSON.stringify(json));
+  return json.receipt.result;
+};
+const scope = (await invokeAs("completed", { operation_id: "scope.create", idempotency_key: "guard-scope", input: { title: "Release guard" } })).scope;
+const ingress = (await invokeAs("completed", { operation_id: "context.create", idempotency_key: "guard-ingress",
+  input: { scope_id: scope.scope_id, title: "Release guard input", participants: [] } })).context;
+const draft = (await invokeAs("completed", { operation_id: "scope.composition.draft.create", idempotency_key: "guard-draft",
+  target: { kind: "scope", id: scope.scope_id }, expected_resource_revision: "none",
+  input: { content: {
+    nodes: [
+      { node_id: "ingress", kind: "event", config: { event_type: "work.requested" }, context_policy: { mode: "fixed", context_id: ingress.context_id } },
+      { node_id: "worker", kind: "actor", resource_id: floe, activation: { mode: "per_delivery" }, context_policy: { mode: "new_per_execution" } },
+    ],
+    ports: [
+      { port_id: "ingress:out", node_id: "ingress", name: "work", direction: "output", event_types: ["work.requested"] },
+      { port_id: "worker:in", node_id: "worker", name: "work", direction: "input", event_types: ["work.requested"], min_count: 1 },
+      { port_id: "worker:out", node_id: "worker", name: "result", direction: "output", event_types: ["work.completed"] },
+    ],
+    edges: [{ edge_id: "ingress-to-worker", source_port_id: "ingress:out", target_port_id: "worker:in" }],
+  } } })).revision;
+const draftTarget = { kind: "scope_composition_revision", id: draft.revision_id };
+const impact = await invokeAs("completed", { operation_id: "scope.composition.impact.inspect", idempotency_key: "guard-impact",
+  target: draftTarget, expected_resource_revision: draft.semantic_digest, input: {} });
+await invokeAs("completed", { operation_id: "scope.composition.publish", idempotency_key: "guard-publish",
+  target: draftTarget, expected_resource_revision: draft.semantic_digest,
+  input: { expected_current_published_revision_id: null, expected_impact_digest: impact.impact_digest } });
+const markerSeen = new Promise((resolve, reject) => {
+  const timer = setTimeout(() => { watcher.close(); reject(new Error("the Actor never started the command within 180s")); }, 180000);
+  const watcher = watch(${JSON.stringify(folder)}, () => {
+    if (!existsSync(started)) return;
+    clearTimeout(timer); watcher.close(); resolve();
+  });
+});
+const run = (await invokeAs("accepted", { operation_id: "scope.execution.start", idempotency_key: "guard-run",
+  target: { kind: "scope", id: scope.scope_id }, expected_resource_revision: draft.revision_id,
+  input: { ingress_node_id: "ingress", output_port_id: "ingress:out", content: {
+    request: "Use your shell tool to run exactly this command once, then reply with the single word: done. Command: " + command,
+  } } })).execution;
+step("started a Scope run with the Floe Actor");
+await markerSeen;
+const commandStarted = Date.now();
+step("the real turn is inside its shell command; pausing");
+// The execution's revision is its pinned plan, counter, status and end stamps (scope-execution-contract.ts).
+const revisionOf = (execution) => [execution.revision_id, execution.state_revision, execution.status,
+  execution.completed_at ?? "", execution.cancelled_at ?? ""].join(":");
+const current = async (key) => (await invokeAs("completed", { operation_id: "scope.execution.inspect", idempotency_key: key,
+  target: { kind: "scope_execution", id: run.execution_id }, input: {} })).execution;
+const nodeReached = (status, label, ms) => until((push) => push.type === "node_execution_state_changed"
+  && push.payload.scope_execution_id === run.execution_id && push.payload.node_id === "worker"
+  && push.payload.to_status === status, label, ms);
+await invokeAs("accepted", { operation_id: "scope.execution.pause", idempotency_key: "guard-pause",
+  target: { kind: "scope_execution", id: run.execution_id }, expected_resource_revision: revisionOf(await current("guard-inspect-1")), input: {} });
+await nodeReached("paused", "the interrupted node pausing", 60000);
+await until((push) => push.type === "scope_execution_paused" && push.payload.execution.execution_id === run.execution_id, "the run pausing", 60000);
+if (pushes.some((push) => push.type === "node_execution_state_changed" && push.payload.scope_execution_id === run.execution_id
+  && push.payload.node_id === "worker" && push.payload.to_status === "completed")) throw new Error("the node completed instead of being interrupted");
+step("paused mid-turn: the engine stopped the turn " + (Date.now() - commandStarted) + "ms into the command");
+await invokeAs("accepted", { operation_id: "scope.execution.resume", idempotency_key: "guard-resume",
+  target: { kind: "scope_execution", id: run.execution_id }, expected_resource_revision: revisionOf(await current("guard-inspect-2")), input: {} });
+await nodeReached("completed", "the resumed node completing", 180000);
+step("resumed: the node reran and completed");
+await new Promise((resolve) => setTimeout(resolve, Math.max(0, commandStarted + (HOLD_SECONDS + 5) * 1000 - Date.now())));
+if (existsSync(finished)) throw new Error("the interrupted command kept running after pause: the engine did not stop it");
+step("the interrupted command never finished");
+socket.close();
+identity.close();
 `, "utf8");
   const run = spawnSync(process.execPath, [join(surfaceDir, "surface.mjs")], { cwd: neutralCwd, stdio: "inherit" });
   if (run.status !== 0) {
     dumpLog(home, "identity");
-    throw new Error("the guard surface could not complete the identity flow through the installed artifact.");
+    dumpLog(home, "bridge");
+    throw new Error("the guard surface could not complete the identity flow, a real turn, and a real pause and resume through the installed artifact.");
   }
 }
 
@@ -648,7 +801,7 @@ log("start", `building floe ${version} (publish: ${doPublish ? "yes" : "no"})`);
 if (doPublish) refuseExistingTag(version);
 buildServices();
 assemble(version);
-guard(version);
+await guard(version);
 if (doPublish) {
   publish(version);
 } else {
