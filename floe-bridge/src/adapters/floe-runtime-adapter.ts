@@ -7,7 +7,9 @@
  *
  * A delivery is rendered to a prompt, run as one SDK turn, and its final
  * message is recorded with telemetry and a work-log entry. Bridge-owned
- * substrate tools are direct SDK tools.
+ * substrate tools are direct SDK tools. Cancellation reports quiesced only
+ * after the runtime proves all tool activity terminal; otherwise the owning
+ * isolated session must be retired before Floe reports paused.
  */
 import { randomUUID } from "node:crypto";
 import { COPILOT_BUILTIN_TOOL_MANIFEST, copilotToolCatalogForModel } from "floe-runtime/adapters/copilot";

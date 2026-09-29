@@ -292,9 +292,13 @@ describe("FloeRuntimeAdapter SDK route", () => {
     });
   });
 
-  it("confirms quiescence when aborted idle closes the shell activity", async () => {
+  it("force-retires when aborted idle cannot prove the shell process tree exited", async () => {
     let reportAbortedIdle!: () => void;
     const runtime = new FakeRuntime();
+    runtime.quiesce.mockRejectedValue(Object.assign(
+      new Error("Copilot did not prove that the cancelled shell process tree exited."),
+      { code: "quiescence_unknown" },
+    ));
     runtime.run = vi.fn(async (...args: any[]) => {
       await args[3]?.("sdk-session");
       runtime.emit("activity", {
@@ -305,14 +309,6 @@ describe("FloeRuntimeAdapter SDK route", () => {
         startedAt: Date.now(),
       });
       await new Promise<void>((resolve) => { reportAbortedIdle = resolve; });
-      runtime.emit("activity", {
-        id: "shell-call",
-        kind: "tool",
-        status: "failed",
-        title: "shell",
-        endedAt: Date.now(),
-        raw: { type: "session.idle", data: { aborted: true } },
-      });
       throw Object.assign(new Error("cancelled"), { code: "interrupted" });
     }) as any;
     const adapter = new FloeRuntimeAdapter({ runtimeFactory: () => runtime as any });
@@ -322,23 +318,13 @@ describe("FloeRuntimeAdapter SDK route", () => {
     expect(adapter.cancelDelivery("delivery-1")).toBe(true);
     const cancellation = adapter.waitForDeliveryCancellation("delivery-1");
     reportAbortedIdle();
-    await expect(work).rejects.toThrow(/\[interrupted\]/);
-    await expect(cancellation).resolves.toMatchObject({
-      outcome: "quiesced",
-      evidence: {
-        timeline: {
-          runtime_quiesced_at: expect.any(String),
-          delivery_settled_at: expect.any(String),
-          tool_activity: [{
-            call_id: "shell-call",
-            lifecycle: "failed",
-            started_at: expect.any(String),
-            ended_at: expect.any(String),
-          }],
-        },
-      },
+    await expect(work).rejects.toThrow(/\[quiescence_unknown\]/);
+    await expect(cancellation).resolves.toBeNull();
+    await expect(adapter.forceRetireDelivery("delivery-1")).resolves.toMatchObject({
+      outcome: "session_retired",
+      evidence: { timeline: { session_retired_at: expect.any(String) } },
     });
-    expect(runtime.close).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalledOnce();
   });
 
   it("force-retires a session when runtime idle arrives before its shell tool ends", async () => {

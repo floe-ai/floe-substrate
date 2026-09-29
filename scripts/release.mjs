@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 /**
+ * @invariant A release cannot publish until the installed artifact completes
+ * its real identity and Actor turns and 20 consecutive mid-command pauses
+ * produce no completion marker after Floe reports paused.
+ *
  * Floe release — assemble the single installable Floe package and prove it runs.
  *
  * Floe is authored as three source packages (floe-cli, floe-bus, floe-bridge) in
@@ -423,7 +427,10 @@ async function guard(version) {
   // A config isolated from the operator's ~/.floe: its own home, and a distinct
   // port so a bus the operator is already running is not disturbed and cannot
   // masquerade as ours.
-  const port = 5399;
+  const port = Number.parseInt(process.env.FLOE_RELEASE_GUARD_PORT || "5399", 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("FLOE_RELEASE_GUARD_PORT must be a valid TCP port.");
+  }
   const configPath = join(workRoot, "config.yaml");
   writeFileSync(
     configPath,
@@ -815,19 +822,13 @@ if (guardTurn.data.outcome !== "completed") throw new Error("the created Actor's
 step("the created Actor, holding no permissions, completed its own real turn: " + JSON.stringify(guardTurn.text.slice(0, 80)));
 
 
-// Pause a real turn mid-flight, then resume it. The Floe Actor runs one Scope
-// node whose shell command writes a marker, waits, then writes a second file.
-// The gate pauses the moment the marker appears, so the engine is inside the
-// command. A real interrupt stops the command, so the second file never
-// appears; the rerun after resume finds the marker and finishes at once.
+// Pause 20 real turns mid-flight, then resume each one. Every interrupted shell
+// writes a unique start marker, waits, then writes a completion marker. The
+// gate must observe zero completion markers after Floe reports paused.
 const { existsSync, watch } = await import("node:fs");
 const { join } = await import("node:path");
-const started = join(${JSON.stringify(folder)}, "guard-pause-started.txt");
-const finished = join(${JSON.stringify(folder)}, "guard-pause-finished.txt");
 const HOLD_SECONDS = 20;
-const command = process.platform === "win32"
-  ? "if (Test-Path '" + started + "') { 'second run' } else { Set-Content -Path '" + started + "' -Value started; Start-Sleep -Seconds " + HOLD_SECONDS + "; Set-Content -Path '" + finished + "' -Value finished }"
-  : "if [ -f '" + started + "' ]; then echo second run; else echo started > '" + started + "'; sleep " + HOLD_SECONDS + "; echo finished > '" + finished + "'; fi";
+const PAUSE_RUNS = 20;
 const invokeAs = async (state, body) => {
   const response = await fetch(bus + "/v1/workspaces/" + encodeURIComponent(joined.workspace_id) + "/operations/invoke", {
     method: "POST", headers: auth, body: JSON.stringify({ operation_version: "1", input_schema_version: "1", ...body }),
@@ -859,44 +860,59 @@ const impact = await invokeAs("completed", { operation_id: "scope.composition.im
 await invokeAs("completed", { operation_id: "scope.composition.publish", idempotency_key: "guard-publish",
   target: draftTarget, expected_resource_revision: draft.semantic_digest,
   input: { expected_current_published_revision_id: null, expected_impact_digest: impact.impact_digest } });
-const markerSeen = new Promise((resolve, reject) => {
-  const timer = setTimeout(() => { watcher.close(); reject(new Error("the Actor never started the command within 180s")); }, 180000);
-  const watcher = watch(${JSON.stringify(folder)}, () => {
-    if (!existsSync(started)) return;
-    clearTimeout(timer); watcher.close(); resolve();
-  });
-});
-const run = (await invokeAs("accepted", { operation_id: "scope.execution.start", idempotency_key: "guard-run",
-  target: { kind: "scope", id: scope.scope_id }, expected_resource_revision: draft.revision_id,
-  input: { ingress_node_id: "ingress", output_port_id: "ingress:out", content: {
-    request: "Use your shell tool to run exactly this command once, then reply with the single word: done. Command: " + command,
-  } } })).execution;
-step("started a Scope run with the Floe Actor");
-await markerSeen;
-const commandStarted = Date.now();
-step("the real turn is inside its shell command; pausing");
 // The execution's revision is its pinned plan, counter, status and end stamps (scope-execution-contract.ts).
 const revisionOf = (execution) => [execution.revision_id, execution.state_revision, execution.status,
   execution.completed_at ?? "", execution.cancelled_at ?? ""].join(":");
-const current = async (key) => (await invokeAs("completed", { operation_id: "scope.execution.inspect", idempotency_key: key,
-  target: { kind: "scope_execution", id: run.execution_id }, input: {} })).execution;
-const nodeReached = (status, label, ms) => until((push) => push.type === "node_execution_state_changed"
-  && push.payload.scope_execution_id === run.execution_id && push.payload.node_id === "worker"
-  && push.payload.to_status === status, label, ms);
-await invokeAs("accepted", { operation_id: "scope.execution.pause", idempotency_key: "guard-pause",
-  target: { kind: "scope_execution", id: run.execution_id }, expected_resource_revision: revisionOf(await current("guard-inspect-1")), input: {} });
-await nodeReached("paused", "the interrupted node pausing", 60000);
-await until((push) => push.type === "scope_execution_paused" && push.payload.execution.execution_id === run.execution_id, "the run pausing", 60000);
-if (pushes.some((push) => push.type === "node_execution_state_changed" && push.payload.scope_execution_id === run.execution_id
-  && push.payload.node_id === "worker" && push.payload.to_status === "completed")) throw new Error("the node completed instead of being interrupted");
-step("paused mid-turn: the engine stopped the turn " + (Date.now() - commandStarted) + "ms into the command");
-await invokeAs("accepted", { operation_id: "scope.execution.resume", idempotency_key: "guard-resume",
-  target: { kind: "scope_execution", id: run.execution_id }, expected_resource_revision: revisionOf(await current("guard-inspect-2")), input: {} });
-await nodeReached("completed", "the resumed node completing", 180000);
-step("resumed: the node reran and completed");
-await new Promise((resolve) => setTimeout(resolve, Math.max(0, commandStarted + (HOLD_SECONDS + 5) * 1000 - Date.now())));
-if (existsSync(finished)) throw new Error("the interrupted command kept running after pause: the engine did not stop it");
-step("the interrupted command never finished");
+const current = async ({ executionId, idempotencyKey }) => (await invokeAs("completed", {
+  operation_id: "scope.execution.inspect", idempotency_key: idempotencyKey,
+  target: { kind: "scope_execution", id: executionId }, input: {},
+})).execution;
+for (let pauseRun = 1; pauseRun <= PAUSE_RUNS; pauseRun += 1) {
+  const suffix = String(pauseRun).padStart(2, "0");
+  const started = join(${JSON.stringify(folder)}, "guard-pause-started-" + suffix + ".txt");
+  const finished = join(${JSON.stringify(folder)}, "guard-pause-finished-" + suffix + ".txt");
+  const command = process.platform === "win32"
+    ? "if (Test-Path '" + started + "') { 'second run' } else { Set-Content -Path '" + started + "' -Value started; Start-Sleep -Seconds " + HOLD_SECONDS + "; Set-Content -Path '" + finished + "' -Value finished }"
+    : "if [ -f '" + started + "' ]; then echo second run; else echo started > '" + started + "'; sleep " + HOLD_SECONDS + "; echo finished > '" + finished + "'; fi";
+  const markerSeen = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { watcher.close(); reject(new Error("pause run " + pauseRun + " never started its command within 180s")); }, 180000);
+    const watcher = watch(${JSON.stringify(folder)}, () => {
+      if (!existsSync(started)) return;
+      clearTimeout(timer); watcher.close(); resolve();
+    });
+  });
+  const run = (await invokeAs("accepted", { operation_id: "scope.execution.start", idempotency_key: "guard-run-" + suffix,
+    target: { kind: "scope", id: scope.scope_id }, expected_resource_revision: draft.revision_id,
+    input: { ingress_node_id: "ingress", output_port_id: "ingress:out", content: {
+      request: "Use your shell tool to run exactly this command once, then reply with the single word: done. Command: " + command,
+    } } })).execution;
+  await markerSeen;
+  const commandStarted = Date.now();
+  const nodeReached = (status, label, ms) => until((push) => push.type === "node_execution_state_changed"
+    && push.payload.scope_execution_id === run.execution_id && push.payload.node_id === "worker"
+    && push.payload.to_status === status, label, ms);
+  await invokeAs("accepted", { operation_id: "scope.execution.pause", idempotency_key: "guard-pause-" + suffix,
+    target: { kind: "scope_execution", id: run.execution_id },
+    expected_resource_revision: revisionOf(await current({ executionId: run.execution_id, idempotencyKey: "guard-inspect-pause-" + suffix })), input: {} });
+  await nodeReached("paused", "pause run " + pauseRun + " node pausing", 60000);
+  await until((push) => push.type === "scope_execution_paused" && push.payload.execution.execution_id === run.execution_id,
+    "pause run " + pauseRun + " execution pausing", 60000);
+  if (pushes.some((push) => push.type === "node_execution_state_changed" && push.payload.scope_execution_id === run.execution_id
+    && push.payload.node_id === "worker" && push.payload.to_status === "completed")) {
+    throw new Error("pause run " + pauseRun + " completed instead of being interrupted");
+  }
+  const pausedAt = Date.now();
+  await invokeAs("accepted", { operation_id: "scope.execution.resume", idempotency_key: "guard-resume-" + suffix,
+    target: { kind: "scope_execution", id: run.execution_id },
+    expected_resource_revision: revisionOf(await current({ executionId: run.execution_id, idempotencyKey: "guard-inspect-resume-" + suffix })), input: {} });
+  await nodeReached("completed", "pause run " + pauseRun + " resumed node completing", 180000);
+  await new Promise((resolve) => setTimeout(resolve, Math.max(0, commandStarted + (HOLD_SECONDS + 5) * 1000 - Date.now())));
+  if (existsSync(finished)) {
+    throw new Error("pause run " + pauseRun + " wrote its completion marker after paused was reported at " + new Date(pausedAt).toISOString());
+  }
+  step("pause run " + pauseRun + "/" + PAUSE_RUNS + " stopped without a late completion marker in " + (pausedAt - commandStarted) + "ms");
+}
+step(PAUSE_RUNS + " consecutive real mid-command pauses completed with zero leaks");
 socket.close();
 identity.close();
 `, "utf8");
