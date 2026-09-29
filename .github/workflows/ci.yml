@@ -20,9 +20,11 @@ jobs:
 
       - run: npm ci
 
-      # The CLI build compiles the native authority broker (Rust). Its Linux
-      # keyring backend links against D-Bus.
-      - run: sudo apt-get install -y libdbus-1-dev pkg-config
+      # The CLI build compiles the native authority broker (Rust), whose Linux
+      # keyring backend links against D-Bus. The broker keeps Floe's keys in the
+      # OS credential store; a Linux desktop runs one, so this headless runner
+      # gets a real, unlocked GNOME keyring for the tests.
+      - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config gnome-keyring dbus-x11
 
       # Tests exercise built output: the bus's isolated extension host, the
       # identity agent and the native broker all run from their built form.
@@ -32,8 +34,13 @@ jobs:
       # local loop cannot drift apart. It runs every workspace: the five package
       # suites first, then the end-to-end slice, which spawns real bus and bridge
       # daemons and is the slowest.
+      #
       # CI has no Copilot login, so the live runtime tier opts out the announced
       # way. The real adapter is proven on a signed-in machine, not here.
-      - run: npm test
+      - run: |
+          dbus-run-session -- bash -ec '
+            echo -n ci | gnome-keyring-daemon --unlock --components=secrets > /dev/null
+            npm test
+          '
         env:
           FLOE_LIVE_RUNTIME_TIER: "off"
