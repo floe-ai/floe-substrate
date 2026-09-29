@@ -154,7 +154,9 @@ export function runtimeToolResolution(
           tool_call_id: tool.tool_call_id,
           operation_id: operationId,
           rule_id: `approval.${outcome}`,
-          reason: RESOLUTION_REASONS[outcome],
+          reason: outcome === "unavailable"
+            ? requests.find((request) => request.status === "invalidated")?.decision_reason ?? RESOLUTION_REASONS[outcome]
+            : RESOLUTION_REASONS[outcome],
         }
       : null,
     approval_request_ids: requests.map((request) => request.approval_request_id),

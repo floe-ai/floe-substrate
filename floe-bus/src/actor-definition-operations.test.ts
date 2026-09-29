@@ -17,6 +17,8 @@ import {
   actorDefinitionOperationDefinitions,
   registerActorDefinitionOperations,
 } from "./actor-definition-operations.js";
+import { SqliteCapabilityGrantStore, applyCapabilityGrantSchema } from "./capability-grants.js";
+import { ENGINE_TOOL_OPERATIONS } from "./tool-policy.js";
 import { AjvOperationSchemaValidator } from "./operation-schema-validator-ajv.js";
 import { createTestOperationRegistry } from "./operation-test-fixtures.js";
 import {
@@ -139,6 +141,7 @@ function receipt(response: OperationInvocationResponse) {
 describe("Actor definition semantic operations", () => {
   let db: DatabaseSync;
   let store: ActorDefinitionStore;
+  let grants: SqliteCapabilityGrantStore;
   let registry: ReturnType<typeof createTestOperationRegistry>;
   let tick: number;
 
@@ -149,9 +152,12 @@ describe("Actor definition semantic operations", () => {
       db,
       () => `2026-09-04T03:00:${String(tick++).padStart(2, "0")}.000Z`,
     );
+    applyCapabilityGrantSchema(db);
+    grants = new SqliteCapabilityGrantStore(db, { now: () => "2026-09-04T03:00:00.000Z" });
     registry = registerActorDefinitionOperations(
       createTestOperationRegistry(new AjvOperationSchemaValidator()),
       store,
+      grants,
     );
   });
 
@@ -171,7 +177,7 @@ describe("Actor definition semantic operations", () => {
       && item.interaction_constraints.allowed_modes.includes("interactive")
       && item.interaction_constraints.allowed_modes.includes("unattended")
     )).toBe(true);
-    expect(actorDefinitionOperationDefinitions(store)).toHaveLength(OPERATION_IDS.length);
+    expect(actorDefinitionOperationDefinitions(store, grants)).toHaveLength(OPERATION_IDS.length);
   });
 
   it("uses explicit grants and refuses unsupported interaction modes during discovery", async () => {
@@ -186,6 +192,88 @@ describe("Actor definition semantic operations", () => {
       !item.availability.available
       && item.availability.refusal.code === "operation_interaction_not_supported"
     )).toBe(true);
+  });
+
+  describe("tool access for a new Actor", () => {
+    const ENGINE_IDS = Object.values(ENGINE_TOOL_OPERATIONS).sort();
+    const creator = (engineOperations: readonly string[], targets: { kind: string; id: string }[] = []) => {
+      const boundary = { kind: "workspace" as const, workspace_id: "workspace:one" };
+      const issue = (operation_ids: readonly string[], grantTargets: { kind: string; id: string }[] = []) =>
+        grants.issueGrant({
+          principal_id: "principal:operator", boundary, operation_ids, targets: grantTargets,
+          expires_at: "2027-01-01T00:00:00.000Z", issuer_id: "principal:host",
+          evidence: [{ kind: "test", ref: "setup" }],
+        }).grant_id;
+      const delegate = issue(["capability.grant.delegate"]);
+      const engine = engineOperations.length > 0 ? [issue(engineOperations, targets)] : [];
+      const ids = [delegate, ...engine];
+      return {
+        ...authority("workspace:one", "interactive", new Set([...OPERATION_IDS, "capability.grant.delegate", ...engineOperations])),
+        capability_grant_ids: ids,
+        session_capability_grant_ids: ids,
+      };
+    };
+    const create = async (auth: OperationAuthorityContext, extra: Record<string, unknown> = {}, key = "create") =>
+      registry.invoke(environment(store, auth as any), request(
+        CREATE_ACTOR_OPERATION_ID,
+        { actor_id: "actor:helper", definition: { ...definition("Helper"), capability_grant_ids: [] }, ...extra },
+        key,
+      ));
+
+    it("gives every engine tool the creator holds by default, within the creator's own targets", async () => {
+      const auth = creator(ENGINE_IDS, [{ kind: "filesystem_path", id: "src" }]);
+      const created = receipt(await create(auth));
+      const access = (created.result as any).tool_access;
+      expect(access).toMatchObject({ limited_by_creator: false, granted_operation_ids: ENGINE_IDS, not_granted: [] });
+      expect((created.result as any).draft.content.capability_grant_ids).toEqual(access.grant_ids);
+      const [grant] = access.grant_ids.map((id: string) => grants.getGrant(id));
+      expect(grant).toMatchObject({ principal_id: "actor:helper", operation_ids: ENGINE_IDS,
+        targets: [{ kind: "filesystem_path", id: "src" }] });
+    });
+
+    it("lets the creator narrow the new Actor's tools, down to none", async () => {
+      const auth = creator(ENGINE_IDS);
+      const narrowed = receipt(await create(auth, { engine_tool_operation_ids: [ENGINE_TOOL_OPERATIONS.filesystem_read] }));
+      expect((narrowed.result as any).tool_access).toMatchObject({
+        limited_by_creator: true, granted_operation_ids: [ENGINE_TOOL_OPERATIONS.filesystem_read], not_granted: [] });
+      expect(grants.getGrant((narrowed.result as any).tool_access.grant_ids[0])!.operation_ids)
+        .toEqual([ENGINE_TOOL_OPERATIONS.filesystem_read]);
+
+      const none = receipt(await registry.invoke(environment(store, auth as any), request(
+        CREATE_ACTOR_OPERATION_ID,
+        { actor_id: "actor:quiet", definition: { ...definition("Quiet"), capability_grant_ids: [] }, engine_tool_operation_ids: [] },
+        "create-quiet",
+      )));
+      expect((none.result as any).tool_access).toMatchObject({ granted_operation_ids: [], grant_ids: [] });
+      expect((none.result as any).draft.content.capability_grant_ids).toEqual([]);
+    });
+
+    it("refuses to give a tool the creator does not hold, and creates nothing", async () => {
+      const auth = creator([ENGINE_TOOL_OPERATIONS.filesystem_read]);
+      const refused = receipt(await create(auth, { engine_tool_operation_ids: [ENGINE_TOOL_OPERATIONS.process_execute] }));
+      expect(refused).toMatchObject({ state: "refused", refusal: { code: "actor_tool_access_widened" } });
+      expect(store.getActor("actor:helper")).toBeNull();
+    });
+
+    it("reports the tools it could not pass on when the creator holds fewer", async () => {
+      const created = receipt(await create(creator([ENGINE_TOOL_OPERATIONS.filesystem_read])));
+      const access = (created.result as any).tool_access;
+      expect(access.granted_operation_ids).toEqual([ENGINE_TOOL_OPERATIONS.filesystem_read]);
+      expect(access.not_granted.map((item: any) => item.operation_id))
+        .toEqual(ENGINE_IDS.filter(id => id !== ENGINE_TOOL_OPERATIONS.filesystem_read));
+    });
+
+    it("takes the new Actor's access away when the creator's access is revoked", async () => {
+      const auth = creator(ENGINE_IDS);
+      const created = receipt(await create(auth));
+      const childId = (created.result as any).tool_access.grant_ids[0];
+      const usable = () => grants.inspectSessionGrantIds({
+        principal_id: "actor:helper", boundary: { kind: "workspace", workspace_id: "workspace:one" }, grant_ids: [childId],
+      }).active_grants.length;
+      expect(usable()).toBe(1);
+      grants.revokeGrant(auth.session_capability_grant_ids[1]!, "2026-09-04T03:30:00.000Z");
+      expect(usable()).toBe(0);
+    });
   });
 
   it("creates, revises, publishes, rolls back, retires, and reactivates one Actor idempotently", async () => {

@@ -22,6 +22,13 @@ import {
   type SemanticOperationDefinition,
   type SemanticOperationRegistry,
 } from "./operations.js";
+import type { SqliteCapabilityGrantStore } from "./capability-grants.js";
+import {
+  ALL_ENGINE_TOOL_OPERATION_IDS,
+  passOnEngineToolAccess,
+  ToolAccessWideningError,
+  type NewActorToolAccess,
+} from "./actor-tool-access.js";
 
 function authorityWorkspaceId(context: OperationEvaluationContext): string {
   return requireWorkspaceAuthorityId(context.authority);
@@ -110,7 +117,7 @@ export const ACTOR_DEFINITION_CONTENT_SCHEMA: JsonSchema = {
     instructions: nonEmptyString,
     knowledge_refs: { type: "array", items: resourceRefSchema },
     capability_grant_ids: { type: "array", items: nonEmptyString, uniqueItems: true,
-      description: "Grant IDs issued to this Actor in this Workspace. Start a new Actor with an empty list, discover permission delegation, then publish its own grants. Never copy another Actor's grant IDs. Every Actor may use every engine tool (engine.tool.*) by default: unless a person chose limits for the new Actor, delegate your engine tool access to it unchanged." },
+      description: "Grant IDs issued to this Actor in this Workspace. Start a new Actor with an empty list; actor.create adds its engine tool access for you. Delegate any other access it needs, then publish its own grants. Never copy another Actor's grant IDs." },
     policy_refs: {
       type: "object",
       additionalProperties: false,
@@ -222,6 +229,30 @@ const actorAndDraftSchema: JsonSchema = {
   required: ["actor", "draft"],
   properties: { actor: actorSchema, draft: actorDefinitionRevisionSchema },
 };
+const createdActorSchema: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["actor", "draft", "tool_access"],
+  properties: {
+    actor: actorSchema,
+    draft: actorDefinitionRevisionSchema,
+    tool_access: {
+      type: "object",
+      additionalProperties: false,
+      required: ["limited_by_creator", "granted_operation_ids", "grant_ids", "not_granted"],
+      description: "Engine tool access the new Actor received from you, and anything you could not pass on.",
+      properties: {
+        limited_by_creator: { type: "boolean" },
+        granted_operation_ids: { type: "array", items: nonEmptyString },
+        grant_ids: { type: "array", items: nonEmptyString },
+        not_granted: { type: "array", items: {
+          type: "object", additionalProperties: false, required: ["operation_id", "reason"],
+          properties: { operation_id: nonEmptyString, reason: nonEmptyString },
+        } },
+      },
+    },
+  },
+};
 const actorAndRevisionSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
@@ -248,7 +279,16 @@ const createActorInputSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
   required: ["definition"],
-  properties: { actor_id: nonEmptyString, definition: ACTOR_DEFINITION_CONTENT_SCHEMA },
+  properties: {
+    actor_id: nonEmptyString,
+    definition: ACTOR_DEFINITION_CONTENT_SCHEMA,
+    engine_tool_operation_ids: {
+      type: "array",
+      uniqueItems: true,
+      items: { enum: [...ALL_ENGINE_TOOL_OPERATION_IDS] },
+      description: "Optional limit. The new Actor may use every engine tool you hold by default. List only the engine tools it may use, or [] for none. You cannot give a tool you do not hold.",
+    },
+  },
 };
 const createDraftInputSchema: JsonSchema = {
   type: "object",
@@ -521,33 +561,60 @@ export function getActorDefinitionOperation(
 
 export function createActorOperation(
   store: ActorDefinitionStore,
-): SemanticOperationDefinition<{ actor_id?: string; definition: ActorDefinitionContent }, { actor: ActorRecord; draft: ActorDefinitionRevision }> {
+  grants: SqliteCapabilityGrantStore,
+): SemanticOperationDefinition<
+  { actor_id?: string; definition: ActorDefinitionContent; engine_tool_operation_ids?: string[] },
+  { actor: ActorRecord; draft: ActorDefinitionRevision; tool_access: NewActorToolAccess }
+> {
   return {
     operation_id: CREATE_ACTOR_OPERATION_ID,
     operation_version: "1",
     authority_boundary_kinds: ["workspace"],
     category: "actors",
     title: "Create Actor",
-    description: "Create a stable Actor identity and its first unpublished definition draft in this Workspace.",
+    description: "Create a stable Actor identity and its first unpublished definition draft in this Workspace. The new Actor may use every engine tool you hold, unless you choose limits.",
     effects: { mode: "write", reversibility: "reversible", external: false, secret_access: "none" },
     required_grants: [CREATE_ACTOR_OPERATION_ID],
     interaction_constraints: { allowed_modes: ["interactive", "unattended"] },
     target: { resource_kinds: [], expected_revision: "not_applicable" },
     input: { version: "1", schema: createActorInputSchema },
-    result: { version: "1", schema: actorAndDraftSchema },
+    result: { version: "1", schema: createdActorSchema },
     handler: (context, input) => handle(() => {
-      const created = store.createActor({
-        workspace_id: authorityWorkspaceId(context),
-        created_by_principal_id: context.authority.principal_id,
-        definition: input.definition,
-        ...(input.actor_id ? { actor_id: input.actor_id } : {}),
-      });
-      return {
-        state: "completed" as const,
-        result: created,
-        changed_refs: [actorRef(created.actor), definitionRef(created.draft)],
-        audit_ref: auditRef(context),
-      };
+      store.db.exec("SAVEPOINT create_actor");
+      try {
+        const created = store.createActor({
+          workspace_id: authorityWorkspaceId(context),
+          created_by_principal_id: context.authority.principal_id,
+          definition: input.definition,
+          ...(input.actor_id ? { actor_id: input.actor_id } : {}),
+        });
+        const { draft, tool_access } = passOnEngineToolAccess({
+          grants,
+          actors: store,
+          authority: context.authority,
+          draft: created.draft,
+          chosen_operation_ids: input.engine_tool_operation_ids,
+          invocation_id: context.invocation_id,
+        });
+        store.db.exec("RELEASE create_actor");
+        return {
+          state: "completed" as const,
+          result: { actor: created.actor, draft, tool_access },
+          changed_refs: [
+            actorRef(created.actor),
+            definitionRef(draft),
+            ...tool_access.grant_ids.map((id) => ({ kind: "capability_grant", id, revision: null })),
+          ],
+          audit_ref: auditRef(context),
+        };
+      } catch (error) {
+        store.db.exec("ROLLBACK TO create_actor");
+        store.db.exec("RELEASE create_actor");
+        if (error instanceof ToolAccessWideningError) {
+          return { state: "refused" as const, refusal: refusal("actor_tool_access_widened", error.message, false, null) };
+        }
+        throw error;
+      }
     }),
   };
 }
@@ -753,12 +820,13 @@ function actorStatusOperation(
 
 export function actorDefinitionOperationDefinitions(
   store: ActorDefinitionStore,
+  grants: SqliteCapabilityGrantStore,
 ): SemanticOperationDefinition<any, any>[] {
   return [
     listActorsOperation(store),
     inspectActorOperation(store),
     getActorDefinitionOperation(store),
-    createActorOperation(store),
+    createActorOperation(store, grants),
     createActorDefinitionDraftOperation(store),
     replaceActorDefinitionDraftOperation(store),
     publishActorDefinitionOperation(store),
@@ -771,7 +839,8 @@ export function actorDefinitionOperationDefinitions(
 export function registerActorDefinitionOperations<T extends SemanticOperationRegistry>(
   registry: T,
   store: ActorDefinitionStore,
+  grants: SqliteCapabilityGrantStore,
 ): T {
-  for (const definition of actorDefinitionOperationDefinitions(store)) registry.register(definition);
+  for (const definition of actorDefinitionOperationDefinitions(store, grants)) registry.register(definition);
   return registry;
 }

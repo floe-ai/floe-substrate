@@ -351,6 +351,44 @@ describe("runtime tool policy", () => {
     expect(handle.store.approvalStore.getRequest(stale.approval_request_ids[0]!)!.status).toBe("invalidated");
   });
 
+  it.each(["direct", "delegated"])("refuses a pending approval with a reason as soon as its %s access is revoked", async (kind) => {
+    const source = kind === "delegated" ? handle.store.capabilityGrantStore.issueGrant({
+      principal_id: OPERATOR, boundary: { kind: "workspace", workspace_id: WS }, operation_ids: ["engine.tool.filesystem.read"],
+      expires_at: "2099-01-01T00:00:00.000Z", issuer_id: PRINCIPAL, evidence: [{ kind: "test_fixture", ref: "source" }],
+    }) : null;
+    const read = source ? handle.store.capabilityGrantStore.issueGrant({
+      principal_id: ACTOR, boundary: { kind: "workspace", workspace_id: WS }, operation_ids: ["engine.tool.filesystem.read"],
+      expires_at: "2099-01-01T00:00:00.000Z", issuer_id: OPERATOR, evidence: [{ kind: "capability_grant", ref: source.grant_id }],
+    }) : grant(["engine.tool.filesystem.read"]);
+    if (source) {
+      handle.store.db.prepare("INSERT INTO capability_grant_delegations (grant_id, source_grant_id, authority_grant_id) VALUES (?, ?, ?)")
+        .run(read.grant_id, source.grant_id, source.grant_id);
+    }
+    const approval = publishPolicy("approval", [{
+      rule_id: "ask", priority: 1, match: { operation_ids: ["engine.tool.filesystem.read"] },
+      effect: { kind: "require_approval", reason: "Reading needs an answer.", approvers: { mode: "any", principal_ids: [OPERATOR], roles: [] } },
+    }]);
+    publishDefinition({
+      capability_grant_ids: [read.grant_id],
+      policy_refs: { budget: null, trust: null, approval: { kind: "policy", id: approval.policy_id, revision: approval.policy_revision_id } },
+    });
+    const deliveryId = await runningDelivery();
+    const asked = evaluate(deliveryId, call({}));
+    const [requestId] = asked.approval_request_ids;
+    const broadcasts: Array<{ type: string; payload: any }> = [];
+    handle.store.setBroadcast((type, payload) => broadcasts.push({ type, payload }));
+
+    handle.store.capabilityGrantStore.revokeGrant(source?.grant_id ?? read.grant_id);
+    const request = handle.store.approvalStore.getRequest(requestId!)!;
+    expect(request).toMatchObject({ status: "invalidated", decision_reason: "The access this request depended on was revoked." });
+    await Promise.resolve();
+    expect(broadcasts.filter(item => item.type === "approval_invalidated").map(item => item.payload.request.approval_request_id))
+      .toEqual([requestId]);
+    const settled = handle.store.resolveRuntimeToolApproval(
+      { bridge_id: BRIDGE, delivery_id: deliveryId, evaluation_id: asked.evaluation_id, abandon: null }, noop);
+    expect(settled).toMatchObject({ outcome: "unavailable", refusal: { rule_id: "approval.unavailable", reason: "The access this request depended on was revoked." } });
+  });
+
   it("asks a person about shell only when an Approval Policy rule says so", async () => {
     const shell = grant(["engine.tool.process.execute"]);
     const approval = publishPolicy("approval", [{

@@ -131,6 +131,8 @@ export type ResolvedCapabilityGrantAuthority = Readonly<{
 export type CapabilityGrantStoreDependencies = Readonly<{
   now?: () => string;
   grant_id_factory?: () => string;
+  /** Told once, synchronously, after a grant is revoked. */
+  on_revoked?: (grant: CapabilityGrantRecord) => void;
 }>;
 
 type CapabilityGrantRow = Readonly<{
@@ -356,6 +358,7 @@ function tableExists(db: DatabaseSync, name: string): boolean {
 export class SqliteCapabilityGrantStore {
   private readonly now: () => string;
   private readonly grantIdFactory: () => string;
+  private readonly onRevoked: ((grant: CapabilityGrantRecord) => void) | null;
 
   constructor(
     readonly db: DatabaseSync,
@@ -363,6 +366,7 @@ export class SqliteCapabilityGrantStore {
   ) {
     this.now = dependencies.now ?? isoNow;
     this.grantIdFactory = dependencies.grant_id_factory ?? (() => `capgrant_${randomUUID()}`);
+    this.onRevoked = dependencies.on_revoked ?? null;
   }
 
   issueGrant(input: IssueCapabilityGrant): CapabilityGrantRecord {
@@ -679,7 +683,22 @@ export class SqliteCapabilityGrantStore {
       SET revoked_at = ?
       WHERE grant_id = ? AND revoked_at IS NULL
     `).run(revokedAt, grantId);
-    return Number(result.changes) === 1;
+    const revoked = Number(result.changes) === 1;
+    if (revoked) this.onRevoked?.(this.getGrant(grantId)!);
+    return revoked;
+  }
+
+  /** The grant and every grant delegated from it or under its authority, at any depth. */
+  dependentGrantIds(grantId: string): string[] {
+    return (this.db.prepare(`
+      WITH RECURSIVE lost(grant_id) AS (
+        SELECT ?
+        UNION
+        SELECT delegation.grant_id FROM capability_grant_delegations delegation
+        JOIN lost ON delegation.source_grant_id = lost.grant_id OR delegation.authority_grant_id = lost.grant_id
+      )
+      SELECT grant_id FROM lost ORDER BY grant_id
+    `).all(grantId) as Array<{ grant_id: string }>).map(row => row.grant_id);
   }
 
   listActiveGrantsForPrincipalBoundary(
