@@ -26,6 +26,9 @@ import {
   type ProjectLoadResult,
 } from "./project.js";
 import type { RuntimeAdapter } from "./adapters/runtime-adapter.js";
+import { EngineControl, type EngineAccount } from "./engines/engine-control.js";
+import type { EngineState } from "floe-cli/engines/protocol";
+import { thisInstallation } from "floe-cli/installation";
 import { FakeRuntimeAdapter } from "./adapters/fake-runtime-adapter.js";
 import { FloeRuntimeAdapter } from "./adapters/floe-runtime-adapter.js";
 import { TurnFailedError } from "./adapters/turn-failed-error.js";
@@ -68,13 +71,18 @@ type ObservedActorRuntime = Readonly<{
 export type BridgeDaemonOptions = Readonly<{
   bridge_id?: string;
   transport_authority?: BridgeTransportAuthority | null;
+  engines?: EngineControl;
 }>;
 
 export class BridgeDaemon {
   readonly bridgeId: string;
   readonly bus: BusClient;
   readonly adapter: RuntimeAdapter;
+  /** Engine readiness: gates work, and is served to surfaces by the process entry (index.ts). */
+  readonly engines: EngineControl;
   readonly #bridgeServiceToken: string | null;
+  /** Endpoints whose work is held until their engine is ready, keyed to that engine. */
+  private heldForEngine = new Map<string, string>();
   private endpointRuntime = new Map<string, EndpointEntry>();
   private workspaceLocators = new Map<string, string>();
   private workspaceHooks = new Map<string, HookRegistry>();
@@ -122,6 +130,16 @@ export class BridgeDaemon {
       this.bus.markAuthorityUnavailable("insecure_transport");
     }
     this.adapter = chooseAdapter(configPath, config);
+    const accounts = new Map<string, EngineAccount>();
+    if (this.adapter.engine && this.adapter.createEngineAccount) {
+      accounts.set(this.adapter.engine, this.adapter.createEngineAccount());
+    }
+    this.engines = options.engines ?? new EngineControl(
+      accounts,
+      thisInstallation().version,
+      (line, detail) => console.log(`[floe-bridge] ${line}`, detail ?? ""),
+    );
+    this.engines.onReady((engine) => this.releaseHeldWork(engine));
   }
 
   get transportAuthorityState(): BridgeTransportAuthorityState {
@@ -160,6 +178,7 @@ export class BridgeDaemon {
       for (const stop of stops) stop();
     }
     this.workspaceWatchers.clear();
+    await this.engines.close();
     await this.adapter.dispose?.("bridge_shutdown");
   }
 
@@ -564,7 +583,9 @@ export class BridgeDaemon {
           workspace_id: workspaceId,
           name: runtime.name,
           agent_id: runtime.agent_id,
-          status: runtime.runtime_status === "resolved" ? "idle" : "runtime_unconfigured",
+          status: runtime.runtime_status === "resolved" && !this.heldForEngine.has(runtime.endpoint_id)
+            ? "idle"
+            : "runtime_unconfigured",
           metadata: {
             runtime_adapter: runtime.adapter_id,
             actor_definition_revision_id: runtime.actor_definition_revision_id,
@@ -847,6 +868,8 @@ export class BridgeDaemon {
       return;
     }
 
+    if (this.adapter.engine && !(await this.engineAdmits(delivery, this.adapter.engine))) return;
+
     console.log("[bridge] delivery claimed", {
       delivery_id: delivery.delivery_id,
       endpoint_id: delivery.endpoint_id,
@@ -996,6 +1019,8 @@ export class BridgeDaemon {
       // this invocation; automatic replay would be unsafe. A fresh operator or
       // actor event can deliberately retry after inspecting the recorded work.
       if (error instanceof TurnFailedError) {
+        // The engine may have stopped being ready (signed out, lost access).
+        if (this.adapter.engine) void this.engines.recheck(this.adapter.engine);
         console.log("[bridge] turn failed", {
           delivery_id: error.delivery_id,
           source_endpoint_id: error.source_endpoint_id,
@@ -1091,6 +1116,61 @@ export class BridgeDaemon {
         status,
         error: error instanceof Error ? error.message : String(error)
       });
+    }
+  }
+
+  /**
+   * Work runs only on a ready engine. Otherwise the delivery is handed back to
+   * the Bus unstarted: its events stay queued, durably, and the Actor stays
+   * paused until the engine becomes ready (releaseHeldWork) or the Bridge
+   * restarts and re-registers it.
+   */
+  private async engineAdmits(delivery: DeliveryBundle, engine: string): Promise<boolean> {
+    let state: EngineState;
+    try {
+      state = await this.engines.gate(engine);
+    } catch (error) {
+      state = {
+        engine, phase: "unavailable", authentication: "unknown", access: "unknown", reachability: "unknown",
+        action: "retry", revision: 0, checked_at: new Date().toISOString(),
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (state.phase === "ready") return true;
+
+    this.heldForEngine.set(delivery.endpoint_id, engine);
+    console.log("[bridge] delivery held until engine is ready", {
+      delivery_id: delivery.delivery_id,
+      endpoint_id: delivery.endpoint_id,
+      engine,
+      phase: state.phase,
+    });
+    try {
+      await this.bus.appendRuntimeTelemetry({
+        workspace_id: delivery.workspace_id,
+        endpoint_id: delivery.endpoint_id,
+        delivery_id: delivery.delivery_id,
+        kind: "engine_not_ready",
+        payload: { code: "engine_not_ready", engine, phase: state.phase, action: state.action, message: state.message },
+      });
+      await this.bus.reportDeliveryStatus(delivery.delivery_id, "deferred", `engine_not_ready: ${state.message}`);
+    } catch (error) {
+      console.error("[bridge] engine hold report failed", {
+        delivery_id: delivery.delivery_id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    // The engine may have become ready while the hold was being reported.
+    if (this.engines.state().engines[engine]?.phase === "ready") this.releaseHeldWork(engine);
+    return false;
+  }
+
+  private releaseHeldWork(engine: string): void {
+    for (const [endpointId, heldEngine] of this.heldForEngine) {
+      if (heldEngine !== engine) continue;
+      this.heldForEngine.delete(endpointId);
+      console.log("[bridge] engine ready; releasing held work", { endpoint_id: endpointId, engine });
+      void this.updateEndpointStatusSafely(endpointId, "idle");
     }
   }
 

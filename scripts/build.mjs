@@ -20,8 +20,9 @@ import * as process from 'process';
 
 const TARGETS = [
   { id: 'bus',    workspace: 'floe-bus',    label: 'bus    (floe-bus    — tsc)' },
-  { id: 'bridge', workspace: 'floe-bridge', label: 'bridge (floe-bridge — tsc)' },
+  // The bridge serves its engine channel with floe-cli's shared local channel.
   { id: 'cli',    workspace: 'floe-cli',    label: 'cli    (floe-cli    — tsc)' },
+  { id: 'bridge', workspace: 'floe-bridge', label: 'bridge (floe-bridge — tsc)' },
 ];
 
 const TARGET_IDS = TARGETS.map(t => t.id);

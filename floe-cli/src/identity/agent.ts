@@ -42,6 +42,7 @@ import {
   signAuthEvent,
 } from "./keys.js";
 import { BusIdentityClient, BusUnreachableError, type Workspace } from "./bus-identity.js";
+import { ChannelError } from "../local-channel/server.js";
 
 export type IdentitySummary = {
   npub: string;
@@ -55,9 +56,9 @@ export type AgentState =
   | { kind: "none" }
   | ({ kind: "locked" | "unlocked" } & IdentitySummary);
 
-export class AgentError extends Error {
-  constructor(readonly code: string, message: string, readonly details: Record<string, unknown> = {}) {
-    super(message);
+export class AgentError extends ChannelError {
+  constructor(code: string, message: string, details: Record<string, unknown> = {}) {
+    super(code, message, details);
     this.name = "AgentError";
   }
 }

@@ -1,12 +1,31 @@
 {
   "name": "floe-cli",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "private": true,
   "description": "The Floe command line — the front door to the local Floe substrate.",
   "license": "UNLICENSED",
   "type": "module",
   "bin": {
     "floe": "./dist/index.js"
+  },
+  "exports": {
+    "./local-channel": {
+      "types": "./dist/local-channel/index.d.ts",
+      "default": "./dist/local-channel/index.js"
+    },
+    "./installation": {
+      "types": "./dist/installation.d.ts",
+      "default": "./dist/installation.js"
+    },
+    "./engines/protocol": {
+      "types": "./dist/engines/protocol.d.ts",
+      "default": "./dist/engines/protocol.js"
+    },
+    "./engines": {
+      "types": "./dist/engines/client.d.ts",
+      "default": "./dist/engines/client.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",

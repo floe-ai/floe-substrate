@@ -12,10 +12,10 @@
  * when minted and again before it expires. A surface never polls. The wire
  * protocol is documented in docs/reference/identity-agent-protocol.md.
  */
-import { ensureConfig, type LocalConfig } from "../config.js";
-import { thisInstallation } from "../installation.js";
-import { ensureSubstrateForClient, floeHome } from "../startup.js";
-import { AgentUnavailableError, openAgentChannel, type AgentChannel } from "./connection.js";
+import { ChannelClient } from "../local-channel/client.js";
+import { connectChannel } from "../local-channel/connect.js";
+import { AgentUnavailableError, type AgentChannel } from "./connection.js";
+import { IDENTITY_CHANNEL } from "./protocol.js";
 
 export type Protection = "passphrase" | "device";
 export type SecretKind = "phrase" | "nsec";
@@ -90,78 +90,30 @@ export type ConnectOptions = {
 };
 
 export async function connectIdentity(options: ConnectOptions): Promise<IdentityClient> {
-  const { configPath, config } = ensureConfig(options.configPath);
-  const home = floeHome(configPath, config);
-  let channel: AgentChannel;
-  try {
-    channel = await openAgentChannel(home, options.surface);
-  } catch (error) {
-    if (!(error instanceof AgentUnavailableError) || error.reason !== "not_running" || options.start === false) throw error;
-    await startFloe(configPath, config);
-    channel = await openAgentChannel(home, options.surface);
-  }
+  const channel = await connectChannel(IDENTITY_CHANNEL, options);
+  if (Object.keys(channel.welcomeState).length === 0) channel.welcomeState = { kind: "none" };
   return new IdentityClient(channel);
 }
 
-async function startFloe(configPath: string, config: LocalConfig): Promise<void> {
-  const plan = await ensureSubstrateForClient(configPath, config);
-  if (plan === "blocked") {
-    throw new AgentUnavailableError(
-      "not_running",
-      "Floe's identity agent is not running, and this machine does not let a surface start Floe "
-        + "(services.start_on_demand is false). Start Floe with `floe start`.",
-    );
-  }
-}
-
-type Pending = { resolve: (value: any) => void; reject: (error: Error) => void };
-
-export class IdentityClient {
+export class IdentityClient extends ChannelClient {
   private current: IdentityState;
-  private nextId = 1;
-  private readonly pending = new Map<number, Pending>();
   private readonly stateListeners = new Set<(state: IdentityState) => void>();
-  private readonly closeListeners = new Set<() => void>();
   private readonly sessionListeners = new Map<string, (event: SessionEvent) => void>();
   private readonly early = new Map<string, SessionEvent[]>();
-  private closed = false;
 
   /** @internal Use connectIdentity. */
-  constructor(private readonly channel: AgentChannel) {
+  constructor(channel: AgentChannel) {
+    super(channel, IDENTITY_CHANNEL, (code, message, details) => new IdentityError(code, message, details));
     this.current = channel.welcomeState as IdentityState;
-    channel.onMessage((message) => this.receive(message));
-    channel.socket.on("close", () => this.handleClose());
   }
 
   get state(): IdentityState {
     return this.current;
   }
 
-  /** The Floe version of the agent serving this machine. */
-  get agentVersion(): string | null {
-    return this.channel.agentVersion;
-  }
-
-  /**
-   * Set when the agent is a different Floe version from the copy this surface
-   * depends on. Connect-first: the running agent is used as is, never restarted.
-   */
-  get versionNote(): string | null {
-    const own = thisInstallation().version;
-    const agent = this.channel.agentVersion;
-    if (!own || agent === own) return null;
-    return `Connected to the identity agent of ${agent ? `Floe ${agent}` : "an older Floe"}, but this surface ships Floe ${own}. `
-      + "It was already running, so it is left as is and keeps serving until Floe restarts.";
-  }
-
   onState(listener: (state: IdentityState) => void): () => void {
     this.stateListeners.add(listener);
     return () => this.stateListeners.delete(listener);
-  }
-
-  onClose(listener: () => void): () => void {
-    this.closeListeners.add(listener);
-    return () => this.closeListeners.delete(listener);
   }
 
   /** Create an identity. An empty passphrase protects it with this device instead. */
@@ -258,32 +210,7 @@ export class IdentityClient {
     return this.request("delete_identity", input);
   }
 
-  close(): void {
-    this.channel.socket.end();
-  }
-
-  private request<T = any>(op: string, args: Record<string, unknown>): Promise<T> {
-    if (this.closed) return Promise.reject(new AgentUnavailableError("not_running", "The connection to Floe's identity agent is closed."));
-    const id = this.nextId++;
-    return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.channel.send({ type: "request", id, op, args });
-    });
-  }
-
-  private receive(message: Record<string, unknown>): void {
-    if (message.type === "response") {
-      const pending = this.pending.get(message.id as number);
-      if (!pending) return;
-      this.pending.delete(message.id as number);
-      if (message.ok) {
-        pending.resolve(message.result);
-      } else {
-        const { code, message: text, ...details } = (message.error ?? {}) as Record<string, unknown>;
-        pending.reject(new IdentityError(String(code ?? "failed"), String(text ?? "The identity agent refused."), details));
-      }
-      return;
-    }
+  protected onPush(message: Record<string, unknown>): void {
     if (message.type === "state") {
       this.current = message.state as IdentityState;
       for (const listener of this.stateListeners) listener(this.current);
@@ -304,15 +231,5 @@ export class IdentityClient {
     }
     if (event.status === "ended") this.sessionListeners.delete(id);
     listener(event);
-  }
-
-  private handleClose(): void {
-    if (this.closed) return;
-    this.closed = true;
-    for (const pending of this.pending.values()) {
-      pending.reject(new AgentUnavailableError("not_running", "The connection to Floe's identity agent closed."));
-    }
-    this.pending.clear();
-    for (const listener of this.closeListeners) listener();
   }
 }
