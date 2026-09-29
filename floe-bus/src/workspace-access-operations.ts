@@ -17,6 +17,7 @@ export const INSPECT_WORKSPACE_ACCESS_OPERATION_ID = "workspace.access.inspect";
 export const ADD_WORKSPACE_FOLDER_OPERATION_ID = "workspace.folder.add";
 export const REMOVE_WORKSPACE_FOLDER_OPERATION_ID = "workspace.folder.remove";
 export const SET_WORKSPACE_SYSTEM_ACCESS_OPERATION_ID = "workspace.system_access.set";
+export const ACKNOWLEDGE_WORKSPACE_NOTICE_OPERATION_ID = "workspace.notice.acknowledge";
 
 const nonEmptyString: JsonSchema = { type: "string", minLength: 1 };
 const nullableString: JsonSchema = { oneOf: [nonEmptyString, { type: "null" }] };
@@ -47,7 +48,7 @@ const accessSchema: JsonSchema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["record_id", "kind", "summary", "path", "principal_id", "recorded_at"],
+        required: ["record_id", "kind", "summary", "path", "principal_id", "recorded_at", "seen_by"],
         properties: {
           record_id: nonEmptyString,
           kind: nonEmptyString,
@@ -55,6 +56,8 @@ const accessSchema: JsonSchema = {
           path: nullableString,
           principal_id: nonEmptyString,
           recorded_at: nonEmptyString,
+          seen_by: { type: "array", items: nonEmptyString, description: "People who have seen it as it now reads." },
+          seen: { type: "boolean", description: "Whether you have seen it as it now reads." },
         },
       },
     },
@@ -65,7 +68,14 @@ export type WorkspaceAccessOperationDependencies = Readonly<{
   access: WorkspaceAccessStore;
   /** Told after a committed-to-be change so it can re-check waiting approvals and push. */
   changed: (access: WorkspaceAccess) => void;
+  /** Told when a person has seen a notice; nothing Actors may reach has changed. */
+  acknowledged: (access: WorkspaceAccess) => void;
 }>;
+
+/** The access state as one person sees it: each record also says whether they have seen it. */
+function forViewer(access: WorkspaceAccess, principalId: string) {
+  return { ...access, records: access.records.map(record => ({ ...record, seen: record.seen_by.includes(principalId) })) };
+}
 
 function auditRef(context: OperationExecutionContext) {
   return { kind: "operation_invocation", id: context.invocation_id, revision: null };
@@ -108,7 +118,7 @@ export function workspaceAccessOperationDefinitions(
       authority_boundary_kinds: ["workspace"],
       category: "workspace",
       title: "Show Workspace folders and System access",
-      description: "List the folders Floe Actors' file tools may use in this Workspace, whether System access is on, and recent changes.",
+      description: "List the folders Floe Actors' file tools may use in this Workspace, whether System access is on, and recent changes and notices, each marked seen or not by you.",
       effects: { mode: "read", reversibility: "none", external: false, secret_access: "none" },
       required_grants: [INSPECT_WORKSPACE_ACCESS_OPERATION_ID],
       interaction_constraints: { allowed_modes: ["interactive", "unattended"] },
@@ -117,7 +127,7 @@ export function workspaceAccessOperationDefinitions(
       result: { version: "1", schema: accessSchema },
       handler: (context) => ({
         state: "completed" as const,
-        result: dependencies.access.inspect(requireWorkspaceAuthorityId(context.authority)),
+        result: forViewer(dependencies.access.inspect(requireWorkspaceAuthorityId(context.authority)), context.authority.principal_id),
         changed_refs: [],
         audit_ref: auditRef(context),
       }),
@@ -179,6 +189,37 @@ export function workspaceAccessOperationDefinitions(
         enabled: input.enabled,
         principal_id: context.authority.principal_id,
       })),
+    },
+    {
+      operation_id: ACKNOWLEDGE_WORKSPACE_NOTICE_OPERATION_ID,
+      operation_version: "1",
+      authority_boundary_kinds: ["workspace"],
+      category: "workspace",
+      title: "Mark a notice as seen",
+      description: "Record that you have seen a Workspace notice or change, so every surface you use stops showing it as new."
+        + " If the notice later changes, it shows as new again.",
+      effects: writeEffects,
+      required_grants: [ACKNOWLEDGE_WORKSPACE_NOTICE_OPERATION_ID],
+      interaction_constraints: interactiveOnly,
+      target: noTarget,
+      input: { version: "1", schema: { type: "object", additionalProperties: false, required: ["record_id"], properties: { record_id: nonEmptyString } } },
+      result: { version: "1", schema: accessSchema },
+      handler: (context, input: { record_id: string }) => {
+        const workspaceId = requireWorkspaceAuthorityId(context.authority);
+        const principalId = context.authority.principal_id;
+        try {
+          const changed = dependencies.access.acknowledge({ workspace_id: workspaceId, record_id: input.record_id, principal_id: principalId });
+          const access = dependencies.access.inspect(workspaceId);
+          if (changed) dependencies.acknowledged(access);
+          return { state: "completed" as const, result: forViewer(access, principalId),
+            changed_refs: changed ? [accessRef(workspaceId)] : [], audit_ref: auditRef(context) };
+        } catch (error) {
+          if (error instanceof WorkspaceFolderError) {
+            return { state: "refused" as const, refusal: refusal(error.code, error.message, false, null) };
+          }
+          throw error;
+        }
+      },
     },
   ];
 }

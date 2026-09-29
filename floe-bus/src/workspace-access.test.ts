@@ -84,6 +84,42 @@ describe("Workspace folders and System access operations", () => {
     expect(off.result.records.map((record: { kind: string }) => record.kind)).toEqual(["folder_added"]);
   });
 
+  it("records a notice as seen per person, pushes it, and shows a changed notice as new again", async () => {
+    const f = await fixture();
+    const notice = (summary: string) => f.handle.store.workspaceAccessStore.recordStandingNotice({ record_id: "notice:test",
+      workspace_id: f.workspaceId, kind: "actor_access_lapsing", summary, principal_id: "system:test" });
+    const pushes = () => f.pushed.filter((item) => item.type === "workspace_access_changed").length;
+    expect(notice("Access ends on 2099-01-01.")).toBe(true);
+    await Promise.resolve();
+    expect(pushes()).toBe(1);
+
+    const grant = f.handle.store.capabilityGrantStore.issueGrant({ principal_id: "person:two",
+      boundary: { kind: "workspace", workspace_id: f.workspaceId },
+      operation_ids: ["workspace.access.inspect", "workspace.notice.acknowledge"],
+      expires_at: "2099-01-01T00:00:00.000Z", issuer_id: "policy:test", evidence: [{ kind: "test_fixture", ref: "notice" }] });
+    const other = f.handle.store.operationAuthoritySessions.issueSession({ principal_id: "person:two",
+      workspace_id: f.workspaceId, grant_ids: [grant.grant_id], interaction: { mode: "interactive", session_id: "test:two" },
+      provenance, expires_at: "2099-01-01T00:00:00.000Z" }).bearer_token;
+
+    const seen = await f.invoke("workspace.notice.acknowledge", { record_id: "notice:test" });
+    expect(seen.result.records[0]).toMatchObject({ record_id: "notice:test", seen: true, seen_by: [seen.principal_id] });
+    await Promise.resolve();
+    expect(pushes()).toBe(2);
+    expect(f.pushed.at(-1)!.payload.access.records[0].seen_by).toEqual([seen.principal_id]);
+    expect((await f.invoke("workspace.access.inspect", {}, other)).result.records[0].seen).toBe(false);
+    // Seeing it again changes nothing and pushes nothing.
+    await f.invoke("workspace.notice.acknowledge", { record_id: "notice:test" });
+    await Promise.resolve();
+    expect(pushes()).toBe(2);
+
+    notice("Access ends on 2099-02-01.");
+    expect((await f.invoke("workspace.access.inspect", {})).result.records[0]).toMatchObject({ seen: false, seen_by: [] });
+    expect((await f.invoke("workspace.notice.acknowledge", { record_id: "notice:missing" })).refusal.code).toBe("notice_not_found");
+    f.handle.store.workspaceAccessStore.removeStandingNotice("notice:test");
+    await Promise.resolve();
+    expect(f.pushed.at(-1)!.payload.access.records).toEqual([]);
+  });
+
   it("does not let an unattended session, such as an Actor's, widen the boundary", async () => {
     const f = await fixture();
     const grant = f.handle.store.capabilityGrantStore.issueGrant({ principal_id: "actor:access:worker",

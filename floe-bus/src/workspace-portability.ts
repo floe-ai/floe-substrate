@@ -352,6 +352,7 @@ export const NON_PORTABLE_HOST_TABLES = new Set([
   // Workspace starts with only its own folder and System access off.
   "workspace_access_records",
   "workspace_folders",
+  "workspace_notice_acknowledgements",
   "workspace_locator_bindings",
   "workspace_portability_imported_operation_receipts",
   "workspace_portability_dependencies",

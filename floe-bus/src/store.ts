@@ -897,6 +897,7 @@ export class BusStore {
     this.workspaceAccessStore = new WorkspaceAccessStore(this.db, {
       host_id: this.localHostId,
       home_locator: (workspaceId) => this.workspaceIdentityStore.getCurrentBinding(workspaceId, this.localHostId)?.locator ?? null,
+      notice_changed: (workspaceId) => this.pushWorkspaceAccess(workspaceId),
     });
     this.workspacePortabilityService = new WorkspacePortabilityService({
       db: this.db,
@@ -1139,6 +1140,7 @@ export class BusStore {
     operationRegistry = registerWorkspaceAccessOperations(operationRegistry, {
       access: this.workspaceAccessStore,
       changed: (access) => this.workspaceAccessChanged(access),
+      acknowledged: (access) => this.pushWorkspaceAccess(access.workspace_id),
     });
     operationRegistry = registerWorkspacePortabilityOperations(
       operationRegistry,
@@ -1312,9 +1314,14 @@ export class BusStore {
   private workspaceAccessChanged(access: WorkspaceAccess): void {
     this.settlePendingApprovals(access.workspace_id, "system:workspace-access",
       () => "The Workspace's folders or System access changed, so this call is no longer inside what it may reach.");
+    this.pushWorkspaceAccess(access.workspace_id);
+  }
+
+  /** Pushes the Workspace's current folders, System access and notices to its connections. */
+  private pushWorkspaceAccess(workspaceId: string): void {
     queueMicrotask(() => this.broadcastFn?.("workspace_access_changed", {
-      workspace_id: access.workspace_id,
-      access: this.workspaceAccessStore.inspect(access.workspace_id),
+      workspace_id: workspaceId,
+      access: this.workspaceAccessStore.inspect(workspaceId),
     }));
   }
 

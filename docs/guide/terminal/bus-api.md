@@ -410,8 +410,9 @@ These are pushed on the stream to the Workspace's connections:
 - `approval_decided` / `approval_invalidated` — the answer, or the request
   no longer applying;
 - `policy_decision_resolved` — how a call that needed a decision ended.
-- `workspace_access_changed` — the Workspace's folders or System access
-  changed; carries the current `access`.
+- `workspace_access_changed` — the Workspace's folders, System access or
+  notices changed, or a person marked a notice seen; carries the current
+  `access`.
 
 ## Resumable WebSocket stream
 

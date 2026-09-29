@@ -39,6 +39,8 @@ export type WorkspaceAccessRecord = Readonly<{
   path: string | null;
   principal_id: string;
   recorded_at: string;
+  /** People who have seen this record as it now reads; a changed notice is unseen again. */
+  seen_by: readonly string[];
 }>;
 
 export type WorkspaceAccess = Readonly<{
@@ -57,7 +59,7 @@ export type WorkspaceToolBoundary = Readonly<{
 }>;
 
 export class WorkspaceFolderError extends Error {
-  constructor(readonly code: "folder_invalid" | "folder_already_included" | "folder_not_found" | "home_folder_fixed", message: string) {
+  constructor(readonly code: "folder_invalid" | "folder_already_included" | "folder_not_found" | "home_folder_fixed" | "notice_not_found", message: string) {
     super(message);
     this.name = "WorkspaceFolderError";
   }
@@ -96,6 +98,14 @@ export function applyWorkspaceAccessSchema(db: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_workspace_access_records_workspace
       ON workspace_access_records(workspace_id, host_id, recorded_at);
+    CREATE TABLE IF NOT EXISTS workspace_notice_acknowledgements (
+      record_id TEXT NOT NULL,
+      principal_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      record_recorded_at TEXT NOT NULL,
+      acknowledged_at TEXT NOT NULL,
+      PRIMARY KEY (record_id, principal_id)
+    );
   `);
 }
 
@@ -117,6 +127,8 @@ export class WorkspaceAccessStore {
       host_id: string;
       /** The Workspace's current home folder on this host. */
       home_locator: (workspaceId: string) => string | null;
+      /** Told when Floe records, changes or removes a notice by itself, so surfaces hear of it now. */
+      notice_changed?: (workspaceId: string) => void;
       now?: () => string;
     }>,
   ) {
@@ -136,11 +148,18 @@ export class WorkspaceAccessStore {
       folders.push({ folder_id: row.folder_id, path: row.locator, home: false,
         available: realFolder(row.locator) !== null, added_at: row.added_at });
     }
+    const seen = new Map<string, string[]>();
+    for (const row of this.db.prepare(`SELECT a.record_id, a.principal_id FROM workspace_notice_acknowledgements a
+      JOIN workspace_access_records r ON r.record_id = a.record_id AND r.recorded_at = a.record_recorded_at
+      WHERE r.workspace_id = ? AND r.host_id = ? ORDER BY a.acknowledged_at, a.principal_id`)
+      .all(workspaceId, this.dependencies.host_id) as Array<{ record_id: string; principal_id: string }>) {
+      seen.set(row.record_id, [...(seen.get(row.record_id) ?? []), row.principal_id]);
+    }
     const records = (this.db.prepare(`SELECT record_id, kind, summary, path, principal_id, recorded_at
       FROM workspace_access_records WHERE workspace_id = ? AND host_id = ?
       ORDER BY recorded_at DESC, record_id DESC LIMIT ?`)
-      .all(workspaceId, this.dependencies.host_id, RECORD_LIMIT) as WorkspaceAccessRecord[])
-      .map(row => ({ ...row }));
+      .all(workspaceId, this.dependencies.host_id, RECORD_LIMIT) as Omit<WorkspaceAccessRecord, "seen_by">[])
+      .map(row => ({ ...row, seen_by: seen.get(row.record_id) ?? [] }));
     return { workspace_id: workspaceId, folders, system_access: this.systemAccess(workspaceId), records };
   }
 
@@ -206,7 +225,7 @@ export class WorkspaceAccessStore {
       (record_id, workspace_id, host_id, kind, path, summary, principal_id, recorded_at)
       VALUES (?, ?, ?, 'tool_access_given', NULL, ?, ?, ?)`)
       .run(`notice:tool-access:${workspaceId}`, workspaceId, this.dependencies.host_id, TOOL_ACCESS_NOTICE, principalId, this.now());
-    return Number(result.changes) > 0;
+    return this.noticed(workspaceId, Number(result.changes) > 0);
   }
 
   /**
@@ -228,17 +247,43 @@ export class WorkspaceAccessStore {
         principal_id = excluded.principal_id, recorded_at = excluded.recorded_at
       WHERE workspace_access_records.summary <> excluded.summary OR workspace_access_records.kind <> excluded.kind`)
       .run(input.record_id, input.workspace_id, this.dependencies.host_id, input.kind, input.summary, input.principal_id, this.now());
-    return Number(result.changes) > 0;
+    return this.noticed(input.workspace_id, Number(result.changes) > 0);
+  }
+
+  /**
+   * Marks a record seen by one person, as it now reads. False when it was
+   * already seen; throws when the Workspace has no such record.
+   */
+  acknowledge(input: Readonly<{ workspace_id: string; record_id: string; principal_id: string }>): boolean {
+    const record = this.db.prepare(`SELECT recorded_at FROM workspace_access_records
+      WHERE record_id = ? AND workspace_id = ? AND host_id = ?`)
+      .get(input.record_id, input.workspace_id, this.dependencies.host_id) as { recorded_at: string } | undefined;
+    if (!record) throw new WorkspaceFolderError("notice_not_found", "This Workspace has no notice with that id.");
+    return Number(this.db.prepare(`INSERT INTO workspace_notice_acknowledgements
+      (record_id, principal_id, workspace_id, record_recorded_at, acknowledged_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(record_id, principal_id) DO UPDATE SET record_recorded_at = excluded.record_recorded_at,
+        acknowledged_at = excluded.acknowledged_at
+      WHERE workspace_notice_acknowledgements.record_recorded_at <> excluded.record_recorded_at`)
+      .run(input.record_id, input.principal_id, input.workspace_id, record.recorded_at, this.now()).changes) > 0;
   }
 
   removeStandingNotice(recordId: string): boolean {
-    return Number(this.db.prepare("DELETE FROM workspace_access_records WHERE record_id = ? AND host_id = ?")
-      .run(recordId, this.dependencies.host_id).changes) > 0;
+    const row = this.db.prepare("SELECT workspace_id FROM workspace_access_records WHERE record_id = ? AND host_id = ?")
+      .get(recordId, this.dependencies.host_id) as { workspace_id: string } | undefined;
+    if (!row) return false;
+    this.db.prepare("DELETE FROM workspace_notice_acknowledgements WHERE record_id = ?").run(recordId);
+    this.db.prepare("DELETE FROM workspace_access_records WHERE record_id = ? AND host_id = ?").run(recordId, this.dependencies.host_id);
+    return this.noticed(row.workspace_id, true);
+  }
+
+  private noticed(workspaceId: string, changed: boolean): boolean {
+    if (changed) this.dependencies.notice_changed?.(workspaceId);
+    return changed;
   }
 
   /** Removes everything held for a deleted Workspace. */
   forgetWorkspace(workspaceId: string): void {
-    for (const table of ["workspace_folders", "workspace_system_access", "workspace_access_records"]) {
+    for (const table of ["workspace_folders", "workspace_system_access", "workspace_access_records", "workspace_notice_acknowledgements"]) {
       this.db.prepare(`DELETE FROM ${table} WHERE workspace_id = ?`).run(workspaceId);
     }
   }
