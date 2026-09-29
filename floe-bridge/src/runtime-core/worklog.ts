@@ -58,6 +58,8 @@ export type WorkLogToolEntry = {
   result_code?: string;
   files_touched?: string[];
   duration_ms?: number;
+  started_at?: string;
+  ended_at?: string;
 };
 
 export type WorkLogEmitEntry = {

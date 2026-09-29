@@ -314,6 +314,11 @@ describe("Scope pause and node pushes, Floe's side with a fake engine", () => {
     const cancel = await socket.until((push) => push.type === "delivery_cancel_requested"
       && push.payload.scope_execution_id === execution.execution_id, "delivery_cancel_requested");
     expect(requested.payload.active_delivery_ids).toEqual([cancel.payload.delivery_id]);
+    expect(requested.payload.requested_at).toEqual(expect.any(String));
+    expect(cancel.payload).toMatchObject({
+      pause_requested_at: requested.payload.requested_at,
+      cancel_requested_at: expect.any(String),
+    });
     await aborted;
     await socket.until((push) => push.type === "node_execution_state_changed"
       && push.payload.node_execution_id === interruptedNodeId && push.payload.to_status === "paused", "node paused");
@@ -325,6 +330,18 @@ describe("Scope pause and node pushes, Floe's side with a fake engine", () => {
     const interrupted = handle.store.scopeExecutionStore.getNodeExecution(interruptedNodeId)!;
     const firstAttempts = handle.store.scopeExecutionStore.listAttempts(interruptedNodeId);
     expect(interrupted).toMatchObject({ status: "paused", failure: expect.objectContaining({ outcome_unknown: true }) });
+    expect(interrupted.failure.interruption).toEqual([expect.objectContaining({
+      evidence: expect.objectContaining({
+        pause_requested_at: requested.payload.requested_at,
+        cancel_requested_at: cancel.payload.cancel_requested_at,
+        bridge_received_at: expect.any(String),
+        adapter_cancel_requested_at: expect.any(String),
+        timeline: expect.objectContaining({
+          runtime_quiesced_at: expect.any(String),
+          delivery_settled_at: expect.any(String),
+        }),
+      }),
+    })]);
     expect(firstAttempts).toEqual([expect.objectContaining({ status: "outcome_unknown" })]);
     expect(handle.store.scopeExecutionStore.listAttempts(completed.node_execution_id)).toHaveLength(1);
 

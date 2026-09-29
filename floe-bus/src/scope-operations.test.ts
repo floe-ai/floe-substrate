@@ -1022,6 +1022,7 @@ describe("Bus-owned Scope semantic operations", () => {
     expect(paused.result).toMatchObject({
       execution: { status: "paused" },
       active_delivery_ids: [],
+      requested_at: expect.any(String),
       deadline_at: expect.any(String),
     });
 

@@ -187,6 +187,7 @@ export type ScopeExecutionPauseResult = {
   node_execution_ids: string[];
   delivery_ids: string[];
   active_delivery_ids: string[];
+  requested_at: string;
   deadline_at: string;
 };
 
@@ -2187,15 +2188,16 @@ export class ScopeExecutionStore {
       WHERE pause_id = ? AND delivery_id IS NOT NULL ORDER BY delivery_id
     `).all(pauseId) as Array<{ delivery_id: string }>).map((row) => row.delivery_id);
     const pause = this.db.prepare(`
-      SELECT COALESCE(deadline_at, paused_at) AS deadline_at
+      SELECT paused_at AS requested_at, COALESCE(deadline_at, paused_at) AS deadline_at
       FROM scope_execution_pauses WHERE pause_id = ?
-    `).get(pauseId) as { deadline_at: string };
+    `).get(pauseId) as { requested_at: string; deadline_at: string };
     return {
       execution,
       pause_id: pauseId,
       node_execution_ids: nodeIds,
       delivery_ids: deliveryIds,
       active_delivery_ids: activeDeliveryIds,
+      requested_at: pause.requested_at,
       deadline_at: pause.deadline_at,
     };
   }

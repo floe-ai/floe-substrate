@@ -32,6 +32,8 @@ export type SubstrateSessionHandle = {
     result_type?: "success" | "failure";
     result_value?: string;
     result_code?: string;
+    started_at?: string;
+    ended_at?: string;
   }) => void;
 };
 

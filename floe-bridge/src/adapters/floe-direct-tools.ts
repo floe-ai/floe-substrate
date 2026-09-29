@@ -56,6 +56,7 @@ function directTool(
     skipPermission: true,
     async handler(args: unknown, invocation) {
       const callId = invocation.toolCallId;
+      const startedAt = new Date().toISOString();
       const normalizedArgs = args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {};
       handle.recordToolActivity({
         name,
@@ -63,6 +64,7 @@ function directTool(
         lifecycle: "started",
         provenance: FLOE_DIRECT_TOOL_CALLBACK_PROVENANCE,
         arguments: normalizedArgs,
+        started_at: startedAt,
       });
       try {
         const execution = await execute(schema.parse(args) as Record<string, unknown>, handle);
@@ -76,6 +78,8 @@ function directTool(
           result_type: toolResult.resultType,
           result_value: toolResult.textResultForLlm,
           result_code: resultCode(execution),
+          started_at: startedAt,
+          ended_at: new Date().toISOString(),
         });
         return toolResult;
       } catch (error) {
@@ -87,6 +91,8 @@ function directTool(
           is_error: true,
           result_type: "failure",
           result_value: error instanceof Error ? error.message : String(error),
+          started_at: startedAt,
+          ended_at: new Date().toISOString(),
         });
         throw error;
       }

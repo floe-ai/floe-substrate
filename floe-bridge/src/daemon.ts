@@ -341,7 +341,9 @@ export class BridgeDaemon {
     if (message.type === "delivery_cancel_requested" && message.payload?.delivery_id) {
       if (message.payload?.runtime_owner === "bus") return;
       const deliveryId = String(message.payload.delivery_id);
+      const bridgeReceivedAt = new Date().toISOString();
       this.cancelledDeliveries.add(deliveryId);
+      const adapterCancelRequestedAt = new Date().toISOString();
       const accepted = this.adapter.cancelDelivery?.(deliveryId) ?? false;
       const result = accepted
         ? await this.adapter.waitForDeliveryCancellation?.(deliveryId)
@@ -351,7 +353,13 @@ export class BridgeDaemon {
           workspace_id: message.payload.workspace_id,
           delivery_id: deliveryId,
           outcome: result.outcome,
-          evidence: result.evidence,
+          evidence: {
+            ...result.evidence,
+            pause_requested_at: message.payload?.pause_requested_at ?? null,
+            cancel_requested_at: message.payload?.cancel_requested_at ?? null,
+            bridge_received_at: bridgeReceivedAt,
+            adapter_cancel_requested_at: adapterCancelRequestedAt,
+          },
         });
       }
     }

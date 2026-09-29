@@ -168,7 +168,12 @@ describe("BridgeDaemon shutdown", () => {
 
       await (daemon as any).handleEventStreamMessage({
         type: "delivery_cancel_requested",
-        payload: { delivery_id: "delivery:active", workspace_id: "workspace:test" },
+        payload: {
+          delivery_id: "delivery:active",
+          workspace_id: "workspace:test",
+          pause_requested_at: "2026-09-29T00:00:00.000Z",
+          cancel_requested_at: "2026-09-29T00:00:00.001Z",
+        },
       });
 
       expect(cancelDelivery).toHaveBeenCalledWith("delivery:active");
@@ -176,7 +181,13 @@ describe("BridgeDaemon shutdown", () => {
         workspace_id: "workspace:test",
         delivery_id: "delivery:active",
         outcome: "quiesced",
-        evidence: { runtime_turn_id: "turn:active" },
+        evidence: {
+          runtime_turn_id: "turn:active",
+          pause_requested_at: "2026-09-29T00:00:00.000Z",
+          cancel_requested_at: "2026-09-29T00:00:00.001Z",
+          bridge_received_at: expect.any(String),
+          adapter_cancel_requested_at: expect.any(String),
+        },
       });
       expect((daemon as any).cancelledDeliveries.has("delivery:active")).toBe(true);
     } finally {
