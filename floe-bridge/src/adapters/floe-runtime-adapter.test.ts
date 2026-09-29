@@ -98,11 +98,21 @@ describe("FloeRuntimeAdapter SDK route", () => {
     const record = vi.fn(async () => ({ request_resolved: false, result_event: { event_id: "result-1" } }));
     ctx.bus.recordRuntimeTurnResult = record;
     const adapter = new FloeRuntimeAdapter({ runtimeFactory: () => runtime as any });
-    await adapter.handleBundle(ctx, bundle(), { model: "dynamic-model", instructions: "Floe instructions" } as any);
-    await adapter.handleBundle(ctx, bundle("delivery-2"), { model: "dynamic-model", instructions: "Floe instructions" } as any);
-    await adapter.handleBundle(ctx, bundle("delivery-3"), { model: "newly-listed-model", instructions: "Floe instructions" } as any);
+    const logged: unknown[][] = [];
+    const log = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => { logged.push(args); });
+    try {
+      await adapter.handleBundle(ctx, bundle(), { model: "dynamic-model", instructions: "Floe instructions" } as any);
+      await adapter.handleBundle(ctx, bundle("delivery-2"), { model: "dynamic-model", instructions: "Floe instructions" } as any);
+      await adapter.handleBundle(ctx, bundle("delivery-3"), { model: "newly-listed-model", instructions: "Floe instructions" } as any);
+    } finally {
+      log.mockRestore();
+    }
 
     const [first, second, third] = runtime.runs;
+    // The log states what was actually sent: the system message on the new
+    // session, nothing on a resumed one.
+    const injected = logged.filter(([label]) => label === "[bridge] floe-runtime prompt injected").map(([, body]) => body as any);
+    expect(injected.map((body) => body.system_message_bytes)).toEqual([first[4].systemMessage.content.length, 0, 0]);
     expect(first[1].prompt).not.toContain("Floe instructions");
     expect(first[4]).toMatchObject({ model: "dynamic-model", systemMessage: { mode: "append", content: expect.stringContaining("Floe instructions") } });
     expect(first[4].tools.map((tool: any) => tool.name)).toContain("use_capability");

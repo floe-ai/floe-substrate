@@ -187,6 +187,9 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       fresh_session: freshSession,
       model: model ?? "(default)",
       prompt_length: prompt.length,
+      // Instructions reach the model only as the system message of a new
+      // session; a resumed session already holds them, so this is 0 there.
+      system_message_bytes: systemMessage.length,
     });
 
     try {

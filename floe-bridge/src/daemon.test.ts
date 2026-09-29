@@ -734,7 +734,18 @@ describe("BridgeDaemon – canonical direct Context runtime", () => {
       const processingContract = delivery.processing_contract;
       delete delivery.processing_contract;
 
-      await (daemon as any).handleDelivery(delivery);
+      const logged: unknown[][] = [];
+      const log = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => { logged.push(args); });
+      try {
+        await (daemon as any).handleDelivery(delivery);
+      } finally {
+        log.mockRestore();
+      }
+
+      // The log reports the instructions this turn carries (from the pinned
+      // Actor definition), not the endpoint's legacy instruction field.
+      const resolved = logged.find(([label]) => label === "[bridge] effective runtime resolved");
+      expect(resolved?.[1]).toMatchObject({ instructions_bytes: "Use the exact recorded runtime.".length });
 
       expect(mutableResolutionCalls).toBe(0);
       expect(runtimePrepareCalls).toBe(1);

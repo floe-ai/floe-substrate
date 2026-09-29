@@ -928,7 +928,7 @@ export class BridgeDaemon {
         model_source: effectiveRuntime.model_source ?? "(none)",
         auth_profile: effectiveRuntime.auth_profile ?? "(none)",
         auth_profile_source: effectiveRuntime.auth_profile_source ?? "(none)",
-        instructions_bytes: instructions?.length ?? 0
+        instructions_bytes: effectiveRuntime.instructions?.length ?? 0
       });
       const injected = await this.bus.reportDeliveryStatus(delivery.delivery_id, "injected_to_runtime");
       // Older Bus versions and test doubles acknowledge the transition without
