@@ -16,14 +16,23 @@ import { decodeEventCursor } from "./event-cursor.js";
 import { runtimeCredentialAccessOperations } from "./credential-runtime-access-operations.js";
 import { capabilityGrantOperations } from "./capability-grant-operations.js";
 import { resolveActorApprovalPolicy } from "./actor-approval-policy.js";
-import { decideToolAuthority } from "./tool-policy.js";
+import { decideToolAuthority, type ToolAuthorityDecision } from "./tool-policy.js";
+import type { ToolCallPolicyFacts } from "./tool-policy-facts.js";
+import {
+  TOOL_APPROVAL_TARGET_KIND,
+  toolApprovalAction,
+  toolApprovalOutcome,
+  type ToolApprovalAbandonReason,
+} from "./tool-approvals.js";
 import {
   policyDecisionEvent,
   runtimeToolDecision,
+  runtimeToolResolution,
   toolFactsFromRequest,
   toolOperationEffects,
   type RuntimeToolCallRequest,
   type RuntimeToolDecision,
+  type RuntimeToolResolution,
 } from "./runtime-tool-policy.js";
 import {
   EndpointWatermarkStore,
@@ -124,6 +133,7 @@ import { RuntimeProfileStore, applyRuntimeProfileSchema, CLIENT_ADAPTER_ID } fro
 import { ConnectorStore, applyConnectorSchema } from "./connectors.js";
 import {
   ApprovalConflictError,
+  ApprovalDeniedError,
   ApprovalValidationError,
   ApprovalStore,
   approvalActionDigest,
@@ -141,6 +151,7 @@ import {
   PolicyStore,
   applyPolicySchema,
   type PolicyEvaluationFacts,
+  type PolicyEvaluationRecord,
 } from "./policies.js";
 import {
   registerPolicyOperations,
@@ -3169,6 +3180,11 @@ export class BusStore {
     }
     const source = input.decision_policy.source;
     const evaluation = this.policyStore.getEvaluation(source.policy_evaluation_id);
+    if (evaluation?.facts?.tool) {
+      return evaluation.workspace_id === input.workspace_id
+        && evaluation.facts_digest === source.facts_digest
+        && this.toolApprovalIsCurrent(evaluation, input.action);
+    }
     if (
       !evaluation
       || evaluation.workspace_id !== input.workspace_id
@@ -3310,6 +3326,7 @@ export class BusStore {
             invalidated_by_principal_id: "system:approval-validity",
             reason: error.reason,
           });
+          this.broadcastFn?.("approval_invalidated", { request: invalidated });
           throw new ApprovalConflictError(
             invalidated.approval_request_id,
             "its exact Scope decision binding is no longer current",
@@ -3322,6 +3339,7 @@ export class BusStore {
         invalidated_by_principal_id: "system:approval-validity",
       });
       if (validity.invalidated) {
+        this.broadcastFn?.("approval_invalidated", { request: validity.request });
         throw new ApprovalConflictError(
           validity.request.approval_request_id,
           "its exact action, evidence, authority, or Policy is no longer current",
@@ -6363,32 +6381,188 @@ export class BusStore {
    * running: the Actor's live grants and scope bound it, then its pinned
    * Approval Policy and bound policies may restrict it. Every call is
    * recorded and pushed; nothing is remembered as a standing approval.
+   * A call that needs a decision becomes one ApprovalRequest per requirement,
+   * bound to this exact call and pushed to whoever may answer it.
    */
   evaluateRuntimeToolCall(input: Readonly<{
     bridge_id: string;
     delivery_id: string;
     request: RuntimeToolCallRequest;
   }>, broadcast: Broadcast): RuntimeToolDecision {
-    const row = this.db.prepare("SELECT * FROM delivery_bundles WHERE delivery_id = ?").get(input.delivery_id) as any;
-    if (!row) throw new Error(`Unknown delivery_id: ${input.delivery_id}`);
-    if (row.state !== "delivered_to_bridge" && row.state !== "injected_to_runtime") {
-      throw new Error(`Delivery '${input.delivery_id}' is '${row.state}' and is not running.`);
+    const inputs = this.runtimeToolPolicyInputs(input.delivery_id, input.bridge_id);
+    const toolFacts = toolFactsFromRequest(input.request, inputs.definition.actor_definition_revision_id);
+    const { evaluation, authority } = this.evaluateToolFacts(inputs, input.request.operation_id, toolFacts);
+    const requests = evaluation.decision === "require_approval" && authority.allowed
+      ? this.transaction(() => evaluation.approval_requirements.map((requirement) =>
+          this.approvalStore.createRequest({
+            workspace_id: inputs.contract.workspace_id,
+            action: toolApprovalAction({
+              evaluation,
+              delivery_id: inputs.delivery.delivery_id,
+              grant_id: authority.grant_id,
+              scope_execution_id: inputs.scoped?.scope_execution.execution_id ?? null,
+              node_execution_id: inputs.scoped?.node_execution.node_execution_id ?? null,
+            }),
+            context_id: inputs.contract.context.context_id,
+            decision_policy: {
+              source: {
+                kind: "policy_evaluation",
+                policy_evaluation_id: evaluation.evaluation_id,
+                policy_revision_id: requirement.policy_revision_id,
+                rule_id: requirement.rule_id,
+                facts_digest: evaluation.facts_digest,
+              },
+              approvers: requirement.approvers,
+            },
+            requested_by_principal_id: inputs.session.principal_id,
+            reason: requirement.reason,
+            expires_at: inputs.session.expires_at,
+            maximum_uses: 1,
+            idempotency_key: `tool:${evaluation.evaluation_id}:${requirement.policy_revision_id}:${requirement.rule_id}`,
+          })))
+      : [];
+    const decision = runtimeToolDecision(evaluation, input.request.operation_id, toolFacts.tool_call_id, authority, requests);
+    broadcast("policy_decision", policyDecisionEvent(evaluation, {
+      delivery_id: inputs.delivery.delivery_id,
+      endpoint_id: inputs.delivery.endpoint_id,
+      actor_id: inputs.contract.actor.actor_id,
+      rule_id: decision.refusal?.rule_id ?? null,
+    }));
+    for (const request of requests) broadcast("approval_requested", { request });
+    return decision;
+  }
+
+  /**
+   * Reports how a tool call that needed a decision ended. A Bridge calls this
+   * once after registering for approval pushes (so no answer is missed), again
+   * when a push arrives, and with `abandon` when the turn is cancelled or its
+   * authority expires. An approval is used exactly once for this call.
+   */
+  resolveRuntimeToolApproval(input: Readonly<{
+    bridge_id: string;
+    delivery_id: string;
+    evaluation_id: string;
+    abandon: ToolApprovalAbandonReason | null;
+  }>, broadcast: Broadcast): RuntimeToolResolution {
+    const delivery = this.requireBridgeDelivery(input.delivery_id, input.bridge_id);
+    const evaluation = this.policyStore.getEvaluation(input.evaluation_id);
+    const tool = evaluation?.facts?.tool;
+    if (!evaluation || !tool || evaluation.workspace_id !== delivery.workspace_id) {
+      throw new Error(`Policy evaluation '${input.evaluation_id}' is not a tool call decision for Delivery '${input.delivery_id}'.`);
     }
-    const endpoint = this.getEndpoint(String(row.endpoint_id)) as { bridge_id?: string | null } | null;
-    if (endpoint?.bridge_id !== input.bridge_id) {
-      throw new Error(`Bridge '${input.bridge_id}' does not own Delivery '${input.delivery_id}'.`);
+    const workspaceId = delivery.workspace_id;
+    const requestIds = (this.db.prepare(`
+      SELECT approval_request_id FROM approval_requests
+      WHERE workspace_id = ?
+        AND json_extract(action_json, '$.approval_policy_ref.id') = ?
+        AND json_extract(action_json, '$.target.kind') = ?
+        AND json_extract(action_json, '$.target.id') = ?
+      ORDER BY approval_request_id
+    `).all(workspaceId, evaluation.evaluation_id, TOOL_APPROVAL_TARGET_KIND, delivery.delivery_id) as Array<{
+      approval_request_id: string;
+    }>).map((row) => row.approval_request_id);
+    const settle = () => requestIds.map((id) => {
+      const request = this.approvalStore.requireRequestForWorkspace(id, workspaceId);
+      if (request.status !== "pending") return request;
+      if (input.abandon) {
+        return this.approvalStore.cancelRequest({
+          workspace_id: workspaceId,
+          approval_request_id: id,
+          expected_state_revision: request.state_revision,
+          cancelled_by_principal_id: `bridge:${input.bridge_id}`,
+          reason: input.abandon === "cancelled"
+            ? "The turn waiting for this decision was cancelled."
+            : "The turn stopped waiting before this decision arrived.",
+        });
+      }
+      return this.approvalStore.refreshRequestValidity({
+        workspace_id: workspaceId,
+        approval_request_id: id,
+        invalidated_by_principal_id: "system:tool-approval-validity",
+      }).request;
+    });
+    const requests = this.transaction(settle);
+    let outcome = toolApprovalOutcome(requests);
+    if (input.abandon && outcome === "cancelled") outcome = input.abandon;
+    if (outcome === "allowed") {
+      try {
+        this.transaction(() => {
+          for (const request of requests) {
+            const receipt = this.approvalStore.getReceiptForRequest(request.approval_request_id);
+            if (!receipt) throw new ApprovalDeniedError("approval_receipt_not_found");
+            this.approvalStore.consumeReceipt({
+              approval_receipt_id: receipt.approval_receipt_id,
+              use_id: `tool:${evaluation.evaluation_id}`,
+              workspace_id: workspaceId,
+              principal_id: request.action.authorized_principal_id,
+              action: request.action,
+            });
+          }
+        });
+      } catch (error) {
+        if (!(error instanceof ApprovalDeniedError)) throw error;
+        outcome = "unavailable";
+      }
+    }
+    const resolution = runtimeToolResolution(evaluation, requests, outcome);
+    if (outcome !== "pending") {
+      broadcast("policy_decision_resolved", {
+        ...resolution,
+        workspace_id: workspaceId,
+        delivery_id: delivery.delivery_id,
+        endpoint_id: delivery.endpoint_id,
+      });
+    }
+    return resolution;
+  }
+
+  private requireBridgeDelivery(deliveryId: string, bridgeId: string): Readonly<{
+    delivery_id: string;
+    endpoint_id: string;
+    workspace_id: string;
+    row: any;
+  }> {
+    const row = this.db.prepare("SELECT * FROM delivery_bundles WHERE delivery_id = ?").get(deliveryId) as any;
+    if (!row) throw new Error(`Unknown delivery_id: ${deliveryId}`);
+    const endpoint = this.getEndpoint(String(row.endpoint_id)) as { bridge_id?: string | null; workspace_id?: string } | null;
+    if (endpoint?.bridge_id !== bridgeId) {
+      throw new Error(`Bridge '${bridgeId}' does not own Delivery '${deliveryId}'.`);
+    }
+    return { delivery_id: deliveryId, endpoint_id: String(row.endpoint_id), workspace_id: String(endpoint.workspace_id), row };
+  }
+
+  /** The running Delivery's pinned Actor definition, live authority session, and binding. */
+  private runtimeToolPolicyInputs(deliveryId: string, bridgeId: string | null) {
+    const row = bridgeId
+      ? this.requireBridgeDelivery(deliveryId, bridgeId).row
+      : this.db.prepare("SELECT * FROM delivery_bundles WHERE delivery_id = ?").get(deliveryId) as any;
+    if (!row) throw new Error(`Unknown delivery_id: ${deliveryId}`);
+    if (row.state !== "delivered_to_bridge" && row.state !== "injected_to_runtime") {
+      throw new Error(`Delivery '${deliveryId}' is '${row.state}' and is not running.`);
     }
     const delivery = this.rowToDelivery(row);
     const session = delivery.operation_authority_session_id
       ? this.operationAuthoritySessions.getSession(delivery.operation_authority_session_id)
       : null;
-    if (!session) throw new Error(`Delivery '${input.delivery_id}' has no prepared runtime authority.`);
+    if (!session) throw new Error(`Delivery '${deliveryId}' has no prepared runtime authority.`);
     const contract = delivery.node_execution_id
       ? this.getRuntimeProcessingContract(delivery.execution_attempt_id!)
       : this.resolveDirectRuntimeProcessingContract(delivery);
-    const definition = contract.actor.definition;
-    const toolFacts = toolFactsFromRequest(input.request, definition.actor_definition_revision_id);
+    return {
+      delivery,
+      session,
+      contract,
+      definition: contract.actor.definition,
+      scoped: contract.contract_kind === "scope_node" ? contract : null,
+    };
+  }
 
+  private evaluateToolFacts(
+    inputs: ReturnType<BusStore["runtimeToolPolicyInputs"]>,
+    operationId: string,
+    toolFacts: ToolCallPolicyFacts,
+  ): { evaluation: PolicyEvaluationRecord; authority: ToolAuthorityDecision } {
+    const { session, contract, definition, scoped } = inputs;
     const sessionLive = session.revoked_at === null && Date.parse(session.expires_at) > Date.now();
     const grants = sessionLive
       ? this.capabilityGrantStore.inspectSessionGrantIds({
@@ -6399,18 +6573,14 @@ export class BusStore {
       : [];
     const approvalPolicy = resolveActorApprovalPolicy(definition, this.policyStore);
     let authority = decideToolAuthority({
-      operation_id: input.request.operation_id,
+      operation_id: operationId,
       facts: toolFacts,
       scope_paths: definition.content.scope?.paths ?? null,
       grants,
     });
-    let authorityReason = authority.allowed ? null : authority.reason;
     if (authority.allowed && !approvalPolicy.ok) {
       authority = { allowed: false, code: "tool_grant_missing", reason: approvalPolicy.reason };
-      authorityReason = approvalPolicy.reason;
     }
-
-    const scoped = contract.contract_kind === "scope_node" ? contract : null;
     const roles = this.actorRoleAuthorityStore.resolveCurrent({
       workspace_id: contract.workspace_id,
       principal_id: session.principal_id,
@@ -6430,9 +6600,9 @@ export class BusStore {
       actor_role_evidence: roles.evidence,
       interaction_mode: session.interaction_mode,
       provenance: session.provenance,
-      operation_id: input.request.operation_id,
+      operation_id: operationId,
       target: null,
-      effects: toolOperationEffects(input.request.operation_id),
+      effects: toolOperationEffects(operationId),
       scope_id: scoped?.scope_execution.scope_id ?? null,
       actor_id: contract.actor.actor_id,
       scope_composition_revision_id: scoped?.node_execution.revision_id ?? null,
@@ -6445,16 +6615,39 @@ export class BusStore {
       tool: toolFacts,
     }, {
       direct_revision_ids: approvalPolicy.ok && approvalPolicy.policy_revision_id ? [approvalPolicy.policy_revision_id] : [],
-      ...(authorityReason ? { authority_denial_reason: authorityReason } : {}),
+      ...(authority.allowed ? {} : { authority_denial_reason: authority.reason }),
     });
-    const decision = runtimeToolDecision(evaluation, input.request.operation_id, toolFacts.tool_call_id, authority);
-    broadcast("policy_decision", policyDecisionEvent(evaluation, {
-      delivery_id: delivery.delivery_id,
-      endpoint_id: delivery.endpoint_id,
-      actor_id: contract.actor.actor_id,
-      rule_id: decision.refusal?.rule_id ?? null,
-    }));
-    return decision;
+    return { evaluation, authority };
+  }
+
+  /**
+   * A pending tool approval stays answerable only while its Delivery runs under
+   * the same Actor definition and the same call would still need this decision.
+   */
+  private toolApprovalIsCurrent(
+    evaluation: PolicyEvaluationRecord,
+    action: import("./approvals.js").ApprovalAction,
+  ): boolean {
+    const tool = evaluation.facts?.tool;
+    if (!tool || action.target?.kind !== TOOL_APPROVAL_TARGET_KIND || action.input_digest !== tool.argument_digest) {
+      return false;
+    }
+    let inputs: ReturnType<BusStore["runtimeToolPolicyInputs"]>;
+    try {
+      inputs = this.runtimeToolPolicyInputs(action.target.id, null);
+    } catch {
+      return false;
+    }
+    if (inputs.definition.actor_definition_revision_id !== tool.actor_definition_revision_id) return false;
+    const current = this.evaluateToolFacts(inputs, evaluation.facts!.operation_id, tool);
+    if (!current.authority.allowed || !action.capability_grant_ids.includes(current.authority.grant_id)) return false;
+    return current.evaluation.decision === "require_approval" && canonicalJson({
+      evaluated_policy_revision_ids: current.evaluation.evaluated_policy_revision_ids,
+      approval_requirements: current.evaluation.approval_requirements,
+    }) === canonicalJson({
+      evaluated_policy_revision_ids: evaluation.evaluated_policy_revision_ids,
+      approval_requirements: evaluation.approval_requirements,
+    });
   }
 
   reportDeliveryStatus(input: {

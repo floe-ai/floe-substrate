@@ -1,5 +1,7 @@
+import type { ApprovalRequestRecord } from "./approvals.js";
 import type { OperationEffects } from "./operations.js";
 import type { PolicyEvaluationRecord } from "./policies.js";
+import type { ToolApprovalOutcome } from "./tool-approvals.js";
 import {
   toolNetworkDestination,
   type ToolCallPolicyFacts,
@@ -41,6 +43,20 @@ export type RuntimeToolDecision = Readonly<{
   decision: PolicyEvaluationRecord["decision"];
   refusal: RuntimeToolRefusal | null;
   approval_requirements: PolicyEvaluationRecord["approval_requirements"];
+  /** Present when the call waits for a decision; answered by push. */
+  approval_request_ids: readonly string[];
+  /** When the waiting stops being answerable: the Delivery's authority expiry. */
+  approval_expires_at: string | null;
+}>;
+
+export type RuntimeToolResolution = Readonly<{
+  evaluation_id: string;
+  tool_call_id: string | null;
+  operation_id: string;
+  outcome: ToolApprovalOutcome;
+  refusal: RuntimeToolRefusal | null;
+  approval_request_ids: readonly string[];
+  responder_principal_ids: readonly string[];
 }>;
 
 export function toolFactsFromRequest(
@@ -90,6 +106,7 @@ export function runtimeToolDecision(
   operationId: string,
   toolCallId: string | null,
   authority: ToolAuthorityDecision,
+  approvalRequests: readonly ApprovalRequestRecord[] = [],
 ): RuntimeToolDecision {
   let refusal: RuntimeToolRefusal | null = null;
   if (evaluation.decision === "deny") {
@@ -107,6 +124,42 @@ export function runtimeToolDecision(
     decision: evaluation.decision,
     refusal,
     approval_requirements: evaluation.approval_requirements,
+    approval_request_ids: approvalRequests.map((request) => request.approval_request_id),
+    approval_expires_at: approvalRequests[0]?.expires_at ?? null,
+  };
+}
+
+const RESOLUTION_REASONS: Record<Exclude<ToolApprovalOutcome, "allowed" | "pending">, string> = {
+  denied: "The required approval was refused.",
+  cancelled: "The turn waiting for approval was cancelled.",
+  unavailable: "No valid approval arrived while this call could still use it.",
+};
+
+export function runtimeToolResolution(
+  evaluation: PolicyEvaluationRecord,
+  requests: readonly ApprovalRequestRecord[],
+  outcome: ToolApprovalOutcome,
+): RuntimeToolResolution {
+  const tool = evaluation.facts!.tool!;
+  const operationId = evaluation.facts!.operation_id;
+  const refused = outcome !== "allowed" && outcome !== "pending";
+  return {
+    evaluation_id: evaluation.evaluation_id,
+    tool_call_id: tool.tool_call_id,
+    operation_id: operationId,
+    outcome,
+    refusal: refused
+      ? {
+          code: "tool_policy_denied",
+          tool_call_id: tool.tool_call_id,
+          operation_id: operationId,
+          rule_id: `approval.${outcome}`,
+          reason: RESOLUTION_REASONS[outcome],
+        }
+      : null,
+    approval_request_ids: requests.map((request) => request.approval_request_id),
+    responder_principal_ids: [...new Set(requests.flatMap((request) =>
+      request.decisions.map((decision) => decision.principal_id)))].sort(),
   };
 }
 

@@ -2955,7 +2955,7 @@ export async function createBusServer(
       urls: z.array(z.string()),
       write_redirection: z.boolean(),
       sandbox_bypass: z.boolean(),
-      argument_digest: z.string().min(1),
+      argument_digest: z.string().regex(/^[a-f0-9]{64}$/),
     }).strict().safeParse(request.body);
     if (!body.success) {
       return reply.code(400).send({ error: "tool_call_facts_invalid", message: body.error.message });
@@ -2965,6 +2965,35 @@ export async function createBusServer(
         bridge_id: bridgeAuthority.bridge_id,
         delivery_id: params.delivery_id,
         request: body.data,
+      }, broadcast);
+    } catch (error) {
+      return reply.code(409).send({
+        error: "tool_policy_unavailable",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.post("/v1/delivery/:delivery_id/tool-policy/:evaluation_id/resolve", async (request, reply) => {
+    const bridgeAuthority = requireBridgeService(request, reply);
+    if (!bridgeAuthority) return reply;
+    const params = z.object({ delivery_id: z.string().min(1), evaluation_id: z.string().min(1) }).parse(request.params);
+    if (
+      !testBypassedRequests.has(request)
+      && !bridgeOwnsDelivery(store, bridgeAuthority.bridge_id, params.delivery_id)
+    ) {
+      return sendTransportForbidden(reply);
+    }
+    const body = z.object({ abandon: z.enum(["cancelled", "unavailable"]).nullable() }).strict().safeParse(request.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: "tool_approval_resolution_invalid", message: body.error.message });
+    }
+    try {
+      return store.resolveRuntimeToolApproval({
+        bridge_id: bridgeAuthority.bridge_id,
+        delivery_id: params.delivery_id,
+        evaluation_id: params.evaluation_id,
+        abandon: body.data.abandon,
       }, broadcast);
     } catch (error) {
       return reply.code(409).send({
@@ -4532,6 +4561,7 @@ export function resolveTransportRequirement(request: any, store: BusStore): Tran
     || route === "/v1/delivery/:delivery_id/status"
     || route === "/v1/delivery/:delivery_id/runtime-prepare"
     || route === "/v1/delivery/:delivery_id/tool-policy/evaluate"
+    || route === "/v1/delivery/:delivery_id/tool-policy/:evaluation_id/resolve"
     || route === "/v1/delivery/:delivery_id/runtime-credentials/:secret_ref_id"
     || (route === "/v1/runtime/telemetry" && method === "POST")
     || (route === "/v1/endpoints/:endpoint_id/status" && method === "POST")
@@ -4819,7 +4849,7 @@ function resolveBroadcastWorkspaceId(
   add(payload.workspace_id);
   for (const key of [
     "workspace", "scope", "revision", "execution", "node_execution",
-    "event", "delivery", "telemetry", "pulse", "context", "endpoint", "binding",
+    "event", "delivery", "telemetry", "pulse", "context", "endpoint", "binding", "request",
   ]) {
     add(asRecord(payload[key]).workspace_id);
   }

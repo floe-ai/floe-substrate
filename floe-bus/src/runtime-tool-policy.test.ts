@@ -126,7 +126,7 @@ describe("runtime tool policy", () => {
       urls: [],
       write_redirection: false,
       sandbox_bypass: false,
-      argument_digest: "digest-1",
+      argument_digest: "a".repeat(64),
       ...overrides,
     };
   }
@@ -254,6 +254,78 @@ describe("runtime tool policy", () => {
     expect(evaluate(deliveryId, call({})).refusal?.reason).toMatch(/not published and live/);
   });
 
+  it("waits for a pushed decision and uses one approval for one exact call", async () => {
+    const read = grant(["engine.tool.filesystem.read"]);
+    handle.store.capabilityGrantStore.issueGrant({
+      principal_id: OPERATOR, boundary: { kind: "workspace", workspace_id: WS }, operation_ids: ["approval.decide"],
+      expires_at: "2099-01-01T00:00:00.000Z", issuer_id: PRINCIPAL, evidence: [{ kind: "test_fixture", ref: "approver" }],
+    });
+    const approval = publishPolicy("approval", [{
+      rule_id: "ask", priority: 1, match: { operation_ids: ["engine.tool.filesystem.read"] },
+      effect: { kind: "require_approval", reason: "Reading needs an answer.", approvers: { mode: "any", principal_ids: [OPERATOR], roles: [] } },
+    }]);
+    publishDefinition({
+      capability_grant_ids: [read.grant_id], scope: { paths: ["."] },
+      policy_refs: { budget: null, trust: null, approval: { kind: "policy", id: approval.policy_id, revision: approval.policy_revision_id } },
+    });
+    const deliveryId = await runningDelivery();
+    const actorDeliveries = () => (handle.store.db.prepare(
+      "SELECT COUNT(*) AS n FROM delivery_bundles WHERE endpoint_id = ?",
+    ).get(ACTOR) as { n: number }).n;
+    const resolve = (evaluationId: string, abandon: "cancelled" | "unavailable" | null = null) => {
+      pushed = [];
+      return handle.store.resolveRuntimeToolApproval(
+        { bridge_id: BRIDGE, delivery_id: deliveryId, evaluation_id: evaluationId, abandon },
+        (type, payload) => pushed.push({ type, payload: payload as Record<string, unknown> }),
+      );
+    };
+    const decide = (requestId: string, decision: "approved" | "rejected") => {
+      const request = handle.store.approvalStore.requireRequestForWorkspace(requestId, WS);
+      return handle.store.decideApprovalRequest({
+        workspace_id: WS, approval_request_id: requestId, expected_state_revision: request.state_revision,
+        decision, decided_by_principal_id: OPERATOR, decision_reason: "checked", operation_invocation_id: `invoke:${requestId}`,
+      });
+    };
+
+    const asked = evaluate(deliveryId, call({}));
+    expect(asked).toMatchObject({ decision: "require_approval", refusal: null, approval_request_ids: [expect.any(String)] });
+    expect(asked.approval_expires_at).not.toBeNull();
+    const [requestId] = asked.approval_request_ids;
+    expect(pushed.map((item) => item.type)).toEqual(["policy_decision", "approval_requested"]);
+    expect(pushed[1]!.payload.request).toMatchObject({
+      approval_request_id: requestId, status: "pending",
+      action: { operation_id: "engine.tool.filesystem.read", input_digest: "a".repeat(64), target: { kind: "runtime_delivery", id: deliveryId } },
+    });
+    expect(resolve(asked.evaluation_id)).toMatchObject({ outcome: "pending", refusal: null });
+    expect(pushed).toEqual([]);
+
+    const before = actorDeliveries();
+    expect(decide(requestId!, "approved").request.status).toBe("approved");
+    expect(actorDeliveries()).toBe(before);
+    expect(resolve(asked.evaluation_id)).toMatchObject({ outcome: "allowed", refusal: null, responder_principal_ids: [OPERATOR] });
+    expect(pushed).toEqual([{ type: "policy_decision_resolved", payload: expect.objectContaining({
+      evaluation_id: asked.evaluation_id, outcome: "allowed", delivery_id: deliveryId, workspace_id: WS,
+    }) }]);
+    expect(resolve(asked.evaluation_id).outcome).toBe("allowed");
+    const receipt = handle.store.approvalStore.getReceiptForRequest(requestId!)!;
+    expect(handle.store.approvalStore.getReceipt(receipt.approval_receipt_id)!.use_count).toBe(1);
+
+    const again = evaluate(deliveryId, call({}));
+    expect(again.approval_request_ids).not.toEqual(asked.approval_request_ids);
+    expect(resolve(again.evaluation_id).outcome).toBe("pending");
+    decide(again.approval_request_ids[0]!, "rejected");
+    expect(resolve(again.evaluation_id).refusal).toMatchObject({ code: "tool_policy_denied", rule_id: "approval.denied" });
+
+    const cancelled = evaluate(deliveryId, call({}));
+    expect(resolve(cancelled.evaluation_id, "cancelled").outcome).toBe("cancelled");
+    expect(handle.store.approvalStore.getRequest(cancelled.approval_request_ids[0]!)!.status).toBe("cancelled");
+
+    const stale = evaluate(deliveryId, call({}));
+    handle.store.capabilityGrantStore.revokeGrant(read.grant_id);
+    expect(resolve(stale.evaluation_id).outcome).toBe("unavailable");
+    expect(handle.store.approvalStore.getRequest(stale.approval_request_ids[0]!)!.status).toBe("invalidated");
+  });
+
   it("is reachable only by the owning Bridge with well-formed facts", async () => {
     const deliveryId = await runningDelivery();
     const bad = await handle.app.inject({
@@ -262,6 +334,12 @@ describe("runtime tool policy", () => {
       payload: { ...call({}), command_text: "rm -rf /" },
     });
     expect(bad.statusCode).toBe(400);
+    const badResolve = await handle.app.inject({
+      method: "POST",
+      url: `/v1/delivery/${encodeURIComponent(deliveryId)}/tool-policy/eval-1/resolve`,
+      payload: { abandon: "later" },
+    });
+    expect(badResolve.statusCode).toBe(400);
     expect(() => handle.store.evaluateRuntimeToolCall(
       { bridge_id: "bridge:other", delivery_id: deliveryId, request: call({}) }, noop,
     )).toThrow(/does not own/);
