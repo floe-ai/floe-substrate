@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-import { ensureConfig } from "./config.js";
+import { canonicalHome, serveChannel } from "floe-cli/local-channel";
+import { ENGINES_CHANNEL } from "floe-cli/engines/protocol";
+import { ensureConfig, resolveLocalPath } from "./config.js";
 import { BridgeDaemon } from "./daemon.js";
 
 function getArgValue(name: string): string | undefined {
@@ -17,9 +19,16 @@ async function main(): Promise<void> {
   }
   const { configPath, config } = ensureConfig(getArgValue("--config"));
   const daemon = new BridgeDaemon(configPath, config);
+  // Surfaces reach engine readiness and sign-in here, even before the Bus is up.
+  const engineChannel = await serveChannel(ENGINES_CHANNEL, daemon.engines, {
+    home: canonicalHome(resolveLocalPath(configPath, config.home, ".")),
+    log: (line) => console.log(`[floe-bridge] engine control ${line}`),
+  });
+  daemon.engines.start();
+  const stop = () => void daemon.stop().finally(() => engineChannel.close()).finally(() => process.exit(0));
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
   await daemon.start();
-  process.on("SIGINT", () => void daemon.stop().finally(() => process.exit(0)));
-  process.on("SIGTERM", () => void daemon.stop().finally(() => process.exit(0)));
 }
 
 main().catch((error) => {

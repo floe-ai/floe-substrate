@@ -23,6 +23,8 @@ import { createDirectSubstrateTools } from "./floe-direct-tools.js";
 import type { SubstrateSessionHandle } from "../runtime-core/substrate-tool-definitions.js";
 import { TurnFailedError } from "./turn-failed-error.js";
 import { turnUsage } from "./turn-usage.js";
+import { copilotEnvironment, createCopilotAccount } from "../engines/copilot.js";
+import type { EngineAccount } from "../engines/engine-control.js";
 
 type FloeTurn = {
   runtime_turn_id: string;
@@ -89,11 +91,18 @@ function recordToolActivity(turn: FloeTurn, entry: WorkLogToolEntry): void {
 
 export class FloeRuntimeAdapter implements RuntimeAdapter {
   readonly name = "floe-runtime";
+  readonly engine = "copilot";
   // floe-runtime holds no credentials; the vendor CLI authenticates itself.
   private readonly sessions = new Map<string, FloeSession>();
   private readonly runtimeFactory: () => CopilotRuntime;
   constructor(options?: { runtimeFactory?: () => CopilotRuntime }) {
-    this.runtimeFactory = options?.runtimeFactory ?? (() => new CopilotRuntime());
+    // The SDK runtime inherits no credential variables from Floe's environment.
+    this.runtimeFactory = options?.runtimeFactory
+      ?? (() => new CopilotRuntime({ clientOptions: { env: copilotEnvironment() } }));
+  }
+
+  createEngineAccount(): EngineAccount {
+    return createCopilotAccount();
   }
 
   private beginCancellation(session: FloeSession, turn: FloeTurn): void {

@@ -1,6 +1,7 @@
 import type { BusClient, DeliveryBundle, RuntimeOperationAuthoritySession } from "../bus-client.js";
 import type { AgentRuntimeConfig } from "../auth.js";
 import type { HookPayload, HookRegistry } from "../hooks.js";
+import type { EngineAccount } from "../engines/engine-control.js";
 
 export type RuntimeContext = {
   bridge_id: string;
@@ -17,6 +18,12 @@ export type RuntimeContext = {
 
 export interface RuntimeAdapter {
   readonly name: string;
+  /**
+   * The engine this adapter's turns run on, when it has an account that must
+   * be ready first (see engines/engine-control.ts). Work waits until it is.
+   */
+  readonly engine?: string;
+  createEngineAccount?(): EngineAccount;
   handleBundle(context: RuntimeContext, bundle: DeliveryBundle, runtimeConfig?: AgentRuntimeConfig): Promise<void>;
   /** Interrupt one active delivery when the Bus has durably cancelled it. */
   cancelDelivery?(deliveryId: string): Promise<boolean> | boolean;

@@ -23,6 +23,8 @@ import { resolveLocalPath } from "./config.js";
 import { readRecords, isPidRunning, startService, serviceLogPath } from "./process-manager.js";
 import { probeAgent } from "./identity/connection.js";
 import { canonicalHome } from "./identity/protocol.js";
+import { probeChannel } from "./local-channel/connection.js";
+import { ENGINES_CHANNEL } from "./engines/protocol.js";
 import { fetchHostControlToken, fetchBridgeServiceToken } from "./operation-client.js";
 
 export class ForeignBusError extends Error {
@@ -220,18 +222,30 @@ export async function ensureIdentityAgent(configPath: string, config: LocalConfi
   const home = floeHome(configPath, config);
   if (await probeAgent(home)) return;
   const record = await startService(configPath, config, "identity");
+  await waitUntilAnswering("Floe's identity agent", record, () => probeAgent(home));
+}
+
+/**
+ * Wait for a service we just launched to complete a real handshake, failing
+ * with its log if it exits first. Each probe is one connection attempt.
+ */
+async function waitUntilAnswering(
+  label: string,
+  record: { pid?: number | null; log_file: string },
+  probe: () => Promise<unknown>,
+): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < 15_000) {
-    if (await probeAgent(home)) return;
+    if (await probe()) return;
     if (record.pid && !isPidRunning(record.pid)) {
       throw new Error(
-        `Floe's identity agent exited before it was ready (pid ${record.pid}). `
+        `${label} exited before it was ready (pid ${record.pid}). `
         + `Last lines of ${record.log_file}:\n${readLogTail(record.log_file)}`,
       );
     }
     await sleep(200);
   }
-  throw new Error(`Floe's identity agent did not become ready within 15s. Last lines of ${record.log_file}:\n${readLogTail(record.log_file)}`);
+  throw new Error(`${label} did not become ready within 15s. Last lines of ${record.log_file}:\n${readLogTail(record.log_file)}`);
 }
 
 export async function startAll(configPath: string, config: LocalConfig): Promise<void> {
@@ -268,10 +282,9 @@ export async function startAll(configPath: string, config: LocalConfig): Promise
   const bridge = await startService(configPath, config, "bridge", { FLOE_BRIDGE_SERVICE_TOKEN: bridgeServiceToken });
   await ensureIdentityAgent(configPath, config);
   // Launching is not starting: a bridge that died on its first line must not
-  // be reported as a started Floe.
-  if (bridge.pid && !isPidRunning(bridge.pid)) {
-    throw new Error(`Floe's bridge exited while starting (pid ${bridge.pid}). Last lines of ${bridge.log_file}:\n${readLogTail(bridge.log_file)}`);
-  }
+  // be reported as a started Floe. It is started once its engine control answers.
+  const home = floeHome(configPath, config);
+  await waitUntilAnswering("Floe's bridge", bridge, () => probeChannel(ENGINES_CHANNEL, home));
 }
 
 function sleep(ms: number): Promise<void> {

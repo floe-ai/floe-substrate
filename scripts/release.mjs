@@ -157,7 +157,7 @@ function buildServices() {
 // resolve exactly as before. Code shared between entries is split into chunks
 // beside them rather than duplicated.
 const ENTRIES = {
-  "floe-cli": ["index.js", "identity/agent-main.js", "identity/client.js"],
+  "floe-cli": ["index.js", "identity/agent-main.js", "identity/client.js", "engines/client.js"],
   "floe-bus": ["index.js"],
   "floe-bridge": ["index.js"],
 };
@@ -165,6 +165,9 @@ const ENTRIES = {
 // packages and become the artifact's only dependencies.
 const EXTERNAL = {
   "@github/copilot-sdk": "locates and loads its platform package's native runtime (runtime.node) by resolution",
+  // The official CLI Floe launches for the vendor's own sign-in. Its native
+  // binary lives in a platform package npm picks at install time.
+  "@github/copilot": "the Bridge resolves its platform binary by package resolution",
 };
 // Imported only in development, behind a guard: left unresolved in the bundle,
 // exactly as it is absent from an install.

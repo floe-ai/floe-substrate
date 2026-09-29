@@ -17,8 +17,10 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@github/copilot": "1.0.89",
     "diff": "^9.0.0",
-    "floe-runtime": "github:floe-ai/floe-runtime#31ca4b5d87f1fb830f59263d8b7d0f8f5a5e9d4e",
+    "floe-cli": "*",
+    "floe-runtime": "github:floe-ai/floe-runtime#8f7f707b1cb3dea5da8a34aee62d07a559369a6c",
     "yaml": "^2.6.0",
     "zod": "^3.24.0",
     "zod-to-json-schema": "^3.25.1"
