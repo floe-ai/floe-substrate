@@ -30,6 +30,10 @@ jobs:
       # identity agent and the native broker all run from their built form.
       - run: npm run build -- --all
 
+      # Packages type-check as they build. The end-to-end tests are never built,
+      # so they are type-checked here on their own.
+      - run: npm run typecheck
+
       # Deliberately the same command a developer runs locally, so CI and the
       # local loop cannot drift apart. It runs every workspace: the five package
       # suites first, then the end-to-end slice, which spawns real bus and bridge

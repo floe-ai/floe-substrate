@@ -1,8 +1,9 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
-    "outDir": "dist",
-    "rootDir": "src"
+    // The end-to-end tests drive the other packages from their source, so this
+    // project spans the repository. It is checked, never emitted: vitest runs it.
+    "noEmit": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "vitest.config.ts", "../test-support/**/*.ts"]
 }

@@ -6,10 +6,11 @@
  */
 import { describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
 import { createBusServer } from "./server.js";
+import { browseDir } from "./fs/browseDir.js";
 import { defaultConfig, type LocalConfig } from "./config.js";
 
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
@@ -104,7 +105,7 @@ describe("GET /v1/fs/browse", () => {
     }
   });
 
-  it("defaults to home dir when path is omitted", async () => {
+  it("defaults to the home dir, which under test is the throwaway one", async () => {
     const { handle, cleanup } = await makeServer();
     try {
       const res = await handle.app.inject({
@@ -113,10 +114,25 @@ describe("GET /v1/fs/browse", () => {
         headers: localHeaders(handle),
       });
       expect(res.statusCode).toBe(200);
-      expect(typeof res.json().path).toBe("string");
+      expect(res.json().path).toBe(homedir());
+      expect(res.json().path).not.toBe(userInfo().homedir);
     } finally {
       await cleanup();
     }
+  });
+
+  it("cannot list the real user profile from a test", () => {
+    const guard = (globalThis as unknown as Record<symbol, { violations: string[] }>)[Symbol.for("floe.test.guard")]!;
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    process.env.HOME = userInfo().homedir;
+    process.env.USERPROFILE = userInfo().homedir;
+    try {
+      expect(browseDir(undefined).entries).toEqual([]);
+    } finally {
+      process.env.HOME = saved.HOME;
+      process.env.USERPROFILE = saved.USERPROFILE;
+    }
+    expect(guard.violations.splice(0).join("\n")).toMatch(/listed the real user profile/);
   });
 
   it("is gated off when local_paths is disabled", async () => {
