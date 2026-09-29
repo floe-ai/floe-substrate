@@ -6,6 +6,7 @@ import {
   actorDefinitionDigest,
   canonicalActorScopePath,
   validateActorDefinition,
+  workspaceActorId,
   type ActorDefinitionContent,
   type ActorDefinitionRevision,
   type ActorScope,
@@ -937,7 +938,7 @@ export class WorkspaceConfigurationImportStore {
 }
 
 export function workspaceConfigurationActorId(workspaceId: string, sourceActorId: string): string {
-  return `actor:${requiredText(workspaceId, "workspace_id")}:${requiredText(sourceActorId, "source_actor_id")}`;
+  return workspaceActorId(requiredText(workspaceId, "workspace_id"), requiredText(sourceActorId, "source_actor_id"));
 }
 
 export function workspaceConfigurationRuntimeProfileId(actorId: string): string {
