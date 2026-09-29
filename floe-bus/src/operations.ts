@@ -310,9 +310,15 @@ export type OperationInvocationRequest = Readonly<{
   input_schema_version: string;
   target?: OperationResourceIdentity | null;
   expected_resource_revision?: string | null;
-  idempotency_key: string;
+  /** Required for a write. A read may omit it; the Bus then gives that one read its own key. */
+  idempotency_key?: string;
   input: unknown;
 }>;
+
+/** An invocation after the Bus has settled its idempotency key. */
+export type KeyedOperationInvocationRequest = OperationInvocationRequest & Readonly<{ idempotency_key: string }>;
+
+export const IDEMPOTENCY_KEY_REQUIRED = "idempotency_key_required";
 
 export type OperationInvocationEnvironment = Readonly<{
   authority: OperationAuthorityContext;
@@ -387,7 +393,7 @@ export type OperationGovernanceInvocation = Readonly<{
   authority: OperationAuthorityContext;
   provenance: OperationInvocationProvenance;
   target: ResolvedOperationResource | null;
-  request: OperationInvocationRequest;
+  request: KeyedOperationInvocationRequest;
   request_digest: string;
   input: unknown;
   /** Registry-derived contract refusal; Policy still evaluates before it is returned. */
@@ -597,33 +603,37 @@ export class SemanticOperationRegistry {
 
   async invoke(
     environment: OperationInvocationEnvironment,
-    request: OperationInvocationRequest,
+    invocation: OperationInvocationRequest,
   ): Promise<OperationInvocationResponse> {
-    if (!request.idempotency_key.trim()) {
-      return {
-        kind: "rejected",
-        refusal: refusal(
-          "idempotency_key_required",
-          "An idempotency key is required for every operation invocation.",
-          true,
-          requiredAction("supply_idempotency_key", "Retry safely", "Retry with one stable idempotency key for this intended operation."),
-        ),
-      };
-    }
-
-    const definition = this.definitions.get(request.operation_id)?.get(request.operation_version);
+    const definition = this.definitions.get(invocation.operation_id)?.get(invocation.operation_version);
     if (!definition) {
       return {
         kind: "rejected",
         refusal: refusal(
           "operation_version_not_found",
-          `Operation '${request.operation_id}@${request.operation_version}' is not registered.`,
+          `Operation '${invocation.operation_id}@${invocation.operation_version}' is not registered.`,
           false,
           requiredAction("rediscover_operation", "Refresh available actions", "Discover the current operation contract before trying again."),
-          { operation_id: request.operation_id, operation_version: request.operation_version },
+          { operation_id: invocation.operation_id, operation_version: invocation.operation_version },
         ),
       };
     }
+    const suppliedKey = invocation.idempotency_key?.trim() ? invocation.idempotency_key : null;
+    if (!suppliedKey && definition.effects.mode !== "read") {
+      return {
+        kind: "rejected",
+        refusal: refusal(
+          IDEMPOTENCY_KEY_REQUIRED,
+          "A write needs an idempotency key, so a retry replays instead of applying twice. Reads do not.",
+          true,
+          requiredAction("supply_idempotency_key", "Retry safely", "Retry with one stable idempotency key for this intended operation."),
+        ),
+      };
+    }
+    // A read cannot apply twice, so each keyless read is its own invocation.
+    const request: KeyedOperationInvocationRequest = {
+      ...invocation, idempotency_key: suppliedKey ?? `read:${randomUUID()}`,
+    };
 
     const ledgerKey = invocationLedgerKey(environment.authority, request);
     const requestDigest = digest(request);
@@ -1240,7 +1250,7 @@ function assertDefinition<TInput, TResult>(definition: SemanticOperationDefiniti
 
 function invocationLedgerKey(
   authority: OperationAuthorityContext,
-  request: OperationInvocationRequest,
+  request: KeyedOperationInvocationRequest,
 ): string {
   return canonicalJson({
     authority_boundary: authority.boundary,

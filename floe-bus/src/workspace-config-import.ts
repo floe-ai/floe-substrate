@@ -117,9 +117,12 @@ export type WorkspaceConfigurationImportPolicy = Readonly<{
     source_actor_id: string;
     operation_ids: readonly string[];
   }>[];
-  expires_at: string;
+  /** Null only with a delegation source: the grant then lasts as long as that source. */
+  expires_at: string | null;
   issuer_id: string;
   import_principal_id: string;
+  /** A person's root grant. When set, Actor grants depend on it and are issued by its principal. */
+  delegation_source_grant_id?: string | null;
 }>;
 
 export type WorkspaceConfigurationInventoryV1 = Readonly<{
@@ -276,6 +279,8 @@ export type WorkspaceConfigurationPolicyProvider = (input: Readonly<{
   creation_kind: WorkspaceCreationKind | null;
   init_authorized: boolean;
   inventory: WorkspaceConfigurationInventoryV1;
+  /** The root of the only person admitted to this Workspace; null when none or several are. */
+  sole_person_root: Readonly<{ grant_id: string; principal_id: string; operation_ids: readonly string[] }> | null;
 }>) => WorkspaceConfigurationImportPolicy | null;
 
 type ImportResourceOwnership = Readonly<{
@@ -373,7 +378,7 @@ export class WorkspaceConfigurationImportStore {
     const existing = this.getReceipt(workspaceId, receiptId);
     if (existing) return { replayed: true, receipt: existing };
 
-    if (Date.parse(policy.expires_at) <= Date.parse(this.now())) {
+    if (policy.expires_at !== null && Date.parse(policy.expires_at) <= Date.parse(this.now())) {
       throw new WorkspaceConfigurationPolicyError("expiry must be in the future for a new import");
     }
     const currentOperationIds = new Set(this.dependencies.operation_registry.listCurrentOperationIds({
@@ -560,13 +565,10 @@ export class WorkspaceConfigurationImportStore {
     for (const input of inventory.actors) {
       const actorId = workspaceConfigurationActorId(workspaceId, input.source_actor_id);
       const profileId = workspaceConfigurationRuntimeProfileId(actorId);
-      const operationIds = actorOperationIds(policy, input.source_actor_id);
-      const generalOperationIds = operationIds ? nonCredentialOperationIds(operationIds) : [];
-      const grantId = generalOperationIds.length > 0
-        ? workspaceConfigurationGrantId(workspaceId, actorId, policy, generalOperationIds)
-        : null;
+      const plan = this.plannedAuthority(workspaceId, actorId, input, policy);
+      const grantId = plan.kind === "policy" ? plan.grant_id : null;
       try {
-        validateActorDefinition(actorDefinition(input, [grantId].filter(isText)));
+        validateActorDefinition(actorDefinition(input, plannedGrantIds(plan)));
         validateRuntimeProfile(runtimeProfile(input));
       } catch {
         return invalidConfiguration("The Workspace Actor or Runtime configuration is not valid canonical input.");
@@ -594,14 +596,14 @@ export class WorkspaceConfigurationImportStore {
       if (actor?.status === "retired") {
         return conflict("A retired canonical Actor cannot be silently reactivated by Workspace import.");
       }
-      if (ownership && actor?.current_definition_revision_id) {
+      if (ownership && actor?.current_definition_revision_id && plan.kind === "policy") {
         const previous = this.dependencies.actor_definitions.requireRevision(actor.current_definition_revision_id);
         if (previous.content.capability_grant_ids.some(id => this.dependencies.capability_grants.getGrant(id)?.revoked_at)) {
           return conflict("Workspace import cannot replace explicitly revoked Actor authority with a renewed policy grant.");
         }
       }
       if (actor && !ownership) {
-        const desired = actorDefinition(input, [grantId].filter(isText));
+        const desired = actorDefinition(input, plannedGrantIds(plan));
         const current = actor.current_definition_revision_id
           ? this.dependencies.actor_definitions.requireRevision(actor.current_definition_revision_id)
           : null;
@@ -626,9 +628,10 @@ export class WorkspaceConfigurationImportStore {
         }
       }
 
-      if (grantId) {
+      if (grantId && plan.kind === "policy") {
         const grant = this.dependencies.capability_grants.getGrant(grantId);
-        if (grant && !sameGrant(grant, workspaceId, actorId, policy, generalOperationIds)) {
+        if (grant && !sameGrant(grant, this.dependencies.capability_grants.getDelegation(grant.grant_id),
+          workspaceId, actorId, policy, plan.operation_ids)) {
           return conflict("The deterministic migration CapabilityGrant identifies different authority.");
         }
         if (grant?.revoked_at) {
@@ -650,12 +653,11 @@ export class WorkspaceConfigurationImportStore {
   ): WorkspaceConfigurationImportedActor {
     const actorId = workspaceConfigurationActorId(workspaceId, input.source_actor_id);
     const profileId = workspaceConfigurationRuntimeProfileId(actorId);
-    const operationIds = actorOperationIds(policy, input.source_actor_id);
-    const generalOperationIds = operationIds ? nonCredentialOperationIds(operationIds) : [];
-    const grant = generalOperationIds.length > 0
-      ? this.ensureGrant(workspaceId, actorId, policy, generalOperationIds)
+    const plan = this.plannedAuthority(workspaceId, actorId, input, policy);
+    const grant = plan.kind === "policy"
+      ? this.ensureGrant(workspaceId, actorId, policy, plan.operation_ids)
       : null;
-    const capabilityGrantIds = [grant?.grant_id].filter(isText);
+    const capabilityGrantIds = plan.kind === "keep" ? plan.grant_ids : [grant?.grant_id].filter(isText);
     const actorRevision = this.ensureActorDefinition(
       workspaceId,
       actorId,
@@ -666,7 +668,7 @@ export class WorkspaceConfigurationImportStore {
     const profileRevision = this.ensureRuntimeProfile(workspaceId, profileId, input, policy.import_principal_id);
     const status = runtimeBindingStatus(
       input,
-      operationIds !== null,
+      plan.kind === "none" ? plan.mapped : plan.kind === "policy" || capabilityGrantIds.length > 0,
     );
     const currentBinding = this.dependencies.runtime_profiles.getCurrentActorBinding(actorId);
     const endpointId = actorId;
@@ -690,7 +692,7 @@ export class WorkspaceConfigurationImportStore {
       source_actor_id: input.source_actor_id,
       actor_id: actorId,
       actor_definition_revision_id: actorRevision.actor_definition_revision_id,
-      capability_grant_id: grant?.grant_id ?? null,
+      capability_grant_id: capabilityGrantIds[0] ?? null,
       capability_grant_ids: capabilityGrantIds,
       runtime_profile_id: profileId,
       runtime_profile_revision_id: profileRevision.runtime_profile_revision_id,
@@ -699,6 +701,36 @@ export class WorkspaceConfigurationImportStore {
       unresolved_reasons: binding.unresolved_reasons,
       secret_ref_ids: [],
     };
+  }
+
+  /**
+   * What authority the import gives this Actor. The files never take access
+   * away: an existing Actor keeps its grants when the policy names nothing for
+   * it, or when any of its grants came from outside the import, such as a
+   * person. Only access the import itself issued is renewed or re-based.
+   */
+  private plannedAuthority(
+    workspaceId: string,
+    actorId: string,
+    input: WorkspaceConfigurationActorInput,
+    policy: WorkspaceConfigurationImportPolicy,
+  ): PlannedAuthority {
+    const operationIds = actorOperationIds(policy, input.source_actor_id);
+    const current = this.dependencies.actor_definitions.getActor(actorId)
+      ? this.dependencies.actor_definitions.getCurrentDefinition(actorId)
+      : null;
+    if (current) {
+      const held = current.content.capability_grant_ids;
+      const grants = this.dependencies.capability_grants;
+      if (operationIds === null || held.some(id => !isImportPolicyGrant(grants.getGrant(id)))) {
+        return { kind: "keep", grant_ids: [...held] };
+      }
+    }
+    const generalOperationIds = operationIds ? nonCredentialOperationIds(operationIds) : [];
+    return generalOperationIds.length > 0
+      ? { kind: "policy", operation_ids: generalOperationIds,
+          grant_id: workspaceConfigurationGrantId(workspaceId, actorId, policy, generalOperationIds) }
+      : { kind: "none", mapped: operationIds !== null };
   }
 
   private ensureGrant(
@@ -710,6 +742,16 @@ export class WorkspaceConfigurationImportStore {
     const grantId = workspaceConfigurationGrantId(workspaceId, actorId, policy, operationIds);
     const existing = this.dependencies.capability_grants.getGrant(grantId);
     if (existing) return existing;
+    const evidence = [{ kind: "workspace_configuration_import_policy", ref: policy.policy_revision }];
+    if (policy.delegation_source_grant_id) {
+      return this.dependencies.capability_grants.issueDependentGrant({
+        grant_id: grantId,
+        source_grant_id: policy.delegation_source_grant_id,
+        principal_id: actorId,
+        operation_ids: operationIds,
+        evidence,
+      });
+    }
     return this.dependencies.capability_grants.issueGrant({
       grant_id: grantId,
       principal_id: actorId,
@@ -717,10 +759,7 @@ export class WorkspaceConfigurationImportStore {
       operation_ids: operationIds,
       expires_at: policy.expires_at,
       issuer_id: policy.issuer_id,
-      evidence: [{
-        kind: "workspace_configuration_import_policy",
-        ref: policy.policy_revision,
-      }],
+      evidence,
     });
   }
 
@@ -799,6 +838,29 @@ export class WorkspaceConfigurationImportStore {
       expected_current_revision_id: profile.current_revision_id,
       changed_by_principal_id: principalId,
     });
+  }
+
+  /**
+   * An Actor revision that differs from what the import last wrote only in its
+   * grants is not an independent edit of the imported definition, so the next
+   * import may continue from it. Anything else stays a conflict. True when the
+   * revision was accepted as the import's own.
+   */
+  acceptAuthorityOnlyRevision(actorId: string, revisionId: string): boolean {
+    const row = this.dependencies.db.prepare(`
+      SELECT workspace_id, source_actor_id, last_actor_definition_revision_id
+      FROM workspace_configuration_import_resources WHERE actor_id = ?
+    `).get(actorId) as { workspace_id: string; source_actor_id: string; last_actor_definition_revision_id: string } | undefined;
+    if (!row) return false;
+    const withoutGrants = (id: string) => actorDefinitionDigest({
+      ...this.dependencies.actor_definitions.requireRevision(id).content, capability_grant_ids: [],
+    });
+    if (withoutGrants(row.last_actor_definition_revision_id) !== withoutGrants(revisionId)) return false;
+    this.dependencies.db.prepare(`
+      UPDATE workspace_configuration_import_resources SET last_actor_definition_revision_id = ?
+      WHERE workspace_id = ? AND source_actor_id = ?
+    `).run(revisionId, row.workspace_id, row.source_actor_id);
+    return true;
   }
 
   private getOwnership(workspaceId: string, sourceActorId: string): ImportResourceOwnership | null {
@@ -895,6 +957,7 @@ export function workspaceConfigurationGrantId(
     operation_ids: normalizeTextSet(operationIds, "operation_id", true),
     expires_at: policy.expires_at,
     issuer_id: policy.issuer_id,
+    ...(policy.delegation_source_grant_id ? { delegation_source_grant_id: policy.delegation_source_grant_id } : {}),
   })).slice(0, 32)}`;
 }
 
@@ -951,9 +1014,15 @@ function runtimeBindingStatus(
 }
 
 function normalizePolicy(value: WorkspaceConfigurationImportPolicy): WorkspaceConfigurationImportPolicy {
-  const expiresAt = requiredText(value.expires_at, "policy expires_at");
-  if (!Number.isFinite(Date.parse(expiresAt))) {
-    throw new WorkspaceConfigurationPolicyError("expiry must be a valid timestamp");
+  const source = value.delegation_source_grant_id == null
+    ? null
+    : requiredText(value.delegation_source_grant_id, "policy delegation_source_grant_id");
+  let expiresAt: string | null = null;
+  if (value.expires_at !== null || source === null) {
+    expiresAt = requiredText(value.expires_at, "policy expires_at");
+    if (!Number.isFinite(Date.parse(expiresAt))) {
+      throw new WorkspaceConfigurationPolicyError("expiry must be a valid timestamp");
+    }
   }
   return {
     policy_revision: requiredText(value.policy_revision, "policy_revision"),
@@ -961,6 +1030,8 @@ function normalizePolicy(value: WorkspaceConfigurationImportPolicy): WorkspaceCo
     expires_at: expiresAt,
     issuer_id: requiredText(value.issuer_id, "issuer_id"),
     import_principal_id: requiredText(value.import_principal_id, "import_principal_id"),
+    // Present only when used, so policies without it keep their recorded digest.
+    ...(source === null ? {} : { delegation_source_grant_id: source }),
   };
 }
 
@@ -1291,8 +1362,23 @@ function requiredText(value: unknown, label: string): string {
   return value.trim();
 }
 
+type PlannedAuthority =
+  | Readonly<{ kind: "keep"; grant_ids: readonly string[] }>
+  | Readonly<{ kind: "policy"; grant_id: string; operation_ids: readonly string[] }>
+  | Readonly<{ kind: "none"; mapped: boolean }>;
+
+function plannedGrantIds(plan: PlannedAuthority): readonly string[] {
+  return plan.kind === "keep" ? plan.grant_ids : plan.kind === "policy" ? [plan.grant_id] : [];
+}
+
+/** Issued by a Workspace import policy, as opposed to a person or another Bus policy. */
+export function isImportPolicyGrant(grant: CapabilityGrantRecord | null): boolean {
+  return grant !== null && grant.evidence.some(item => item.kind === "workspace_configuration_import_policy");
+}
+
 function sameGrant(
   grant: CapabilityGrantRecord,
+  delegation: Readonly<{ source_grant_id: string }> | null,
   workspaceId: string,
   actorId: string,
   policy: WorkspaceConfigurationImportPolicy,
@@ -1303,6 +1389,7 @@ function sameGrant(
     && grant.boundary.workspace_id === workspaceId
     && grant.expires_at === policy.expires_at
     && grant.issuer_id === policy.issuer_id
+    && (delegation?.source_grant_id ?? null) === (policy.delegation_source_grant_id ?? null)
     && sameStrings(grant.operation_ids, operationIds)
     && grant.targets.length === 0
     && grant.evidence.length === 1

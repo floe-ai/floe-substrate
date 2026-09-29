@@ -2,11 +2,13 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import type { BusStore } from "./store.js";
+import { IDEMPOTENCY_KEY_REQUIRED } from "./operations.js";
 import type {
   OperationAuthorityBoundary,
   OperationAuthorityContext,
   OperationInvocationProvenance,
   OperationInvocationRequest,
+  OperationInvocationResponse,
   OperationResourceIdentity,
   ResolvedOperationResource,
 } from "./operations.js";
@@ -38,7 +40,7 @@ export const OperationInvocationSchema = z.object({
   input_schema_version: z.string().min(1),
   target: ResourceIdentitySchema.nullable().optional(),
   expected_resource_revision: z.string().nullable().optional(),
-  idempotency_key: z.string().min(1),
+  idempotency_key: z.string().min(1).optional(),
   input: z.unknown(),
 });
 
@@ -108,11 +110,11 @@ export function registerOperationRoutes(
       body.target ?? null,
     );
     if (!verified) return reply;
-    return store.operationRegistry.invoke({
+    return sendInvocation(reply, await store.operationRegistry.invoke({
       authority: verified.authority,
       provenance: verified.provenance,
       resolve_resource: (target) => store.resolveOperationResource(target, verified.authority.boundary),
-    }, body);
+    }, body));
   });
 
   app.get("/v1/workspaces/:workspace_id/operation-receipts/:receipt_id", async (request, reply) => {
@@ -184,11 +186,11 @@ export function registerHostOperationRoutes(
     const body = OperationInvocationSchema.parse(request.body) as OperationInvocationRequest;
     const verified = resolveHostAuthority(request, reply, body.target ?? null);
     if (!verified) return reply;
-    return store.operationRegistry.invoke({
+    return sendInvocation(reply, await store.operationRegistry.invoke({
       authority: verified.authority,
       provenance: verified.provenance,
       resolve_resource: (target) => store.resolveOperationResource(target, verified.authority.boundary),
-    }, body);
+    }, body));
   });
 
   app.get(`${prefix}/operation-receipts/:receipt_id`, async (request, reply) => {
@@ -215,6 +217,14 @@ export function registerHostOperationRoutes(
     }
     return { receipt };
   });
+}
+
+/** A write sent without its key is a malformed request, not a refused intent. */
+function sendInvocation(reply: FastifyReply, response: OperationInvocationResponse) {
+  if (response.kind === "rejected" && response.refusal.code === IDEMPOTENCY_KEY_REQUIRED) {
+    return reply.code(400).send(response);
+  }
+  return response;
 }
 
 function verifyOperationSession(

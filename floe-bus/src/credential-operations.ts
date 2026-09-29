@@ -33,6 +33,13 @@ export const BIND_CREDENTIAL_OPERATION_ID = "credential.bind";
 export const HEALTH_CREDENTIAL_OPERATION_ID = "credential.health";
 export const ROTATE_CREDENTIAL_OPERATION_ID = "credential.rotate";
 export const REVOKE_CREDENTIAL_OPERATION_ID = "credential.revoke";
+/** Credential maintenance: granted per secret, for one session, never in a durable root. */
+export const OPERATOR_CREDENTIAL_OPERATION_IDS = Object.freeze([
+  BIND_CREDENTIAL_OPERATION_ID,
+  HEALTH_CREDENTIAL_OPERATION_ID,
+  ROTATE_CREDENTIAL_OPERATION_ID,
+  REVOKE_CREDENTIAL_OPERATION_ID,
+]);
 export const USE_CREDENTIAL_OPERATION_ID = "credential.use";
 export const REFRESH_CREDENTIAL_OPERATION_ID = "credential.refresh";
 export const RUNTIME_CREDENTIAL_PURPOSE = "runtime-provider-authentication";

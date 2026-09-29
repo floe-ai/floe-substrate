@@ -16,7 +16,9 @@ import { decodeEventCursor } from "./event-cursor.js";
 import { runtimeCredentialAccessOperations } from "./credential-runtime-access-operations.js";
 import { capabilityGrantOperations } from "./capability-grant-operations.js";
 import { resolveActorApprovalPolicy } from "./actor-approval-policy.js";
-import { decideToolAuthority, isEngineToolOperation, type ToolAuthorityDecision } from "./tool-policy.js";
+import { decideToolAuthority, ENGINE_TOOL_OPERATIONS, isEngineToolOperation, type ToolAuthorityDecision } from "./tool-policy.js";
+import { ActorAccessAdoption, type ActorAccessMove } from "./actor-authority-adoption.js";
+import { DEFAULT_ACTOR_OPERATIONS_V1 } from "./local-product-policy.js";
 import type { ToolCallPolicyFacts } from "./tool-policy-facts.js";
 import {
   TOOL_APPROVAL_TARGET_KIND,
@@ -146,6 +148,7 @@ import {
   type ApprovalIndividualDecisionRecord,
   type ApprovalReceiptRecord,
   type ApprovalRequestRecord,
+  STANDS_IN_FOR_ROLE_PREFIX,
 } from "./approvals.js";
 import {
   PolicyStore,
@@ -200,8 +203,15 @@ import {
   applyClientIdentitySchema,
 } from "./client-identity-store.js";
 import {
+  IdentityWorkspaceAuthorityStore,
+  type AuthorityLifetime,
+  type IdentityWorkspaceAuthorityRecord,
+} from "./identity-workspace-authority.js";
+import { identityWorkspaceAuthorityOperations } from "./identity-workspace-authority-operations.js";
+import {
   SqliteCapabilityGrantStore,
   applyCapabilityGrantSchema,
+  rebuildCapabilityGrantsForUntilRevoked,
   type CapabilityGrantRecord,
 } from "./capability-grants.js";
 import {
@@ -230,6 +240,7 @@ import {
   RUNTIME_CREDENTIAL_PURPOSE,
   USE_CREDENTIAL_OPERATION_ID,
   registerCredentialOperations,
+  OPERATOR_CREDENTIAL_OPERATION_IDS,
 } from "./credential-operations.js";
 import {
   SqliteTransportCredentialStore,
@@ -829,6 +840,7 @@ export class BusStore {
   readonly operationAuthoritySessions: SqliteOperationAuthoritySessionStore;
   readonly operationAuthorityVerifier: OperationAuthorityVerifier;
   readonly clientIdentityStore: SqliteClientIdentityStore;
+  readonly identityWorkspaceAuthorityStore: IdentityWorkspaceAuthorityStore;
   readonly operationRegistry: SemanticOperationRegistry;
   readonly workspaceConfigurationImportStore: WorkspaceConfigurationImportStore;
   readonly contextOperationBackend: BusContextOperationBackend;
@@ -869,6 +881,7 @@ export class BusStore {
       db: this.db,
       database_path: databasePath,
       migrate: () => this.migrate(),
+      rebuild: () => { rebuildCapabilityGrantsForUntilRevoked(this.db); },
     });
     this.localHostId = getOrCreateLocalHostIdentity(this.db).host_id;
     this.localOperatorPrincipalStore = new SqliteLocalOperatorPrincipalStore(this.db);
@@ -1009,7 +1022,11 @@ export class BusStore {
     });
     this.operationInvocationLedger = new SqliteOperationInvocationLedger(this.db);
     this.capabilityGrantStore = new SqliteCapabilityGrantStore(this.db, {
-      on_revoked: (grant) => this.settleApprovalsAfterRevocation(grant),
+      on_revoked: (grant) => {
+        this.settleApprovalsAfterRevocation(grant);
+        this.actorAccessAdoption?.noteLapse(grant.principal_id);
+      },
+      on_issued: (grant) => this.actorAccessAdoption?.noteLapse(grant.principal_id),
     });
     this.secretRefStore = new SqliteSecretRefStore(this.db);
     const credentialBrokers = process.platform === "win32"
@@ -1035,6 +1052,10 @@ export class BusStore {
       this.capabilityGrantStore,
     );
     this.clientIdentityStore = new SqliteClientIdentityStore(this.db);
+    this.identityWorkspaceAuthorityStore = new IdentityWorkspaceAuthorityStore(this.db, {
+      grants: this.capabilityGrantStore,
+      on_revoked: (authority) => this.endIdentityWorkspaceAccess(authority.identity_id, authority.workspace_id),
+    });
     let operationRegistry = registerArtefactOperations(
       new SemanticOperationRegistry(
         new AjvOperationSchemaValidator(),
@@ -1049,6 +1070,8 @@ export class BusStore {
     operationRegistry = registerActorDefinitionOperations(operationRegistry, this.actorDefinitionStore, this.capabilityGrantStore);
     for (const operation of capabilityGrantOperations({ actors: this.actorDefinitionStore,
       grants: this.capabilityGrantStore, refs: this.secretRefStore })) operationRegistry.register(operation);
+    for (const operation of identityWorkspaceAuthorityOperations({ authorities: this.identityWorkspaceAuthorityStore,
+      identities: this.clientIdentityStore, adoption: () => this.actorAccessAdoption })) operationRegistry.register(operation);
     operationRegistry = registerCommandOperations(operationRegistry, this.commandDefinitionStore);
     operationRegistry = registerActorRoleOperations(operationRegistry, this.actorRoleAuthorityStore);
     this.contextOperationBackend = new BusContextOperationBackend(
@@ -1114,11 +1137,16 @@ export class BusStore {
       operation_registry: this.operationRegistry,
       policy_for_inventory: (workspaceId, inventory) => {
         const identity = this.workspaceIdentityStore.getIdentity(workspaceId);
+        const people = this.actorAccessAdoption.activeAuthorities(workspaceId);
+        const soleRoot = people.length === 1 ? this.identityWorkspaceAuthorityStore.rootGrant(people[0]!) : null;
         const configured = options.workspace_configuration_policy?.({
           workspace_id: workspaceId,
           creation_kind: identity?.creation_kind ?? null,
           init_authorized: this.workspaceIdentityStore.getCurrentBinding(workspaceId, this.localHostId)?.init_authorized ?? false,
           inventory,
+          sole_person_root: soleRoot
+            ? { grant_id: soleRoot.grant_id, principal_id: soleRoot.principal_id, operation_ids: soleRoot.operation_ids }
+            : null,
         });
         return configured ?? legacyWorkspaceConfigurationImportPolicy(
           workspaceId,
@@ -1135,6 +1163,106 @@ export class BusStore {
     });
     this.endpointWatermarkStore = new EndpointWatermarkStore(this.db);
     this.importLegacyScopeCompositions();
+    this.identityAuthorityMigration = this.issueMissingIdentityWorkspaceAuthorities();
+    this.actorAccessAdoption = new ActorAccessAdoption({
+      db: this.db,
+      grants: this.capabilityGrantStore,
+      actors: this.actorDefinitionStore,
+      authorities: this.identityWorkspaceAuthorityStore,
+      access: this.workspaceAccessStore,
+      identity_name: (identityId) => this.clientIdentityStore.getIdentity(identityId)?.display_name ?? identityId,
+      default_actor_operation_ids: () => DEFAULT_ACTOR_OPERATIONS_V1,
+      accept_authority_only_revision: (actorId, revisionId) =>
+        this.workspaceConfigurationImportStore.acceptAuthorityOnlyRevision(actorId, revisionId),
+    });
+    this.actorAccessMigration = this.transaction(() => this.actorAccessAdoption.migrate());
+  }
+
+  readonly actorAccessAdoption: ActorAccessAdoption;
+
+  /** Actors whose Floe-issued access moved onto the only person in their Workspace at this start. */
+  readonly actorAccessMigration: readonly ActorAccessMove[];
+
+  /** Memberships given a durable root at this start, because they had none. Reported once. */
+  readonly identityAuthorityMigration: readonly Readonly<{ identity_id: string; workspace_id: string }>[];
+
+  /**
+   * What a person's Workspace authority covers: every Workspace operation,
+   * interactive or unattended, and every engine tool, except per-secret
+   * maintenance. A person holds everything an Actor they give access to can.
+   */
+  identityAuthorityOperationIds(): string[] {
+    const ids = new Set([
+      ...this.operationRegistry.listCurrentOperationIds({ interaction_mode: "interactive", boundary_kind: "workspace" }),
+      ...this.operationRegistry.listCurrentOperationIds({ interaction_mode: "unattended", boundary_kind: "workspace" }),
+      ...Object.values(ENGINE_TOOL_OPERATIONS),
+    ]);
+    return [...ids]
+      .filter((operationId) => !(OPERATOR_CREDENTIAL_OPERATION_IDS as readonly string[]).includes(operationId))
+      .sort();
+  }
+
+  /**
+   * Give an admitted identity its durable authority in a Workspace. Idempotent:
+   * an active authority is returned unchanged. Admission is the explicit act,
+   * so the root lasts until revoked unless the admitting caller chose an expiry.
+   */
+  ensureIdentityWorkspaceAuthority(input: Readonly<{
+    identity_id: string;
+    workspace_id: string;
+    issued_by: string;
+    lifetime: AuthorityLifetime;
+    evidence: readonly Readonly<{ kind: string; ref: string }>[];
+  }>): IdentityWorkspaceAuthorityRecord {
+    return this.identityWorkspaceAuthorityStore.issue({
+      identity_id: input.identity_id,
+      workspace_id: input.workspace_id,
+      operation_ids: this.identityAuthorityOperationIds(),
+      lifetime: input.lifetime,
+      issued_by: input.issued_by,
+      evidence: [
+        { kind: "client_identity_admission", ref: input.identity_id },
+        { kind: "client_identity_workspace_membership", ref: `${input.identity_id}:${input.workspace_id}` },
+        ...input.evidence,
+      ],
+    });
+  }
+
+  /**
+   * Memberships admitted before durable authority existed had authority only
+   * through hour-long sessions. Each live membership gets its root once, until
+   * revoked, because admission was already the person's explicit act. A
+   * membership whose authority was later revoked is never given a new one.
+   */
+  private issueMissingIdentityWorkspaceAuthorities(): Array<{ identity_id: string; workspace_id: string }> {
+    const rows = this.db.prepare(`
+      SELECT membership.identity_id, membership.workspace_id
+      FROM client_identity_workspaces membership
+      JOIN client_identities identity ON identity.identity_id = membership.identity_id
+      WHERE identity.revoked_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM identity_workspace_authorities authority
+          WHERE authority.identity_id = membership.identity_id AND authority.workspace_id = membership.workspace_id)
+      ORDER BY membership.admitted_at, membership.identity_id
+    `).all() as Array<{ identity_id: string; workspace_id: string }>;
+    const issued: Array<{ identity_id: string; workspace_id: string }> = [];
+    for (const row of rows) {
+      if (!this.getWorkspace(row.workspace_id)) continue;
+      this.ensureIdentityWorkspaceAuthority({
+        ...row,
+        issued_by: "system:identity-authority-migration:v0.4.0",
+        lifetime: { until_revoked: true },
+        evidence: [{ kind: "identity_authority_migration", ref: "v0.4.0" }],
+      });
+      issued.push(row);
+    }
+    return issued;
+  }
+
+  /** Sessions end with the authority they referenced. */
+  private endIdentityWorkspaceAccess(identityId: string, workspaceId: string): void {
+    for (const session of this.clientIdentityStore.listSessionsForIdentity(identityId)) {
+      if (session.workspace_id === workspaceId) this.operationAuthoritySessions.revokeSession(session.authority_session_id);
+    }
   }
 
   /**
@@ -3408,9 +3536,17 @@ export class BusStore {
       resolution,
       { require_current: true },
     );
+    // O1: a person whose Workspace authority can decide stands in where the
+    // host's operator is named. The decision records who answered.
+    const identityAuthority = grants.length > 0 && input.principal_id.startsWith("identity:")
+      ? this.identityWorkspaceAuthorityStore.getActive(input.principal_id.slice("identity:".length), input.workspace_id)
+      : null;
+    const standsIn = identityAuthority
+      ? [{ role: `${STANDS_IN_FOR_ROLE_PREFIX}${this.localOperatorPrincipalId}`, authority_ref: identityAuthority.authority_id }]
+      : [];
     return {
       authority_grant_ids: grants.map((grant) => grant.grant_id).sort(),
-      role_evidence: validation.valid
+      role_evidence: [...standsIn, ...(validation.valid
         ? resolution.evidence.map((evidence) => ({
             role: evidence.role,
             authority_ref: canonicalJson({
@@ -3421,7 +3557,7 @@ export class BusStore {
             }),
           }))
           .sort((left, right) => `${left.role}\0${left.authority_ref}`.localeCompare(`${right.role}\0${right.authority_ref}`))
-        : [],
+        : [])],
     };
   }
 
@@ -7281,6 +7417,7 @@ export class BusStore {
           expected_binding_id: bindingId,
           active_config_hash: result.receipt.config_hash,
         });
+        if (!result.replayed) this.actorAccessAdoption.noteLapses(workspaceId);
       }
       return result;
     });
@@ -9472,7 +9609,7 @@ export class BusStore {
     };
   }
 
-  private transaction<T>(work: () => T): T {
+  transaction<T>(work: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const result = work();

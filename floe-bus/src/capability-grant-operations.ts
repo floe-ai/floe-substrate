@@ -13,7 +13,7 @@ const grantSchema = { type: "object", additionalProperties: false,
     boundary: { type: "object", additionalProperties: false, required: ["kind", "workspace_id"],
       properties: { kind: { const: "workspace" }, workspace_id: text } },
     operation_ids: { type: "array", minItems: 1, uniqueItems: true, items: text }, targets,
-    issued_at: text, expires_at: text, revoked_at: { oneOf: [text, { type: "null" }] }, issuer_id: text,
+    issued_at: text, expires_at: { oneOf: [text, { type: "null" }], description: "Null means until revoked." }, revoked_at: { oneOf: [text, { type: "null" }] }, issuer_id: text,
     evidence: { type: "array", items: { type: "object", additionalProperties: false, required: ["kind", "ref"],
       properties: { kind: text, ref: text } } },
     delegation_only: { type: "boolean" },
@@ -32,7 +32,7 @@ export function capabilityGrantOperations(deps: Dependencies): SemanticOperation
   const delegate: SemanticOperationDefinition<any, any> = {
     ...common, operation_id: "capability.grant.delegate", required_grants: ["capability.grant.delegate"],
     title: "Delegate permitted access",
-    description: "Issue one Actor its own grant containing only the requested subset of one of your session's grants. Requires explicit delegation permission for that Actor. Source and delegation permission remain live dependencies; revoking either removes delegated access. Account purpose constraints are preserved. For an unpublished Actor, omit expected_resource_revision; otherwise supply its exact current_definition_revision_id. Add the returned grant ID to the recipient's Actor definition before publishing it; never copy another Actor's grant IDs.",
+    description: "Issue one Actor its own grant containing only the requested subset of one of your session's grants. Requires explicit delegation permission for that Actor. Source and delegation permission remain live dependencies; revoking either removes delegated access. Account purpose constraints are preserved. For an unpublished Actor, omit expected_resource_revision; otherwise supply its exact current_definition_revision_id. Choose the lifetime explicitly: until_revoked, or expires_at; it may not outlive the source or delegation permission. Add the returned grant ID to the recipient's Actor definition before publishing it; never copy another Actor's grant IDs.",
     effects: { mode: "write", reversibility: "reversible", external: false, secret_access: "reference" },
     target: { resource_kinds: ["actor"], expected_revision: "optional" },
     result: resultSchema({ grant: grantSchema, delegation: { type: "object", additionalProperties: false,
@@ -42,7 +42,8 @@ export function capabilityGrantOperations(deps: Dependencies): SemanticOperation
         source_grant_id: text,
         operation_ids: { type: "array", minItems: 1, uniqueItems: true, items: text },
         targets: { ...targets, description: "Omit to preserve the source targets. Supplied targets may only narrow them." },
-        expires_at: { ...text, description: "Optional earlier expiry. Otherwise uses the earlier source or delegation-permission expiry." },
+        until_revoked: { const: true, description: "The delegated access lasts until it, its source, or the delegation permission is revoked." },
+        expires_at: { ...text, description: "When the delegated access ends. Use instead of until_revoked." },
         delegation_only: { type: "boolean", description: "When true, the recipient may only delegate this access onward and can never exercise it itself." },
       } } },
     handler: (context, input) => {
@@ -54,9 +55,13 @@ export function capabilityGrantOperations(deps: Dependencies): SemanticOperation
       if (context.expected_resource_revision !== actor.current_definition_revision_id) {
         return { state: "refused", refusal: refusal("delegation_actor_changed", "The Actor changed. Inspect it before delegating access.", true, null) };
       }
+      if ((input.until_revoked === true) === (input.expires_at !== undefined)) {
+        return { state: "refused", refusal: refusal("delegation_lifetime_required", "Choose exactly one lifetime: until_revoked, or expires_at.", false, null) };
+      }
+      const { until_revoked: _untilRevoked, ...request } = input;
       deps.actors.db.exec("SAVEPOINT delegate_capability");
       try {
-        const grant = deps.grants.delegateGrant({ ...input, authority: context.authority,
+        const grant = deps.grants.delegateGrant({ ...request, expires_at: input.expires_at ?? null, authority: context.authority,
           principal_id: actor.actor_id, recipient: { kind: "actor", id: actor.actor_id }, invocation_id: context.invocation_id });
         const constraint = deps.refs.getGrantConstraint(input.source_grant_id);
         if (constraint) deps.refs.attachGrantConstraint({ grant_id: grant.grant_id,

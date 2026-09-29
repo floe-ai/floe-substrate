@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { ensureConfig } from "./config.js";
 import { createBusServer } from "./server.js";
-import { applyLocalFloeDelegationPolicy, applyLocalFloeExportPolicy, applyLocalFloeApprovalResponsePolicy, applyLocalFloeToolPolicy, localProductWorkspacePolicy } from "./local-product-policy.js";
+import { localProductWorkspacePolicy } from "./local-product-policy.js";
 
 function getArgValue(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -28,10 +28,11 @@ async function main(): Promise<void> {
     local_browser_access: true,
     workspace_configuration_policy: localProductWorkspacePolicy,
   });
-  applyLocalFloeDelegationPolicy(server.store);
-  applyLocalFloeExportPolicy(server.store);
-  applyLocalFloeApprovalResponsePolicy(server.store);
-  applyLocalFloeToolPolicy(server.store);
+  const { identityAuthorityMigration, actorAccessMigration } = server.store;
+  if (identityAuthorityMigration.length > 0 || actorAccessMigration.length > 0) {
+    console.log(`[floe-bus] access migration: ${identityAuthorityMigration.length} person authorities issued, `
+      + `${actorAccessMigration.length} Actors' access moved onto their one person`);
+  }
   await server.listen();
 }
 

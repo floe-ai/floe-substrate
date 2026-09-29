@@ -86,7 +86,7 @@ describe("identity-actor gate [fake]", () => {
     const admitted = await asJson(await fetch(`${busUrl}/v1/identities`, {
       method: "POST",
       headers: jsonAuth(hostToken),
-      body: JSON.stringify({ display_name: "Console", pubkey: npub, workspace_id: workspaceId }),
+      body: JSON.stringify({ display_name: "Console", pubkey: npub, workspace_id: workspaceId, until_revoked: true }),
     }));
     expect(admitted?.identity?.identity_id ?? admitted?.identity_id).toBeTruthy();
 

@@ -101,13 +101,16 @@ import type {
 } from "./transport-credentials.js";
 import {
   ACCOUNT_CONNECTION_PURPOSE,
-  BIND_CREDENTIAL_OPERATION_ID,
   CREDENTIAL_MAINTENANCE_PURPOSE,
-  HEALTH_CREDENTIAL_OPERATION_ID,
-  REVOKE_CREDENTIAL_OPERATION_ID,
-  ROTATE_CREDENTIAL_OPERATION_ID,
+  OPERATOR_CREDENTIAL_OPERATION_IDS,
 } from "./credential-operations.js";
 import { WINDOWS_DPAPI_CREDENTIAL_BROKER_ID } from "./windows-dpapi-credential-protector.js";
+import { expiryMs } from "./capability-grants.js";
+import {
+  parseAuthorityLifetime,
+  type AuthorityLifetime,
+  type IdentityWorkspaceAuthorityRecord,
+} from "./identity-workspace-authority.js";
 import { WorkspacePortabilityError } from "./workspace-portability.js";
 import {
   AttachmentIngressError,
@@ -122,12 +125,6 @@ const ConfirmedOperationInvocationSchema = z.object({
   interaction_session_id: z.string().min(1),
   invocation: OperationInvocationSchema.strict(),
 }).strict();
-const OPERATOR_CREDENTIAL_OPERATION_IDS = Object.freeze([
-  BIND_CREDENTIAL_OPERATION_ID,
-  HEALTH_CREDENTIAL_OPERATION_ID,
-  ROTATE_CREDENTIAL_OPERATION_ID,
-  REVOKE_CREDENTIAL_OPERATION_ID,
-]);
 const HOST_CREDENTIAL_OPERATION_IDS = new Set([
   "credential.runtime-access.grant",
   "credential.runtime-access.revoke",
@@ -302,6 +299,15 @@ export async function createBusServer(
   // answered with a generic, correlatable error; request-level failures (4xx,
   // schema validation) describe the caller's own request and are safe to return.
   app.setErrorHandler((error, request, reply) => {
+    // A request that fails its schema is the caller's fault and names what to fix.
+    if ((error as { name?: unknown }).name === "ZodError") {
+      const issues = (error as unknown as { issues: readonly { path: readonly (string | number)[]; message: string }[] }).issues;
+      return reply.code(400).send({
+        error: "request_invalid",
+        message: issues.map((issue) => `${issue.path.join(".") || "request"}: ${issue.message}`).join("; "),
+        request_id: request.id,
+      });
+    }
     const rawStatus = (error as { statusCode?: unknown }).statusCode;
     const statusCode = typeof rawStatus === "number" ? rawStatus : 500;
     if (statusCode >= 500) {
@@ -1450,18 +1456,18 @@ export async function createBusServer(
     workspaceId: string,
     body: { expires_in_seconds?: number; interaction_session_id?: string },
     brokerId = WINDOWS_DPAPI_CREDENTIAL_BROKER_ID,
+    // A person's session references their durable Workspace authority rather
+    // than creating authority of its own; ending the session leaves it intact.
+    identityAuthority: Readonly<{ principal_id: string; root_grant_id: string }> | null = null,
   ) {
     const expiresAt = new Date(Date.now() + (body.expires_in_seconds ?? 3_600) * 1_000).toISOString();
-    const principalId = store.localOperatorPrincipalId;
-    const operationIds = store.operationRegistry
-      .listCurrentOperationIds({ interaction_mode: "interactive", boundary_kind: "workspace" });
-    if (operationIds.length === 0) {
+    const principalId = identityAuthority?.principal_id ?? store.localOperatorPrincipalId;
+    const ordinaryOperationIds = store.identityAuthorityOperationIds();
+    if (ordinaryOperationIds.length === 0) {
       throw new Error("No interactive semantic operations are currently registered.");
     }
-    const ordinaryOperationIds = operationIds.filter((operationId) =>
-      !OPERATOR_CREDENTIAL_OPERATION_IDS.includes(operationId as typeof OPERATOR_CREDENTIAL_OPERATION_IDS[number]));
-    const grantIds: string[] = [];
-    if (ordinaryOperationIds.length > 0) {
+    const grantIds: string[] = identityAuthority ? [identityAuthority.root_grant_id] : [];
+    if (!identityAuthority) {
       grantIds.push(store.capabilityGrantStore.issueGrant({
         principal_id: principalId,
         boundary: { kind: "workspace", workspace_id: workspaceId },
@@ -3194,26 +3200,45 @@ export async function createBusServer(
       display_name: z.string().min(1).max(200),
       pubkey: z.string().min(1),
       workspace_id: z.string().min(1),
+      until_revoked: z.literal(true).optional(),
+      expires_at: z.string().min(1).optional(),
     }).strict().safeParse(request.body);
     if (!body.success) return reply.code(400).send({ error: "identity_request_invalid" });
+    let lifetime: AuthorityLifetime;
+    try {
+      lifetime = parseAuthorityLifetime(body.data);
+    } catch (error) {
+      return reply.code(400).send({ error: "authority_lifetime_required", message: (error as Error).message });
+    }
+    if ("expires_at" in lifetime && Date.parse(lifetime.expires_at) <= Date.now()) {
+      return reply.code(400).send({ error: "authority_lifetime_required", message: "expires_at must be in the future." });
+    }
     if (!store.getWorkspace(body.data.workspace_id)) return reply.code(404).send({ error: "workspace_not_found" });
     const pubkeyHex = normalizePubkeyToHex(body.data.pubkey);
     if (!pubkeyHex) return reply.code(400).send({ error: "identity_pubkey_invalid" });
     const identity = store.clientIdentityStore.admitIdentity({
       pubkey_hex: pubkeyHex,
       display_name: body.data.display_name,
-      principal_id: store.localOperatorPrincipalId,
       admitted_by: authority.credential_id,
     });
-    // Admission binds the identity to the workspace it may act in (ADR-0015 F3).
+    // Admission binds the identity to the workspace it may act in (ADR-0015 F3),
+    // with durable authority for the lifetime the admitting host chose.
     store.clientIdentityStore.addWorkspaceMembership({
       identity_id: identity.identity_id,
       workspace_id: body.data.workspace_id,
       admitted_by: authority.credential_id,
     });
+    const workspaceAuthority = store.ensureIdentityWorkspaceAuthority({
+      identity_id: identity.identity_id,
+      workspace_id: body.data.workspace_id,
+      issued_by: `transport:${authority.credential_id}`,
+      lifetime,
+      evidence: [{ kind: "authenticated_host_control", ref: authority.credential_id }],
+    });
     return reply.code(201).send({
       identity: publicIdentity(identity),
       workspaces: identityWorkspaces(store, identity.identity_id),
+      authority: publicWorkspaceAuthority(workspaceAuthority),
     });
   });
 
@@ -3281,6 +3306,10 @@ export async function createBusServer(
       };
     }
 
+    const workspaceAuthority = store.identityWorkspaceAuthorityStore.getActive(identity.identity_id, targetWorkspaceId);
+    if (!workspaceAuthority || expiryMs(workspaceAuthority.expires_at) <= Date.now()) {
+      return reply.code(403).send({ error: "identity_workspace_authority_unavailable", workspaces });
+    }
     const host = transportAuthenticator.authenticateHostControl(localControlToken);
     if (!host.verified || host.authority.audience !== "host_control") {
       return reply.code(503).send({ error: "identity_mint_unavailable" });
@@ -3290,6 +3319,7 @@ export async function createBusServer(
       targetWorkspaceId,
       { interaction_session_id: `client-identity:${identity.identity_id}:${randomUUID()}`, expires_in_seconds: 3_600 },
       `floe-client-identity:${identity.identity_id}`,
+      { principal_id: workspaceAuthority.principal_id, root_grant_id: workspaceAuthority.root_grant_id },
     );
     store.clientIdentityStore.recordSession({
       authority_session_id: session.authority_session_id,
@@ -3381,13 +3411,21 @@ export async function createBusServer(
     const identity = store.clientIdentityStore.admitIdentity({
       pubkey_hex: verification.pubkey_hex,
       display_name: body.data.display_name,
-      principal_id: store.localOperatorPrincipalId,
       admitted_by: host.authority.credential_id,
     });
     store.clientIdentityStore.addWorkspaceMembership({
       identity_id: identity.identity_id,
       workspace_id: workspace.workspace_id,
       admitted_by: host.authority.credential_id,
+    });
+    // Choosing the folder is the person's explicit act, so their authority in
+    // it lasts until revoked.
+    store.ensureIdentityWorkspaceAuthority({
+      identity_id: identity.identity_id,
+      workspace_id: workspace.workspace_id,
+      issued_by: `transport:${host.authority.credential_id}`,
+      lifetime: { until_revoked: true },
+      evidence: [{ kind: "client_identity_workspace_registration", ref: workspace.workspace_id }],
     });
 
     // 5. Registration and admission are now durable. But choosing a folder is
@@ -3431,6 +3469,8 @@ export async function createBusServer(
     const clients = store.clientIdentityStore.listIdentities().map((identity) => ({
       ...publicIdentity(identity),
       workspaces: identityWorkspaces(store, identity.identity_id),
+      authorities: store.identityWorkspaceAuthorityStore.listActiveForIdentity(identity.identity_id)
+        .map(publicWorkspaceAuthority),
       sessions: store.clientIdentityStore.listSessionsForIdentity(identity.identity_id)
         .filter((session) => Date.parse(session.expires_at) > nowMs)
         .map((session) => ({
@@ -3449,11 +3489,31 @@ export async function createBusServer(
     const params = z.object({ identity_id: z.string().min(1) }).parse(request.params);
     const identity = store.clientIdentityStore.getIdentity(params.identity_id);
     if (!identity) return reply.code(404).send({ error: "identity_not_found" });
-    store.clientIdentityStore.revokeIdentity(identity.identity_id);
-    for (const session of store.clientIdentityStore.listSessionsForIdentity(identity.identity_id)) {
-      store.operationAuthoritySessions.revokeSession(session.authority_session_id);
-    }
+    store.transaction(() => {
+      store.clientIdentityStore.revokeIdentity(identity.identity_id);
+      store.identityWorkspaceAuthorityStore.revokeAllForIdentity(identity.identity_id, "identity_revoked");
+      for (const session of store.clientIdentityStore.listSessionsForIdentity(identity.identity_id)) {
+        store.operationAuthoritySessions.revokeSession(session.authority_session_id);
+      }
+    });
     return { revoked: true, identity_id: identity.identity_id };
+  });
+
+  // End one membership: the identity's authority in that Workspace, its
+  // sessions there, and everything delegated from it stop together.
+  app.delete("/v1/clients/:identity_id/workspaces/:workspace_id", async (request, reply) => {
+    const authority = requestAuthorities.get(request);
+    if (authority?.audience !== "host_control") return sendTransportForbidden(reply);
+    const params = z.object({ identity_id: z.string().min(1), workspace_id: z.string().min(1) }).parse(request.params);
+    if (!store.clientIdentityStore.isMemberOfWorkspace(params.identity_id, params.workspace_id)) {
+      return reply.code(404).send({ error: "identity_membership_not_found" });
+    }
+    store.transaction(() => {
+      store.clientIdentityStore.removeWorkspaceMembership(params.identity_id, params.workspace_id);
+      const active = store.identityWorkspaceAuthorityStore.getActive(params.identity_id, params.workspace_id);
+      if (active) store.identityWorkspaceAuthorityStore.revoke(active.authority_id, "membership_revoked");
+    });
+    return { revoked: true, identity_id: params.identity_id, workspace_id: params.workspace_id };
   });
 
   // Revoke one bearer an identity holds, leaving the identity and its other
@@ -4654,6 +4714,7 @@ export function resolveTransportRequirement(request: any, store: BusStore): Tran
     || route === "/v1/clients"
     || route === "/v1/clients/:identity_id"
     || route === "/v1/clients/:identity_id/sessions/:authority_session_id"
+    || route === "/v1/clients/:identity_id/workspaces/:workspace_id"
     || (route === "/v1/configs" && method !== "GET")
   ) {
     return { kind: "host_control" };
@@ -4774,6 +4835,7 @@ function sendIdentityAuthFailed(reply: any) {
 /** Public projection of an admitted identity; never exposes internal-only fields. */
 function publicIdentity(identity: {
   identity_id: string;
+  principal_id: string;
   pubkey_hex: string;
   display_name: string;
   admitted_at: string;
@@ -4781,11 +4843,26 @@ function publicIdentity(identity: {
 }) {
   return {
     identity_id: identity.identity_id,
+    principal_id: identity.principal_id,
     display_name: identity.display_name,
     pubkey_hex: identity.pubkey_hex,
     npub: encodeNpub(identity.pubkey_hex),
     admitted_at: identity.admitted_at,
     revoked_at: identity.revoked_at,
+  };
+}
+
+/** A person's durable authority in one Workspace; the root grant holds what it covers. */
+function publicWorkspaceAuthority(authority: IdentityWorkspaceAuthorityRecord) {
+  return {
+    authority_id: authority.authority_id,
+    workspace_id: authority.workspace_id,
+    principal_id: authority.principal_id,
+    root_grant_id: authority.root_grant_id,
+    status: authority.status,
+    issued_at: authority.issued_at,
+    expires_at: authority.expires_at,
+    revoked_at: authority.revoked_at,
   };
 }
 

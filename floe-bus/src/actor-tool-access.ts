@@ -1,5 +1,5 @@
 import type { ActorDefinitionStore, ActorDefinitionRevision } from "./actor-definitions.js";
-import type { CapabilityGrantRecord, SqliteCapabilityGrantStore } from "./capability-grants.js";
+import { expiryMs, type CapabilityGrantRecord, type SqliteCapabilityGrantStore } from "./capability-grants.js";
 import type { OperationAuthorityContext } from "./operations.js";
 import { ENGINE_TOOL_OPERATIONS } from "./tool-policy.js";
 
@@ -52,6 +52,8 @@ export function passOnEngineToolAccess(input: Readonly<{
         principal_id: input.draft.actor_id,
         recipient: { kind: "actor", id: input.draft.actor_id },
         operation_ids: operations,
+        // The Actor's access lasts exactly as long as the creator's source grant.
+        expires_at: source.expires_at,
         invocation_id: input.invocation_id,
       }));
       for (const id of operations) covered.add(id);
@@ -92,5 +94,5 @@ function heldGrants(grants: SqliteCapabilityGrantStore, authority: OperationAuth
   });
   return [...inspection.active_grants, ...inspection.delegable_grants]
     .filter(grant => grant.operation_ids.some(id => ALL_ENGINE_TOOL_OPERATION_IDS.includes(id)))
-    .sort((a, b) => b.expires_at.localeCompare(a.expires_at) || a.grant_id.localeCompare(b.grant_id));
+    .sort((a, b) => expiryMs(b.expires_at) - expiryMs(a.expires_at) || a.grant_id.localeCompare(b.grant_id));
 }

@@ -141,8 +141,7 @@ describe("CLI semantic operation client", () => {
     });
 
     const invocation = broker.invokeOperation.mock.calls[0]![0].invocation as unknown as Record<string, unknown>;
-    expect(typeof invocation.idempotency_key).toBe("string");
-    expect(invocation.idempotency_key as string).toMatch(/^read:/);
+    expect(invocation).not.toHaveProperty("idempotency_key");
   });
 
   it("refuses a write operation with no idempotency key and never invokes it", async () => {

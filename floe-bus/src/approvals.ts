@@ -1554,6 +1554,19 @@ function normalizeApprovalDecisionPolicy(
   throw new ApprovalValidationError("decision_policy.approvers mode is invalid");
 }
 
+/**
+ * Role evidence `stands_in_for:<principal>` lets a decider answer where that
+ * principal is named. The Bus issues it only from current authority, so the
+ * decision records the person who answered and whom they answered for.
+ */
+export const STANDS_IN_FOR_ROLE_PREFIX = "stands_in_for:";
+
+/** The principal a decision counts as: the named principal it stood in for, or the decider. */
+function creditedPrincipalId(item: ApprovalIndividualDecisionRecord): string {
+  const standIn = item.role_evidence.find((evidence) => evidence.role.startsWith(STANDS_IN_FOR_ROLE_PREFIX));
+  return standIn ? standIn.role.slice(STANDS_IN_FOR_ROLE_PREFIX.length) : item.principal_id;
+}
+
 function eligibleDecisionAuthority(
   policy: ApprovalDecisionPolicySnapshot,
   principalId: string,
@@ -1563,10 +1576,14 @@ function eligibleDecisionAuthority(
   }>,
 ): Readonly<{ eligible: boolean; role_evidence: readonly ApprovalRoleEvidence[] }> {
   const selector = policy.approvers;
-  const named = selector.principal_ids.includes(principalId);
+  const directlyNamed = selector.principal_ids.includes(principalId);
+  const standsIn = directlyNamed ? [] : authority.role_evidence.filter((item) =>
+    item.role.startsWith(STANDS_IN_FOR_ROLE_PREFIX)
+    && selector.principal_ids.includes(item.role.slice(STANDS_IN_FOR_ROLE_PREFIX.length)));
+  const named = directlyNamed || standsIn.length > 0;
   const permittedRoles = selector.mode === "all_named" ? [] : selector.roles;
   const roleEvidence = authority.role_evidence
-    .filter((item) => permittedRoles.includes(item.role))
+    .filter((item) => permittedRoles.includes(item.role) || standsIn.includes(item))
     .map((item) => ({
       role: requireText(item.role, "role_evidence.role"),
       authority_ref: requireText(item.authority_ref, "role_evidence.authority_ref"),
@@ -1598,7 +1615,7 @@ function resolveApprovalDecisionPolicy(
   if (negative) return negative.decision;
   const approvals = new Set(active
     .filter((item) => item.decision === "approved")
-    .map((item) => item.principal_id));
+    .map(creditedPrincipalId));
   const selector = policy.approvers;
   if (selector.mode === "any") return approvals.size >= 1 ? "approved" : null;
   if (selector.mode === "quorum") return approvals.size >= selector.quorum ? "approved" : null;
@@ -1613,7 +1630,7 @@ function approvalProgress(
   const active = activeApprovalDecisions(decisions);
   const approvedPrincipals = new Set(active
     .filter((item) => item.decision === "approved")
-    .map((item) => item.principal_id));
+    .map(creditedPrincipalId));
   const selector = policy.approvers;
   const required = selector.mode === "quorum"
     ? selector.quorum

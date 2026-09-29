@@ -31,7 +31,8 @@ export type CapabilityGrantRecord = Readonly<{
   operation_ids: readonly string[];
   targets: readonly CapabilityGrantTarget[];
   issued_at: string;
-  expires_at: string;
+  /** Null means the authority lasts until it is explicitly revoked. */
+  expires_at: string | null;
   revoked_at: string | null;
   issuer_id: string;
   evidence: readonly CapabilityGrantEvidence[];
@@ -56,7 +57,8 @@ export type IssueCapabilityGrant = Readonly<{
   boundary: OperationAuthorityBoundary;
   operation_ids: readonly string[];
   targets?: readonly CapabilityGrantTarget[];
-  expires_at: string;
+  /** Required choice: a timestamp, or null for "until revoked". Omission is refused. */
+  expires_at: string | null;
   issuer_id: string;
   evidence: readonly CapabilityGrantEvidence[];
   delegation_only?: boolean;
@@ -95,7 +97,7 @@ export type ActivateHostCapabilityPolicy = Readonly<{
   policy_revision: string;
   operation_ids: readonly string[];
   targets?: readonly CapabilityGrantTarget[];
-  expires_at: string;
+  expires_at: string | null;
   issuer_id: string;
   evidence: readonly CapabilityGrantEvidence[];
 }>;
@@ -134,6 +136,8 @@ export type CapabilityGrantStoreDependencies = Readonly<{
   grant_id_factory?: () => string;
   /** Told once, synchronously, after a grant is revoked. */
   on_revoked?: (grant: CapabilityGrantRecord) => void;
+  /** Told once, synchronously, after a grant is issued. */
+  on_issued?: (grant: CapabilityGrantRecord) => void;
 }>;
 
 type CapabilityGrantRow = Readonly<{
@@ -142,7 +146,7 @@ type CapabilityGrantRow = Readonly<{
   boundary_kind: string;
   boundary_id: string;
   issued_at: string;
-  expires_at: string;
+  expires_at: string | null;
   revoked_at: string | null;
   issuer_id: string;
   evidence_json: string;
@@ -183,7 +187,7 @@ export function applyCapabilityGrantSchema(db: DatabaseSync): void {
       boundary_kind TEXT NOT NULL CHECK (boundary_kind IN ('workspace', 'host')),
       boundary_id TEXT NOT NULL CHECK (length(trim(boundary_id)) > 0),
       issued_at TEXT NOT NULL,
-      expires_at TEXT NOT NULL,
+      expires_at TEXT,
       revoked_at TEXT,
       issuer_id TEXT NOT NULL,
       evidence_json TEXT NOT NULL
@@ -278,7 +282,7 @@ function migrateCapabilityGrantsToCanonical(db: DatabaseSync, hasBoundaryKind: b
       boundary_kind TEXT NOT NULL CHECK (boundary_kind IN ('workspace', 'host')),
       boundary_id TEXT NOT NULL CHECK (length(trim(boundary_id)) > 0),
       issued_at TEXT NOT NULL,
-      expires_at TEXT NOT NULL,
+      expires_at TEXT,
       revoked_at TEXT,
       issuer_id TEXT NOT NULL,
       evidence_json TEXT NOT NULL
@@ -345,6 +349,45 @@ function migrateCapabilityGrantsToCanonical(db: DatabaseSync, hasBoundaryKind: b
   });
 }
 
+/**
+ * Grants may last until revoked (null expiry). Earlier databases declared the
+ * column NOT NULL, which SQLite cannot relax in place, so the table is rebuilt
+ * with SQLite's documented procedure. The caller must run this outside a
+ * transaction with foreign keys disabled, after the upgrade backup exists.
+ * Every row, id, and child reference is preserved.
+ */
+export function rebuildCapabilityGrantsForUntilRevoked(db: DatabaseSync): boolean {
+  const columns = db.prepare("PRAGMA table_info(capability_grants)")
+    .all() as Array<{ name: string; notnull: number }>;
+  const expiry = columns.find((column) => column.name === "expires_at");
+  if (!expiry || Number(expiry.notnull) === 0 || !columns.some((column) => column.name === "boundary_kind")) {
+    return false;
+  }
+  db.exec(`
+    CREATE TABLE capability_grants_next (
+      grant_id TEXT PRIMARY KEY,
+      principal_id TEXT NOT NULL,
+      boundary_kind TEXT NOT NULL CHECK (boundary_kind IN ('workspace', 'host')),
+      boundary_id TEXT NOT NULL CHECK (length(trim(boundary_id)) > 0),
+      issued_at TEXT NOT NULL,
+      expires_at TEXT,
+      revoked_at TEXT,
+      issuer_id TEXT NOT NULL,
+      evidence_json TEXT NOT NULL
+    );
+    INSERT INTO capability_grants_next (
+      grant_id, principal_id, boundary_kind, boundary_id,
+      issued_at, expires_at, revoked_at, issuer_id, evidence_json
+    )
+    SELECT grant_id, principal_id, boundary_kind, boundary_id,
+           issued_at, expires_at, revoked_at, issuer_id, evidence_json
+    FROM capability_grants;
+    DROP TABLE capability_grants;
+    ALTER TABLE capability_grants_next RENAME TO capability_grants;
+  `);
+  return true;
+}
+
 function tableExists(db: DatabaseSync, name: string): boolean {
   return Boolean(db.prepare(`
     SELECT 1 AS present FROM sqlite_schema WHERE type = 'table' AND name = ?
@@ -360,6 +403,7 @@ export class SqliteCapabilityGrantStore {
   private readonly now: () => string;
   private readonly grantIdFactory: () => string;
   private readonly onRevoked: ((grant: CapabilityGrantRecord) => void) | null;
+  private readonly onIssued: ((grant: CapabilityGrantRecord) => void) | null;
 
   constructor(
     readonly db: DatabaseSync,
@@ -368,6 +412,7 @@ export class SqliteCapabilityGrantStore {
     this.now = dependencies.now ?? isoNow;
     this.grantIdFactory = dependencies.grant_id_factory ?? (() => `capgrant_${randomUUID()}`);
     this.onRevoked = dependencies.on_revoked ?? null;
+    this.onIssued = dependencies.on_issued ?? null;
   }
 
   issueGrant(input: IssueCapabilityGrant): CapabilityGrantRecord {
@@ -379,8 +424,10 @@ export class SqliteCapabilityGrantStore {
     const evidence = normalizeEvidence(input.evidence);
     const issuedAt = this.now();
     const issuedAtMs = parseTimestamp("issued_at", issuedAt);
-    const expiresAtMs = parseTimestamp("expires_at", input.expires_at);
-    if (expiresAtMs <= issuedAtMs) {
+    if (input.expires_at === undefined) {
+      throw new Error("CapabilityGrant lifetime must be explicit: an expiry time, or until revoked.");
+    }
+    if (input.expires_at !== null && parseTimestamp("expires_at", input.expires_at) <= issuedAtMs) {
       throw new Error("CapabilityGrant expiry must be after its issue time.");
     }
 
@@ -420,7 +467,9 @@ export class SqliteCapabilityGrantStore {
       }
     });
 
-    return this.requireGrant(grantId);
+    const issued = this.requireGrant(grantId);
+    this.onIssued?.(issued);
+    return issued;
   }
 
   /** Delegate only pinned, current authority. Parent revocation also removes child authority. */
@@ -431,7 +480,8 @@ export class SqliteCapabilityGrantStore {
     recipient: OperationResourceIdentity;
     operation_ids: readonly string[];
     targets?: readonly CapabilityGrantTarget[];
-    expires_at?: string;
+    /** The child's own explicit lifetime: a timestamp, or null for until revoked. */
+    expires_at: string | null;
     delegation_only?: boolean;
     invocation_id: string;
   }>): CapabilityGrantRecord {
@@ -448,7 +498,7 @@ export class SqliteCapabilityGrantStore {
       boundary: authority.boundary, grant_ids: authority.capability_grant_ids ?? [],
     }).active_grants.filter(grant => grant.operation_ids.includes("capability.grant.delegate")
       && grantAppliesToTarget(grant, input.recipient))
-      .sort((a, b) => b.expires_at.localeCompare(a.expires_at) || a.grant_id.localeCompare(b.grant_id))[0];
+      .sort((a, b) => expiryMs(b.expires_at) - expiryMs(a.expires_at) || a.grant_id.localeCompare(b.grant_id))[0];
     if (!permission || !authority.grants.has("capability.grant.delegate")) {
       throw new Error("Delegating access requires a current delegation grant for this recipient.");
     }
@@ -461,9 +511,12 @@ export class SqliteCapabilityGrantStore {
       !parent.targets.some(allowed => targetContains(allowed, target))))) {
       throw new Error("Delegated targets must be contained in the source grant.");
     }
-    const limit = Math.min(Date.parse(parent.expires_at), Date.parse(permission.expires_at));
-    const expiry = input.expires_at ?? new Date(limit).toISOString();
-    if (parseTimestamp("expires_at", expiry) > limit) {
+    if (input.expires_at === undefined) {
+      throw new Error("Delegated access needs an explicit lifetime: an expiry time, or until revoked.");
+    }
+    const limit = Math.min(expiryMs(parent.expires_at), expiryMs(permission.expires_at));
+    const expiry = input.expires_at;
+    if ((expiry === null ? Infinity : parseTimestamp("expires_at", expiry)) > limit) {
       throw new Error("Delegated access cannot outlive its source or delegation permission.");
     }
     return inSavepoint(this.db, () => {
@@ -474,6 +527,46 @@ export class SqliteCapabilityGrantStore {
       });
       this.db.prepare(`INSERT INTO capability_grant_delegations (grant_id, source_grant_id, authority_grant_id)
         VALUES (?, ?, ?)`).run(grant.grant_id, parent.grant_id, permission.grant_id);
+      this.onIssued?.(grant);
+      return grant;
+    });
+  }
+
+  /**
+   * Issue a grant that depends on a source grant the Bus already trusts, such
+   * as a person's root, without a session. It is issued by the source's
+   * principal, lasts until revoked, and stops with its source. It can only
+   * narrow: operations and targets must sit inside the source.
+   */
+  issueDependentGrant(input: Readonly<{
+    grant_id?: string;
+    source_grant_id: string;
+    principal_id: string;
+    operation_ids: readonly string[];
+    targets?: readonly CapabilityGrantTarget[];
+    evidence: readonly CapabilityGrantEvidence[];
+  }>): CapabilityGrantRecord {
+    const source = this.requireGrant(input.source_grant_id);
+    if (!this.isActiveGrant(source, parseTimestamp("now", this.now()))) {
+      throw new Error("Access can only depend on an active source grant.");
+    }
+    const operations = normalizeNonEmptySet(input.operation_ids, "operation_id", true);
+    const targets = normalizeTargets(input.targets ?? []);
+    if (operations.some(id => !source.operation_ids.includes(id))) {
+      throw new Error("Dependent operations must be a subset of the source grant.");
+    }
+    if (source.targets.length > 0 && (targets.length === 0 || targets.some(target =>
+      !source.targets.some(allowed => targetContains(allowed, target))))) {
+      throw new Error("Dependent targets must be contained in the source grant.");
+    }
+    return inSavepoint(this.db, () => {
+      const grant = this.issueGrant({ grant_id: input.grant_id, principal_id: input.principal_id,
+        boundary: source.boundary, operation_ids: operations, targets, expires_at: null,
+        issuer_id: source.principal_id, evidence: input.evidence });
+      this.db.prepare(`INSERT INTO capability_grant_delegations (grant_id, source_grant_id, authority_grant_id)
+        VALUES (?, ?, ?)`).run(grant.grant_id, source.grant_id, source.grant_id);
+      // Told again now that the grant's dependency, and so its real lifetime, is known.
+      this.onIssued?.(grant);
       return grant;
     });
   }
@@ -537,7 +630,7 @@ export class SqliteCapabilityGrantStore {
       if (existingGrant.revoked_at !== null || existingPolicy.superseded_at !== null) {
         throw new Error(`Host capability policy '${policyId}@${policyRevision}' has been superseded and cannot be reactivated.`);
       }
-      if (parseTimestamp("expires_at", existingGrant.expires_at) <= parseTimestamp("now", this.now())) {
+      if (expiryMs(existingGrant.expires_at) <= parseTimestamp("now", this.now())) {
         throw new Error(`Host capability policy '${policyId}@${policyRevision}' has expired and cannot be reactivated.`);
       }
       return { replayed: true, policy: existingPolicy, grant: existingGrant };
@@ -689,6 +782,26 @@ export class SqliteCapabilityGrantStore {
     return revoked;
   }
 
+  /** When the grant actually ends: its own expiry or any source's, whichever is first. Null is until revoked. */
+  effectiveExpiry(grantId: string, seen = new Set<string>()): string | null {
+    const grant = this.getGrant(grantId);
+    if (!grant || seen.has(grantId)) return grant?.expires_at ?? null;
+    seen.add(grantId);
+    const delegation = this.getDelegation(grantId);
+    const candidates = [grant.expires_at, ...(delegation
+      ? [...new Set([delegation.source_grant_id, delegation.authority_grant_id])].map(id => this.effectiveExpiry(id, seen))
+      : [])].filter((value): value is string => value !== null);
+    return candidates.sort((a, b) => expiryMs(a) - expiryMs(b))[0] ?? null;
+  }
+
+  /** True when the grant is issued, unexpired, unrevoked, and every grant it depends on is too. */
+  isActiveGrant(grant: CapabilityGrantRecord, nowMs = parseTimestamp("now", this.now())): boolean {
+    return grant.revoked_at === null
+      && parseTimestamp("issued_at", grant.issued_at) <= nowMs
+      && expiryMs(grant.expires_at) > nowMs
+      && this.delegationIsActive(grant.grant_id, nowMs);
+  }
+
   /** The grant and every grant delegated from it or under its authority, at any depth. */
   dependentGrantIds(grantId: string): string[] {
     return (this.db.prepare(`
@@ -717,7 +830,7 @@ export class SqliteCapabilityGrantStore {
         AND boundary_id = ?
         AND revoked_at IS NULL
         AND issued_at <= ?
-        AND expires_at > ?
+        AND (expires_at IS NULL OR expires_at > ?)
       ORDER BY issued_at DESC, grant_id
     `).all(
       principalId,
@@ -851,7 +964,7 @@ function grantReferenceFailure(
   if (!sameBoundary(grant.boundary, session.boundary)) return "grant_boundary_mismatch";
   if (grant.revoked_at !== null) return "grant_revoked";
   if (parseTimestamp("issued_at", grant.issued_at) > nowMs) return "grant_not_yet_active";
-  if (parseTimestamp("expires_at", grant.expires_at) <= nowMs) return "grant_expired";
+  if (expiryMs(grant.expires_at) <= nowMs) return "grant_expired";
   return null;
 }
 
@@ -1004,6 +1117,11 @@ function digest(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+/** Expiry as epoch milliseconds; until-revoked authority never expires. */
+export function expiryMs(value: string | null): number {
+  return value === null ? Infinity : parseTimestamp("expires_at", value);
+}
+
 function parseTimestamp(label: string, value: string): number {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) throw new Error(`CapabilityGrant ${label} must be an ISO timestamp.`);
@@ -1012,7 +1130,8 @@ function parseTimestamp(label: string, value: string): number {
 
 let savepointSequence = 0;
 
-function inSavepoint<T>(db: DatabaseSync, action: () => T): T {
+/** Runs work atomically inside any enclosing transaction. */
+export function inSavepoint<T>(db: DatabaseSync, action: () => T): T {
   savepointSequence += 1;
   const name = `capability_grant_${savepointSequence}`;
   db.exec(`SAVEPOINT ${name}`);

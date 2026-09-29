@@ -57,7 +57,7 @@ async function fixture(mode: "interactive" | "unattended" = "unattended", publis
 describe("authenticated collaborator permission operations", () => {
   it.each(["interactive", "unattended"] as const)("grants a new Actor access before its first publication in %s mode", async mode => {
     const f = await fixture(mode, false);
-    const result = await f.invoke("capability.grant.delegate", { source_grant_id: f.grant.grant_id,
+    const result = await f.invoke("capability.grant.delegate", { expires_at: expiry, source_grant_id: f.grant.grant_id,
       operation_ids: ["artefact.inspect"] }, { expected: null });
     expect(result.receipt.state).toBe("completed");
     const draft = f.store.actorDefinitionStore.createDraft({ actor_id: f.actor.actor.actor_id,
@@ -72,7 +72,7 @@ describe("authenticated collaborator permission operations", () => {
     const f = await fixture("unattended", false);
     f.store.actorDefinitionStore.publishDraft({ actor_definition_revision_id: f.actor.draft.actor_definition_revision_id,
       expected_current_revision_id: null, changed_by_principal_id: f.principal });
-    const result = await f.invoke("capability.grant.delegate", { source_grant_id: f.grant.grant_id,
+    const result = await f.invoke("capability.grant.delegate", { expires_at: expiry, source_grant_id: f.grant.grant_id,
       operation_ids: ["artefact.inspect"] }, { expected: null });
     expect(result.receipt.state).toBe("refused");
     expect(f.store.capabilityGrantStore.listActiveGrantsForPrincipalBoundary(f.actor.actor.actor_id, f.boundary)).toEqual([]);
@@ -87,11 +87,11 @@ describe("authenticated collaborator permission operations", () => {
     });
     expect(refused.receipt).toMatchObject({ state: "refused", refusal: { message: expect.stringContaining("grant_principal_mismatch") } });
     expect(f.store.actorDefinitionStore.requireActor(f.actor.actor.actor_id).current_definition_revision_id).toBe(f.actor.draft.actor_definition_revision_id);
-    const delegated = await f.invoke("capability.grant.delegate", { source_grant_id: f.grant.grant_id,
+    const delegated = await f.invoke("capability.grant.delegate", { expires_at: expiry, source_grant_id: f.grant.grant_id,
       operation_ids: ["context.inspect", "artefact.inspect"] }, { key: "same-delegation" });
     expect(delegated.receipt.state).toBe("completed");
     const grantId = delegated.receipt.result.grant.grant_id;
-    const replay = await f.invoke("capability.grant.delegate", { source_grant_id: f.grant.grant_id,
+    const replay = await f.invoke("capability.grant.delegate", { expires_at: expiry, source_grant_id: f.grant.grant_id,
       operation_ids: ["context.inspect", "artefact.inspect"] }, { key: "same-delegation" });
     expect(replay).toMatchObject({ replayed: true, receipt: { receipt_id: delegated.receipt.receipt_id } });
     expect(f.store.capabilityGrantStore.listActiveGrantsForPrincipalBoundary(f.actor.actor.actor_id, f.boundary)).toHaveLength(1);
@@ -125,7 +125,7 @@ describe("authenticated collaborator permission operations", () => {
     const request = { principal_id: f.principal, grant_id: source.grant_id, secret_ref_id: ref.secret_ref_id,
       authority_boundary: f.boundary, resource: ref.resource, purpose: RUNTIME_CREDENTIAL_PURPOSE, operation_id: "credential.bind" };
     await service.bindSecretRef({ request, broker_id: broker.broker_id, material: new TextEncoder().encode("test-only-material") });
-    const response = await f.invoke("capability.grant.delegate", { source_grant_id: source.grant_id,
+    const response = await f.invoke("capability.grant.delegate", { expires_at: expiry, source_grant_id: source.grant_id,
       operation_ids: ["credential.use", "credential.refresh"] }, { token: f.issueSession([f.grant.grant_id, source.grant_id]) });
     expect(response.receipt.state).toBe("completed");
     expect(JSON.stringify(response)).not.toContain("test-only-material");
@@ -157,11 +157,11 @@ describe("authenticated collaborator permission operations", () => {
     expect(listed.receipt.result.active_grants.map((grant: any) => grant.grant_id)).not.toContain(ceiling.grant_id);
     expect(listed.receipt.result.delegable_grants.map((grant: any) => grant.grant_id)).toEqual([ceiling.grant_id]);
 
-    const wider = await f.invoke("capability.grant.delegate", { source_grant_id: ceiling.grant_id,
+    const wider = await f.invoke("capability.grant.delegate", { expires_at: expiry, source_grant_id: ceiling.grant_id,
       operation_ids: ["engine.tool.filesystem.write"], targets: [{ kind: "filesystem_path", id: "." }] }, { token });
     expect(wider.receipt).toMatchObject({ state: "refused", refusal: { message: expect.stringContaining("contained in the source") } });
 
-    const child = await f.invoke("capability.grant.delegate", { source_grant_id: ceiling.grant_id,
+    const child = await f.invoke("capability.grant.delegate", { expires_at: expiry, source_grant_id: ceiling.grant_id,
       operation_ids: ["engine.tool.filesystem.write"], targets: [{ kind: "filesystem_path", id: "src/app" }] }, { token });
     expect(child.receipt.state).toBe("completed");
     expect(child.receipt.result.grant).toMatchObject({ delegation_only: false, targets: [{ kind: "filesystem_path", id: "src/app" }] });
@@ -172,13 +172,23 @@ describe("authenticated collaborator permission operations", () => {
     expect(builderGrants()).toEqual([]);
   });
 
+  it("refuses a delegation without an explicit lifetime, or with two", async () => {
+    const f = await fixture();
+    for (const lifetime of [{}, { until_revoked: true, expires_at: expiry }]) {
+      const result = await f.invoke("capability.grant.delegate", { ...lifetime, source_grant_id: f.grant.grant_id,
+        operation_ids: ["context.inspect"] });
+      expect(result.receipt).toMatchObject({ state: "refused", refusal: { code: "delegation_lifetime_required" } });
+    }
+    expect(f.store.capabilityGrantStore.listActiveGrantsForPrincipalBoundary(f.actor.actor.actor_id, f.boundary)).toEqual([]);
+  });
+
   it("never treats a delegation-only grant as permission to delegate", async () => {
     const f = await fixture();
     const permissionOnly = f.store.capabilityGrantStore.issueGrant({ principal_id: f.principal, boundary: f.boundary,
       operation_ids: ["capability.grant.delegate", "context.inspect"], expires_at: expiry, issuer_id: "policy:test",
       evidence: [{ kind: "policy", ref: "not-exercisable" }], delegation_only: true });
     const token = f.issueSession([permissionOnly.grant_id]);
-    const result = await f.invoke("capability.grant.delegate", { source_grant_id: permissionOnly.grant_id,
+    const result = await f.invoke("capability.grant.delegate", { expires_at: expiry, source_grant_id: permissionOnly.grant_id,
       operation_ids: ["context.inspect"] }, { token });
     expect(result.receipt?.state ?? result.state).not.toBe("completed");
     expect(f.store.capabilityGrantStore.listActiveGrantsForPrincipalBoundary(f.actor.actor.actor_id, f.boundary)).toEqual([]);
@@ -188,17 +198,17 @@ describe("authenticated collaborator permission operations", () => {
     const f = await fixture();
     const extra = f.store.capabilityGrantStore.issueGrant({ principal_id: f.principal, boundary: f.boundary,
       operation_ids: ["context.inspect"], expires_at: expiry, issuer_id: "test", evidence: [{ kind: "test", ref: "extra" }] });
-    const result = await f.invoke("capability.grant.delegate", { source_grant_id: extra.grant_id, operation_ids: ["context.inspect"] });
+    const result = await f.invoke("capability.grant.delegate", { expires_at: expiry, source_grant_id: extra.grant_id, operation_ids: ["context.inspect"] });
     expect(result.receipt).toMatchObject({ state: "refused", refusal: { message: expect.stringContaining("not part of this authenticated session") } });
     expect(f.store.capabilityGrantStore.listActiveGrantsForPrincipalBoundary(f.actor.actor.actor_id, f.boundary)).toEqual([]);
   });
 
   it("retains source revocation dependencies through a portable Workspace restore", async () => {
     const source = await fixture();
-    const result = await source.invoke("capability.grant.delegate", { source_grant_id: source.grant.grant_id, operation_ids: ["context.inspect"] });
+    const result = await source.invoke("capability.grant.delegate", { expires_at: expiry, source_grant_id: source.grant.grant_id, operation_ids: ["context.inspect"] });
     expect(result.receipt.state).toBe("completed");
     const childId = result.receipt.result.grant.grant_id;
-    const onward = await source.invoke("capability.grant.delegate", { source_grant_id: source.grant.grant_id,
+    const onward = await source.invoke("capability.grant.delegate", { expires_at: expiry, source_grant_id: source.grant.grant_id,
       operation_ids: ["artefact.inspect"], delegation_only: true });
     const onwardId = onward.receipt.result.grant.grant_id;
     const bundle = source.store.workspacePortabilityService.exportWorkspace(source.boundary.workspace_id);

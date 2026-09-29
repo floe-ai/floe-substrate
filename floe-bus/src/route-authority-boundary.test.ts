@@ -126,6 +126,7 @@ const EXPECTED_AUTHORITY: Record<string, TransportRequirement["kind"]> = {
   ["GET /v1/clients"]: "host_control",
   ["DELETE /v1/clients/:identity_id"]: "host_control",
   ["DELETE /v1/clients/:identity_id/sessions/:authority_session_id"]: "host_control",
+  ["DELETE /v1/clients/:identity_id/workspaces/:workspace_id"]: "host_control",
   ["POST /v1/local/browser-connections/:code/approve"]: "host_control",
   ["POST /v1/local/credential-ingress-sessions"]: "host_control",
   ["POST /v1/local/credential-ingress-sessions/:ingress_session_id/revoke"]: "host_control",

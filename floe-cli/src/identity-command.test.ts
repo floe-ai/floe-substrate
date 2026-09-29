@@ -42,7 +42,7 @@ describe("identity add resolves the workspace so a human never types an id", () 
     await program.parseAsync(["identity", "add", "--name", "Dev", "--pubkey", "npub1dev"], { from: "user" });
 
     const admit = calls.find((c) => c.url.endsWith("/v1/identities"));
-    expect(admit?.body).toMatchObject({ workspace_id: "workspace:alpha" });
+    expect(admit?.body).toMatchObject({ workspace_id: "workspace:alpha", until_revoked: true });
   });
 
   it("prints the registered workspaces inline when the directory is outside all of them", async () => {

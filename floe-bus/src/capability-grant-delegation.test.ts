@@ -25,7 +25,8 @@ function setup() {
   const authority = () => store.resolveSessionAuthority(session(), recipient).authority;
   const input = () => ({ authority: authority(), source_grant_id: source.grant_id,
     principal_id: recipient.id, recipient, operation_ids: ["artefact.inspect"],
-    targets: [{ kind: "artefact", id: "artefact:game" }], invocation_id: "invocation:delegate" });
+    targets: [{ kind: "artefact", id: "artefact:game" }], expires_at: expiry as string | null,
+    invocation_id: "invocation:delegate" });
   return { db, store, source, permission, session, authority, input, setTime: (value: string) => { time = value; } };
 }
 
@@ -85,13 +86,45 @@ describe("bounded CapabilityGrant delegation", () => {
     expect(f.store.getGrant(grant.grant_id)?.revoked_at).toBeNull(); // retained history, current dependency refusal
   });
 
-  it("uses the shorter expiry and checks the source again after discovery", () => {
+  it("caps at the shorter expiry and checks the source again after discovery", () => {
     const f = setup();
     f.db.prepare("UPDATE capability_grants SET expires_at = ? WHERE grant_id = ?")
       .run("2026-09-05T05:30:00.000Z", f.permission.grant_id);
-    expect(f.store.delegateGrant(f.input()).expires_at).toBe("2026-09-05T05:30:00.000Z");
-    const input = f.input(); f.setTime("2026-09-05T06:10:00.000Z");
+    expect(() => f.store.delegateGrant(f.input())).toThrow("cannot outlive");
+    expect(f.store.delegateGrant({ ...f.input(), expires_at: "2026-09-05T05:30:00.000Z" }).expires_at)
+      .toBe("2026-09-05T05:30:00.000Z");
+    const input = { ...f.input(), expires_at: "2026-09-05T05:20:00.000Z" }; f.setTime("2026-09-05T06:10:00.000Z");
     expect(() => f.store.delegateGrant(input)).toThrow("grant_expired");
+  });
+
+  it("refuses an omitted lifetime rather than defaulting one", () => {
+    const f = setup();
+    const { expires_at: _omitted, ...input } = f.input();
+    expect(() => f.store.delegateGrant(input as never)).toThrow("explicit lifetime");
+    expect(() => f.store.issueGrant({ principal_id: "actor:x", boundary: workspace, operation_ids: ["context.inspect"],
+      issuer_id: "policy:workspace", evidence: [{ kind: "policy", ref: "p" }] } as never)).toThrow("must be explicit");
+  });
+
+  it("keeps until-revoked authority current until it, or anything it depends on, is revoked", () => {
+    const f = setup();
+    const base = { principal_id: "actor:root", boundary: workspace, issuer_id: "identity:root",
+      evidence: [{ kind: "identity_workspace_membership", ref: "m" }], expires_at: null };
+    const root = f.store.issueGrant({ ...base, operation_ids: ["context.inspect", "capability.grant.delegate"] });
+    expect(root.expires_at).toBeNull();
+    const session = { ...f.session(), principal_id: root.principal_id, grant_ids: [root.grant_id] };
+    const child = f.store.delegateGrant({ authority: f.store.resolveSessionAuthority(session, recipient).authority,
+      source_grant_id: root.grant_id, principal_id: recipient.id, recipient, operation_ids: ["context.inspect"],
+      expires_at: null, invocation_id: "delegate:forever" });
+    f.setTime("2126-01-01T00:00:00.000Z");
+    expect(f.store.listActiveGrantsForPrincipalBoundary(recipient.id, workspace).map(grant => grant.grant_id))
+      .toEqual([child.grant_id]);
+    f.store.revokeGrant(root.grant_id);
+    expect(f.store.listActiveGrantsForPrincipalBoundary(recipient.id, workspace)).toEqual([]);
+  });
+
+  it("refuses an until-revoked child of time-limited authority", () => {
+    const f = setup();
+    expect(() => f.store.delegateGrant({ ...f.input(), expires_at: null })).toThrow("cannot outlive");
   });
 
   it("retains delegation dependency checks after reopening the store", () => {
@@ -113,7 +146,7 @@ describe("bounded CapabilityGrant delegation", () => {
       const session = { ...f.session(), principal_id: parent.principal_id, grant_ids: [parent.grant_id] };
       parent = f.store.delegateGrant({ authority: f.store.resolveSessionAuthority(session, next).authority,
         source_grant_id: parent.grant_id, principal_id: next.id, recipient: next,
-        operation_ids: parent.operation_ids, invocation_id: `delegate:${index}` });
+        operation_ids: parent.operation_ids, expires_at: expiry, invocation_id: `delegate:${index}` });
     }
     f.store.revokeGrant(root.grant_id);
     expect(f.store.inspectSessionGrantIds({ principal_id: parent.principal_id, boundary: workspace,

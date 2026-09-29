@@ -56,7 +56,7 @@ describe("Client identity credential path (ADR-0015)", () => {
       method: "POST",
       url: "/v1/identities",
       headers: { authorization: `Bearer ${HOST_TOKEN}` },
-      payload: { display_name: "Jamie", pubkey: pubkeyHex, workspace_id: workspaceId },
+      payload: { display_name: "Jamie", pubkey: pubkeyHex, workspace_id: workspaceId, until_revoked: true },
     });
     expect(response.statusCode).toBe(201);
     return response.json().identity.identity_id as string;
@@ -219,7 +219,7 @@ describe("Client identity credential path (ADR-0015)", () => {
       const admitted = await handle.app.inject({
         method: "POST", url: "/v1/identities",
         headers: hostAuth,
-        payload: { display_name: "Multi", pubkey: pk2, workspace_id: ws },
+        payload: { display_name: "Multi", pubkey: pk2, workspace_id: ws, until_revoked: true },
       });
       expect(admitted.statusCode).toBe(201);
     }

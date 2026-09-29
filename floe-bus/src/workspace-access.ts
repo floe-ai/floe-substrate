@@ -28,7 +28,9 @@ export type WorkspaceAccessRecordKind =
   | "folder_removed"
   | "system_access_turned_on"
   | "system_access_turned_off"
-  | "tool_access_given";
+  | "tool_access_given"
+  | "actor_access_moved"
+  | "actor_access_lapsing";
 
 export type WorkspaceAccessRecord = Readonly<{
   record_id: string;
@@ -205,6 +207,33 @@ export class WorkspaceAccessStore {
       VALUES (?, ?, ?, 'tool_access_given', NULL, ?, ?, ?)`)
       .run(`notice:tool-access:${workspaceId}`, workspaceId, this.dependencies.host_id, TOOL_ACCESS_NOTICE, principalId, this.now());
     return Number(result.changes) > 0;
+  }
+
+  /**
+   * Keeps one standing notice under a stable id. A changed summary replaces
+   * the old one and counts as new; the same summary again changes nothing.
+   * True when the notice was recorded or changed now.
+   */
+  recordStandingNotice(input: Readonly<{
+    record_id: string;
+    workspace_id: string;
+    kind: WorkspaceAccessRecordKind;
+    summary: string;
+    principal_id: string;
+  }>): boolean {
+    const result = this.db.prepare(`INSERT INTO workspace_access_records
+      (record_id, workspace_id, host_id, kind, path, summary, principal_id, recorded_at)
+      VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
+      ON CONFLICT(record_id) DO UPDATE SET kind = excluded.kind, summary = excluded.summary,
+        principal_id = excluded.principal_id, recorded_at = excluded.recorded_at
+      WHERE workspace_access_records.summary <> excluded.summary OR workspace_access_records.kind <> excluded.kind`)
+      .run(input.record_id, input.workspace_id, this.dependencies.host_id, input.kind, input.summary, input.principal_id, this.now());
+    return Number(result.changes) > 0;
+  }
+
+  removeStandingNotice(recordId: string): boolean {
+    return Number(this.db.prepare("DELETE FROM workspace_access_records WHERE record_id = ? AND host_id = ?")
+      .run(recordId, this.dependencies.host_id).changes) > 0;
   }
 
   /** Removes everything held for a deleted Workspace. */

@@ -28,7 +28,7 @@ import { CliOperationClient, forgetIdentityDeviceKey, nativeOperationBroker } fr
 import { probeAgent } from "./identity/connection.js";
 import { registerOperationsCommand } from "./operations-command.js";
 import { registerIdentityCommand } from "./identity-command.js";
-import { registerLocalWorkspaceViaBroker } from "./operation-client.js";
+import { defaultRegistrationDependencies, registerFolder } from "./workspace-registration.js";
 import { startAll, waitForBusHealth, isHealthy, ensureSubstrateForClient, runningBusVersion, describeVersionMismatch, floeHome } from "./startup.js";
 import { thisInstallation, directInstallRequiredMessage } from "./installation.js";
 import {
@@ -67,7 +67,7 @@ program
     await verifyHealth(configPath, config);
     const currentWorkspace = findAncestorWithFloe(process.cwd());
     if (currentWorkspace) {
-      await registerCurrentWorkspace(config, currentWorkspace, true);
+      await registerCurrentWorkspace(configPath, config, currentWorkspace);
     }
     console.log(`Floe services are running: ${config.bus.http_base_url}`);
     if (options.autostart !== false) {
@@ -365,7 +365,7 @@ async function runLauncher(surfaceName?: string): Promise<void> {
     return;
   }
   if (plan === "connect") await reportVersionMismatch(config);
-  await registerCwdWorkspaceBestEffort(config);
+  await registerCwdWorkspaceBestEffort(configPath, config);
   if (!hasBeenAsked(configPath, config, "start_at_login")) {
     // First launch means the person has never been asked — not that the config
     // file is new (a surface may have created it first).
@@ -415,11 +415,11 @@ async function runLauncher(surfaceName?: string): Promise<void> {
  * own (e.g. a managed service), where host-control registration is not ours to
  * do. A failure here must not stop a surface from launching.
  */
-async function registerCwdWorkspaceBestEffort(config: LocalConfig): Promise<void> {
+async function registerCwdWorkspaceBestEffort(configPath: string, config: LocalConfig): Promise<void> {
   const currentWorkspace = findAncestorWithFloe(process.cwd());
   if (!currentWorkspace) return;
   try {
-    await registerCurrentWorkspace(config, currentWorkspace, true);
+    await registerCurrentWorkspace(configPath, config, currentWorkspace);
   } catch (error) {
     console.warn(`Note: could not register the current workspace: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -570,13 +570,12 @@ function stopAllServices(configPath: string, config: LocalConfig): void {
   for (const service of [...SERVICE_NAMES].reverse()) stopService(configPath, config, service);
 }
 
-async function registerCurrentWorkspace(config: LocalConfig, locator: string, initAuthorized: boolean): Promise<void> {
-  // Registration and selection are host-control bootstrap routes. The broker
-  // owns the host-control credential, so the CLI registers through it rather
-  // than an unauthenticated HTTP call. The Bus provisions the workspace's
-  // operator Actor as part of registration (see local-operator-actor), so the
-  // CLI does not seed anything itself.
-  await registerLocalWorkspaceViaBroker(locator, initAuthorized, config.bus.http_base_url);
+async function registerCurrentWorkspace(configPath: string, config: LocalConfig, locator: string): Promise<void> {
+  // The folder belongs to the person signed in here, when there is one. The
+  // Bus provisions the workspace's operator Actor as part of registration (see
+  // local-operator-actor), so the CLI does not seed anything itself.
+  const registered = await registerFolder(locator, defaultRegistrationDependencies(configPath, config.bus.http_base_url));
+  if (registered.as === "person") console.log(`Opened ${locator} as ${registered.display_name}.`);
 }
 
 function findAncestorWithFloe(start: string): string | null {

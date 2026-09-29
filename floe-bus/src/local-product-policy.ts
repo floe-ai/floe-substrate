@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import type { WorkspaceConfigurationPolicyProvider } from "./workspace-config-import.js";
 import { CAPABILITY_GRANT_OPERATION_IDS } from "./capability-grant-operations.js";
-import type { CapabilityGrantRecord, CapabilityGrantTarget } from "./capability-grants.js";
-import type { BusStore } from "./store.js";
 import { ENGINE_TOOL_OPERATIONS } from "./tool-policy.js";
 
-/** Local product defaults, explicitly installed by the CLI/desktop entry points. */
-export const LOCAL_FLOE_ACTOR_OPERATIONS_V1 = Object.freeze([
+/**
+ * What an Actor can do by default when a person gives it access: the same as
+ * the default Floe Actor, unless its creator chooses limits (D1). Always cut to
+ * what the giving person holds, so it can never widen their authority.
+ */
+export const DEFAULT_ACTOR_OPERATIONS_V1: readonly string[] = Object.freeze([
   ...CAPABILITY_GRANT_OPERATION_IDS,
   "actor.create", "actor.definition.draft.create", "actor.definition.draft.replace",
   "actor.definition.get", "actor.definition.publish", "actor.definition.rollback",
@@ -16,7 +18,6 @@ export const LOCAL_FLOE_ACTOR_OPERATIONS_V1 = Object.freeze([
   "artefact.create", "artefact.inspect", "artefact.search", "artefact.version.publish", "artefact.version.export",
   "connector.inspect", "context.archive", "context.communication.emit", "context.create", "context.get",
   "context.inspect", "context.list", "context.participant.remove", "context.participant.set_access", "context.restore",
-  "credential.use", "credential.refresh",
   "extension.inspect", "extension.list", "extension.package.get", "extension.schema.discover",
   "runtime-profile.create", "runtime-profile.draft.create", "runtime-profile.draft.replace", "runtime-profile.inspect",
   "runtime-profile.list", "runtime-profile.publish", "runtime-profile.reactivate", "runtime-profile.retire",
@@ -32,103 +33,30 @@ export const LOCAL_FLOE_ACTOR_OPERATIONS_V1 = Object.freeze([
   ...Object.values(ENGINE_TOOL_OPERATIONS),
 ]);
 
+/**
+ * Local product import policy. In a Workspace with exactly one person, every
+ * Actor the Workspace files define gets the default access, delegated from
+ * that person's root: issued by them, lasting until they revoke it or their
+ * own access ends. With no person, or several, the files give nothing new and
+ * existing access is kept; a person adopts the Actors instead.
+ */
 export const localProductWorkspacePolicy: WorkspaceConfigurationPolicyProvider = input => {
-  // Restore/copy/fork require their own reviewed authority. Existing migration policy is unchanged.
-  if (input.creation_kind !== "created" || !input.init_authorized) return null;
-  const assignments = input.inventory.actors.filter(actor => actor.source_actor_id === "floe")
-    .map(actor => ({ source_actor_id: actor.source_actor_id, operation_ids: LOCAL_FLOE_ACTOR_OPERATIONS_V1 }));
-  const now = new Date();
-  const renewalWindow = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-  const expiry = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 4, 1)).toISOString();
-  const digest = createHash("sha256").update(JSON.stringify({ workspace_id: input.workspace_id, assignments, expiry })).digest("hex").slice(0, 24);
+  // Restore/copy/fork require their own reviewed authority.
+  if (!input.init_authorized || !["created", "legacy_retained"].includes(input.creation_kind ?? "")) return null;
+  const root = input.sole_person_root;
+  if (!root) return null;
+  const operations = DEFAULT_ACTOR_OPERATIONS_V1.filter(id => root.operation_ids.includes(id));
+  if (operations.length === 0) return null;
+  const assignments = input.inventory.actors.map(actor => ({ source_actor_id: actor.source_actor_id, operation_ids: operations }));
+  const digest = createHash("sha256")
+    .update(JSON.stringify({ workspace_id: input.workspace_id, assignments, root: root.grant_id }))
+    .digest("hex").slice(0, 24);
   return {
-    policy_revision: `local-floe-actor-v1:${renewalWindow}:${digest}`,
-    actor_operation_authority: assignments, expires_at: expiry,
-    issuer_id: "policy:local-floe-actor:v1", import_principal_id: "system:workspace-configuration-import",
+    policy_revision: `person-delegated-actor-access-v1:${root.grant_id}:${digest}`,
+    actor_operation_authority: assignments,
+    expires_at: null,
+    issuer_id: root.principal_id,
+    import_principal_id: "system:workspace-configuration-import",
+    delegation_source_grant_id: root.grant_id,
   };
 };
-
-/** Apply the local product's delegation responsibility without replaying source files. */
-export function applyLocalFloeDelegationPolicy(store: BusStore): void {
-  applyLocalFloeOperationPolicy(store, "policy:local-floe-delegation:v1", "capgrant_local_floe_delegation_", CAPABILITY_GRANT_OPERATION_IDS);
-}
-
-/** Add exact-version export to previously initialised local Floe Actors. */
-export function applyLocalFloeExportPolicy(store: BusStore): void {
-  applyLocalFloeOperationPolicy(store, "policy:local-floe-export:v1", "capgrant_local_floe_export_", ["artefact.version.export"]);
-}
-
-/** The default Floe Actor may explicitly arrange a decision response. */
-export function applyLocalFloeApprovalResponsePolicy(store: BusStore): void {
-  applyLocalFloeOperationPolicy(store, "policy:local-floe-approval-response:v1", "capgrant_local_floe_approval_response_", ["approval.response.configure"], [{kind:"approval_request",id:null}]);
-}
-
-/**
- * The default Floe Actor in an older Workspace gets the default engine tool
- * access (Q31), unless a person already chose its tool access: any live grant
- * for an engine tool, targeted or not, is left exactly as it is. Floe does not
- * widen authority silently, so each Workspace given access records a one-time
- * notice a surface can show.
- */
-export function applyLocalFloeToolPolicy(store: BusStore): string[] {
-  const engineOperations = Object.values(ENGINE_TOOL_OPERATIONS);
-  const granted = applyLocalFloeOperationPolicy(store, "policy:local-floe-tools:v1", "capgrant_local_floe_tools_",
-    engineOperations, [], grants => grants.some(grant => grant.operation_ids.some(id => engineOperations.includes(id as never))));
-  for (const workspaceId of granted) store.workspaceAccessStore.recordToolAccessNotice(workspaceId, "policy:local-floe-tools:v1");
-  return granted;
-}
-
-/** Returns the Workspaces whose Floe Actor was given the operations now. */
-function applyLocalFloeOperationPolicy(
-  store: BusStore,
-  policy: string,
-  grantPrefix: string,
-  operationIds: readonly string[],
-  targets: readonly CapabilityGrantTarget[] = [],
-  alreadyChosen: (grants: readonly CapabilityGrantRecord[]) => boolean = () => false,
-): string[] {
-  const granted: string[] = [];
-  for (const workspace of store.workspaceIdentityStore.listLocalProjections(store.localHostId)) {
-    if (!workspace.binding?.init_authorized || !["created", "legacy_retained"].includes(workspace.creation_kind)) continue;
-    const ownership = store.db.prepare(`SELECT actor_id FROM workspace_configuration_import_resources
-      WHERE workspace_id = ? AND source_actor_id = 'floe'`).get(workspace.workspace_id) as { actor_id: string } | undefined;
-    if (!ownership) continue;
-    const actor = store.actorDefinitionStore.getActor(ownership.actor_id);
-    if (!actor || actor.status !== "active" || actor.workspace_id !== workspace.workspace_id) continue;
-    const definition = store.actorDefinitionStore.getCurrentDefinition(actor.actor_id);
-    if (!definition) continue;
-    const inspection = store.capabilityGrantStore.inspectSessionGrantIds({ principal_id: actor.actor_id,
-      boundary: { kind: "workspace", workspace_id: actor.workspace_id }, grant_ids: definition.content.capability_grant_ids });
-    if (inspection.unavailable_grants.length > 0) continue;
-    if (operationIds.every(id => inspection.active_grants.some(grant => grant.targets.length === 0 && grant.operation_ids.includes(id)))) continue;
-    if (alreadyChosen(inspection.active_grants)) continue;
-    const basis = inspection.active_grants.find(grant => grant.targets.length === 0
-      && ["policy:local-floe-actor:v1", "policy:legacy-workspace-model-actor-authority:v1"].includes(grant.issuer_id)
-      && grant.evidence.some(item => item.kind === "workspace_configuration_import_policy")
-      && grant.operation_ids.includes("actor.create"));
-    if (!basis) continue;
-    const grantId = `${grantPrefix}${createHash("sha256").update(actor.actor_id).digest("hex").slice(0, 32)}`;
-    // Never replace a prior policy grant after removal, expiry or revocation.
-    if (store.capabilityGrantStore.getGrant(grantId)) continue;
-    store.db.exec("SAVEPOINT local_floe_delegation_policy");
-    try {
-      const grant = store.capabilityGrantStore.issueGrant({ grant_id: grantId,
-        principal_id: actor.actor_id, boundary: basis.boundary, operation_ids: operationIds, targets,
-        expires_at: basis.expires_at, issuer_id: policy,
-        evidence: [{ kind: "local_product_policy", ref: policy }, { kind: "capability_grant", ref: basis.grant_id }],
-      });
-      const draft = store.actorDefinitionStore.createDraft({ actor_id: actor.actor_id,
-        created_by_principal_id: policy, definition: { ...definition.content,
-          capability_grant_ids: [...definition.content.capability_grant_ids, grant.grant_id] },
-      });
-      store.actorDefinitionStore.publishDraft({ actor_definition_revision_id: draft.actor_definition_revision_id,
-        expected_current_revision_id: definition.actor_definition_revision_id, changed_by_principal_id: policy });
-      store.db.exec("RELEASE local_floe_delegation_policy");
-      granted.push(workspace.workspace_id);
-    } catch (error) {
-      store.db.exec("ROLLBACK TO local_floe_delegation_policy"); store.db.exec("RELEASE local_floe_delegation_policy");
-      throw error;
-    }
-  }
-  return granted;
-}
