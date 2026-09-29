@@ -742,11 +742,16 @@ step("the interrupted command never finished");
 socket.close();
 identity.close();
 `, "utf8");
-  const run = spawnSync(process.execPath, [join(surfaceDir, "surface.mjs")], { cwd: neutralCwd, stdio: "inherit" });
+  const run = spawnSync(process.execPath, [join(surfaceDir, "surface.mjs")], {
+    cwd: neutralCwd, stdio: ["ignore", "inherit", "pipe"], encoding: "utf8",
+  });
+  process.stderr.write(run.stderr ?? "");
   if (run.status !== 0) {
     dumpLog(home, "identity");
     dumpLog(home, "bridge");
-    throw new Error("the guard surface could not complete the identity flow, a real turn, and a real pause and resume through the installed artifact.");
+    // The logs are long; restate the surface's own failure last so it is never lost.
+    const reason = (run.stderr ?? "").split(/\r?\n/).find((line) => /^\w*Error:/.test(line.trim())) ?? `exit ${run.status}`;
+    throw new Error(`the guard surface could not complete the identity flow, a real turn, and a real pause and resume through the installed artifact: ${reason.trim()}`);
   }
 }
 
