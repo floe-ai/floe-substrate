@@ -23,7 +23,8 @@ function argValue(name) {
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const npmCli = process.env.npm_execpath;
-const runtimePin = "github:floe-ai/floe-runtime#4e21695972d29941f465f9edaf0f73a0a3c7acf0";
+const runtimePin = JSON.parse(readFileSync(join(repoRoot, "floe-bridge", "package.json"), "utf8")).dependencies["floe-runtime"];
+const runtimeCommit = runtimePin.split("#")[1];
 const root = mkdtempSync(join(tmpdir(), "floe-packaged-gate-"));
 const stage = join(root, "packs");
 const consumer = join(root, "consumer");
@@ -283,7 +284,7 @@ try {
   assert(bridgeManifest.dependencies?.["floe-runtime"] === runtimePin, "installed Bridge does not declare the exact runtime commit");
   assert(runtimeManifest.dependencies?.["@github/copilot-sdk"] === "1.0.13", "installed runtime does not declare Copilot SDK 1.0.13");
   assert(sdkManifest.version === "1.0.13", "installed Copilot SDK is not 1.0.13");
-  assert(consumerLock.includes("4e21695972d29941f465f9edaf0f73a0a3c7acf0"), "consumer lock does not retain the exact runtime commit");
+  assert(consumerLock.includes(runtimeCommit), "consumer lock does not retain the exact runtime commit");
   const npmTree = JSON.parse(runNpm(["ls", "--all", "--json"], { cwd: consumer, capture: true }));
   assert(!JSON.stringify(npmTree).includes("\"extraneous\":true"), "clean consumer contains an extraneous dependency");
   artifact.package_resolution = {

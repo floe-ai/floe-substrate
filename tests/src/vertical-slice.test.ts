@@ -238,7 +238,13 @@ declareLive("vertical slice exact Copilot SDK tools [live-copilot]", () => {
           trigger_event_id: triggerEventId,
           trigger_source_endpoint_id: humanEndpointId,
         });
-        if (!evidenceError) assertExactLiveToolEvidence(captured.evidence);
+        if (!evidenceError) {
+          try {
+            assertExactLiveToolEvidence(captured.evidence);
+          } catch (error) {
+            throw new Error(`${error instanceof Error ? error.message : String(error)} (evidence: ${captured.path})`);
+          }
+        }
       }
     }
     if (evidenceError) throw evidenceError;

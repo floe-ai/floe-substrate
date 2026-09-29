@@ -35,7 +35,8 @@ export type LiveToolEvidence = {
     result_type: string | null;
     result_value: string | null;
     denial_code: string | null;
-    receipt_refusal_code: string | null;
+    /** The refusal code in the tool result the Actor read. */
+    model_visible_refusal_code: string | null;
   };
   emitted_event: {
     event_id: string;
@@ -97,6 +98,18 @@ function eventData(value: unknown): UnknownRecord {
 function eventOrigin(value: unknown): string | null {
   const event = record(value);
   return string(record(event.metadata).origin) ?? string(eventData(value).origin);
+}
+
+/** A refused tool result is the refusal message followed by its JSON contract. */
+function renderedRefusalCode(value: unknown): string | null {
+  const text = string(value);
+  const start = text?.indexOf("\n\n{") ?? -1;
+  if (!text || start < 0) return null;
+  try {
+    return string(record(JSON.parse(text.slice(start + 2))).code);
+  } catch {
+    return null;
+  }
 }
 
 export function assembleLiveToolEvidence(input: LiveEvidenceInputs): Partial<LiveToolEvidence> {
@@ -168,7 +181,7 @@ export function assembleLiveToolEvidence(input: LiveEvidenceInputs): Partial<Liv
       result_type: string(toolCall.result_type),
       result_value: string(toolCall.result_value),
       denial_code: string(toolCall.result_code),
-      receipt_refusal_code: string(turnPayload.result_refusal_code),
+      model_visible_refusal_code: renderedRefusalCode(toolCall.result_value),
     },
     emitted_event:
       emitted
@@ -289,7 +302,7 @@ export function assertExactLiveToolEvidence(evidence: Partial<LiveToolEvidence>)
     if (
       tool_call.result_type !== "failure"
       || tool_call.denial_code !== "operation_grant_required"
-      || tool_call.receipt_refusal_code !== "operation_grant_required"
+      || tool_call.model_visible_refusal_code !== "operation_grant_required"
       || args["operation_id"] !== "command.list"
       || args["operation_version"] !== "1"
       || args["input_schema_version"] !== "1"

@@ -46,9 +46,9 @@ function valid(caseName: LiveToolEvidence["case"] = "emit-success"): LiveToolEvi
       provenance: "floe_direct_tool_callback",
       lifecycle: denied ? "failed" : "completed",
       result_type: denied ? "failure" : "success",
-      result_value: denied ? "not granted" : `{"event_id":"evt_emit"}`,
+      result_value: denied ? "not granted\n\n{\"code\":\"operation_grant_required\",\"receipt_id\":\"rcpt_1\"}" : `{"event_id":"evt_emit"}`,
       denial_code: denied ? "operation_grant_required" : null,
-      receipt_refusal_code: denied ? "operation_grant_required" : null,
+      model_visible_refusal_code: denied ? "operation_grant_required" : null,
     },
     emitted_event: denied ? null : {
       event_id: "evt_emit",
@@ -128,7 +128,7 @@ describe("exact live tool evidence", () => {
 
   it("rejects wrong model-visible refusal", () => {
     invalid(evidence => {
-      evidence.tool_call.receipt_refusal_code = "some_other_code";
+      evidence.tool_call.model_visible_refusal_code = "some_other_code";
     }, "use-capability-denied");
   });
 
@@ -154,7 +154,7 @@ describe("exact live tool evidence", () => {
     invalid(evidence => { evidence.tool_call.denial_code = "operation_version_not_found"; }, "use-capability-denied");
     invalid(evidence => { evidence.tool_call.denial_code = "operation_input_invalid"; }, "use-capability-denied");
     invalid(evidence => { evidence.tool_call.denial_code = null; }, "use-capability-denied");
-    invalid(evidence => { evidence.tool_call.receipt_refusal_code = null; }, "use-capability-denied");
+    invalid(evidence => { evidence.tool_call.model_visible_refusal_code = null; }, "use-capability-denied");
   });
 
   it("rejects an exposure proof for a different callback", () => {

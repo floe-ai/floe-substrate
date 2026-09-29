@@ -22,7 +22,6 @@ import {
 } from "../../floe-cli/src/operation-client.js";
 import {
   assembleLiveToolEvidence,
-  assertExactLiveToolEvidence,
   type LiveToolCase,
   type LiveToolEvidence,
 } from "./live-evidence.js";
@@ -183,7 +182,7 @@ export class SliceHarness {
     workspace_id: string;
     trigger_event_id: string;
     trigger_source_endpoint_id: string;
-  }): Promise<{ evidence: LiveToolEvidence; path: string }> {
+  }): Promise<{ evidence: Partial<LiveToolEvidence>; path: string }> {
     const [deliveryResult, telemetryResult, eventsResult] = await Promise.all([
       this.get<{ deliveries: unknown[] }>(
         `/v1/delivery?workspace_id=${encodeURIComponent(input.workspace_id)}&limit=500`
@@ -204,10 +203,11 @@ export class SliceHarness {
       events: eventsResult.events ?? [],
       bus_messages: this.busMessages,
     });
-    assertExactLiveToolEvidence(evidence);
+    // Written before anyone asserts on it, so a failing case keeps its evidence.
     const directory = process.env.FLOE_LIVE_EVIDENCE_DIR
       ? resolve(process.env.FLOE_LIVE_EVIDENCE_DIR)
       : join(tmpdir(), "floe-live-evidence");
+    mkdirSync(directory, { recursive: true });
     const path = join(directory, `${Date.now()}-${this.tier.id}-${input.case}.json`);
     writeFileSync(path, JSON.stringify(sanitizeEvidence(evidence), null, 2), "utf8");
     return { evidence, path };
