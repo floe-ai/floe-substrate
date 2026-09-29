@@ -118,6 +118,22 @@ export class BrowserConnections {
     throw new BrowserConnectionError(403, "This browser origin is not allowed to connect to Floe.");
   }
 
+  /**
+   * The origin a cookie may be honoured for, or null. Browsers send Floe's
+   * cookies to Floe whatever local page made the request, so a cookie left
+   * from another loopback origin reads as no cookie here and never blocks that
+   * origin from pairing. Any other origin is still refused outright.
+   */
+  private cookieOrigin(request: Pick<FastifyRequest, "headers">): string | null {
+    try {
+      return this.origin(request);
+    } catch (error) {
+      const exact = normalizeBrowserOrigin(this.rawOrigin(request));
+      if (exact && isLoopbackBrowserOrigin(exact)) return null;
+      throw error;
+    }
+  }
+
   /** Pairing also accepts a loopback origin that has no pass yet, long enough to ask for one. */
   private pairingOrigin(request: Pick<FastifyRequest, "headers">): string {
     const origin = this.rawOrigin(request);
@@ -187,13 +203,17 @@ export class BrowserConnections {
 
   mode(request: BrowserRequest): "local" | "remote" | null {
     this.prune();
-    const local = this.sessions.get(digest(this.cookie(request, SESSION_COOKIE)));
-    if (local && local.origin === this.origin(request)) {
+    const localToken = this.cookie(request, SESSION_COOKIE);
+    const token = this.cookie(request, PASS_COOKIE);
+    if (!localToken && !token) return null;
+    const origin = this.cookieOrigin(request);
+    if (!origin) return null;
+    const local = this.sessions.get(digest(localToken));
+    if (local && local.origin === origin) {
       this.localOrigin(request);
       return "local";
     }
-    const token = this.cookie(request, PASS_COOKIE);
-    return token && this.passes.use(token, this.origin(request), undefined) ? "remote" : null;
+    return token && this.passes.use(token, origin, undefined) ? "remote" : null;
   }
 
   localOwner(request: BrowserRequest): string {
@@ -256,7 +276,8 @@ export class BrowserConnections {
     const localToken = this.cookie(request, SESSION_COOKIE);
     const passToken = this.cookie(request, PASS_COOKIE);
     if (!localToken && !passToken) return null;
-    const origin = this.origin(request);
+    const origin = this.cookieOrigin(request);
+    if (!origin) return null;
     const entry = localToken ? this.sessions.get(digest(localToken)) : undefined;
     if (entry?.origin === origin) {
       const session = this.localSession(request, entry, workspaceId);

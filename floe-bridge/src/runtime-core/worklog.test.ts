@@ -62,6 +62,7 @@ describe("Work Logs", () => {
     const filePath = join(
       tempDir,
       ".floe",
+      "state",
       "agents",
       agentId,
       "worklogs",
@@ -75,6 +76,7 @@ describe("Work Logs", () => {
     const filePath = join(
       tempDir,
       ".floe",
+      "state",
       "agents",
       "floe",
       "worklogs",
@@ -86,7 +88,7 @@ describe("Work Logs", () => {
   it("renders unscoped work logs without inventing Default Scope", () => {
     appendWorkLog(tempDir, makeEntry({ scope_id: null }));
 
-    const logPath = join(tempDir, ".floe", "agents", "floe", "worklogs", "2025-01-15.md");
+    const logPath = join(tempDir, ".floe", "state", "agents", "floe", "worklogs", "2025-01-15.md");
     const content = readFileSync(logPath, "utf-8");
     expect(content).toContain("**Scope:** (unscoped)");
   });

@@ -449,9 +449,11 @@ offset, page number, or periodic full-state refresh.
 
 ### Work Log
 
-A committed Markdown audit projection for a runtime Turn. It is useful evidence,
-not execution state, topology, an Artefact identity ledger, or the mechanism
-that makes a response visible.
+A local Markdown audit projection for a runtime Turn, kept in the Workspace's
+git-ignored `.floe/state`; it is never committed configuration and a Turn never
+changes tracked files by writing it. It is useful evidence, not execution state,
+topology, an Artefact identity ledger, or the mechanism that makes a response
+visible.
 
 ## Standing relationships
 

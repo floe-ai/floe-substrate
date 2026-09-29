@@ -31,7 +31,10 @@ state:
 - `pulses` — workspace-level pulse declarations (schedule sources for [[Event]]s)
 - `watchers` — legacy folder-watch configuration; current sources use typed
   Connector definitions and bindings
-- `state` — where ephemeral, non-config runtime state is written
+- `state` — where ephemeral, non-config runtime state is written. Floe writes
+  its own runtime output, such as Actor work logs, under `.floe/state`, which
+  is git-ignored even when its ignore file was never committed. An Actor Turn
+  therefore never changes tracked files.
 
 ## `.floe/agents/<id>.md`
 

@@ -1,26 +1,27 @@
 /**
  * Floe Runtime Core — Agent Work Log (Actor Diary)
  *
- * Writes curated, human-readable Markdown work logs to the agent's directory.
+ * Writes curated, human-readable Markdown work logs for each Actor.
  * Each processing cycle appends a section to the day's log file.
  *
- * This is the committed agent diary / audit artefact — NOT raw telemetry.
+ * This is local runtime output, not configuration: it lives in the
+ * git-ignored `.floe/state`, so a turn never changes the person's tracked files.
  * It is intended for:
  *   - Human-auditable activity history
  *   - Actor diary / memory input
- *   - Project-readable record of agent activity
  *
  * Must NOT contain: tokens, secrets, credentials, raw telemetry dumps, or
  * excessive unbounded stream content. Summarise instead.
  *
  * Raw runtime telemetry (full payloads, usage, lifecycle) remains in bus
- * telemetry storage, separate from this committed diary.
+ * telemetry storage, separate from this diary.
  *
- * Path: .floe/agents/<agent_id>/worklogs/YYYY-MM-DD.md
+ * Path: .floe/state/agents/<agent_id>/worklogs/YYYY-MM-DD.md
  */
 
-import { existsSync, mkdirSync, appendFileSync } from "node:fs";
+import { appendFileSync } from "node:fs";
 import { join } from "node:path";
+import { workspaceStateDirectory } from "../workspace-state.js";
 
 export type WorkLogEntry = {
   runtime_turn_id: string;
@@ -69,19 +70,18 @@ export type WorkLogEmitEntry = {
   response_expected: boolean;
 };
 
+/** The folder holding one Actor's work logs. */
+export function workLogDirectory(workspaceLocator: string, agentId: string): string {
+  return workspaceStateDirectory(workspaceLocator, "agents", agentId, "worklogs");
+}
+
 /**
  * Append a work-log entry for a completed processing cycle.
  * Creates the directory structure if it doesn't exist.
  */
 export function appendWorkLog(workspaceLocator: string, entry: WorkLogEntry): void {
   const date = entry.started_at.slice(0, 10); // YYYY-MM-DD
-  const dir = join(workspaceLocator, ".floe", "agents", entry.agent_id, "worklogs");
-
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-
-  const filePath = join(dir, `${date}.md`);
+  const filePath = join(workLogDirectory(workspaceLocator, entry.agent_id), `${date}.md`);
   const markdown = renderWorkLogEntry(entry);
   appendFileSync(filePath, markdown, "utf-8");
 }
