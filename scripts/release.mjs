@@ -31,9 +31,11 @@
  *   3. GUARD: pack it, install it globally into an isolated prefix from a working
  *      directory unrelated to this checkout, start Floe from that install, and
  *      complete one real turn through its own Bridge as this machine's Copilot
- *      account, create, publish and bind a new Actor and see its own real turn
+ *      account in a committed git workspace, leaving git status clean, create,
+ *      publish and bind a new Actor and see its own real turn
  *      complete, then pause a real turn mid-command and resume it — refuse to
  *      publish an artifact that installs but cannot start, cannot run a turn,
+ *      dirties the person's tracked files during a turn,
  *      cannot host an Actor created at runtime, or cannot interrupt and resume
  *      a turn;
  *   4. publish (only with --publish): commit the generated artifact to a clone of
@@ -509,7 +511,7 @@ async function guard(version) {
     requireCopilotCli(home);
     log("guard", "PASS — the official Copilot CLI shipped with the artifact and runs from the install");
     guardSurface({ workRoot, tarball: join(workRoot, tarball), configPath, port, neutralCwd, home, account });
-    log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label}, an Actor created at runtime completed its own real turn, and a real turn paused mid-command and resumed`);
+    log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label} and left git status clean, an Actor created at runtime completed its own real turn, and a real turn paused mid-command and resumed`);
     guardUpgradeWhileRunning({ tarball: join(workRoot, tarball), prefix, port, neutralCwd, home });
     requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after npm removed and reinstalled the package" });
     log("guard", "PASS — npm removed and reinstalled the package while Floe kept serving from its stage");
@@ -624,6 +626,11 @@ function guardSurface({ workRoot, tarball, configPath, port, neutralCwd, home, a
   }, null, 2) + "\n", "utf8");
   runNpm(["install", "--no-audit", "--no-fund"], surfaceDir);
   const folder = join(workRoot, "guard-workspace");
+  // An Actor work log where Floe used to write it, beside committed
+  // configuration: joining must move it into the git-ignored .floe/state.
+  const legacyWorkLogs = join(folder, ".floe", "agents", "floe", "worklogs");
+  mkdirSync(legacyWorkLogs, { recursive: true });
+  writeFileSync(join(legacyWorkLogs, "2000-01-01.md"), "## Turn legacy-guard\n", "utf8");
   writeFileSync(join(surfaceDir, "surface.mjs"), `
 import { connectIdentity } from "${PACKAGE_NAME}/identity";
 import { validateActorDefinition } from "${PACKAGE_NAME}/actors";
@@ -717,6 +724,32 @@ const until = (match, label, ms) => new Promise((resolve, reject) => {
   look();
 });
 await until((push) => push.type === "caught_up", "stream catch-up", 15000);
+// The person commits their workspace, as they would before relying on it. A
+// full Actor turn must then leave git status clean: Floe's runtime output
+// belongs in the git-ignored .floe/state, never beside committed configuration.
+const { execFileSync } = await import("node:child_process");
+const { existsSync: exists, readFileSync: read, watch: watchFolder } = await import("node:fs");
+const { join: joinPath } = await import("node:path");
+const git = (...args) => execFileSync("git", ["-c", "user.email=guard@floe.invalid", "-c", "user.name=Release Guard", ...args],
+  { cwd: ${JSON.stringify(folder)}, encoding: "utf8" });
+const stateLogs = joinPath(${JSON.stringify(folder)}, ".floe", "state", "agents", "floe", "worklogs");
+if (exists(joinPath(${JSON.stringify(folder)}, ".floe", "agents", "floe", "worklogs", "2000-01-01.md"))) {
+  throw new Error("joining left an Actor work log beside committed configuration");
+}
+if (!exists(joinPath(stateLogs, "2000-01-01.md")) || !read(joinPath(stateLogs, "2000-01-01.md"), "utf8").includes("legacy-guard")) {
+  throw new Error("joining did not move the existing Actor work log into .floe/state");
+}
+step("the existing Actor work log moved into .floe/state when the folder was joined");
+git("init", "-q");
+git("add", "-A");
+git("commit", "-qm", "workspace");
+const todayLog = joinPath(stateLogs, new Date().toISOString().slice(0, 10) + ".md");
+const logWritten = new Promise((resolve, reject) => {
+  const timer = setTimeout(() => { watcher.close(); reject(new Error("the turn wrote no work log into .floe/state within 180s")); }, 180000);
+  const watcher = watchFolder(stateLogs, () => {
+    if (exists(todayLog)) { clearTimeout(timer); watcher.close(); resolve(); }
+  });
+});
 const sent = await invoke({
   operation_id: "context.communication.emit", operation_version: "1", input_schema_version: "2",
   target: { kind: "context", id: context.context_id }, expected_resource_revision: String(context.state_revision),
@@ -730,6 +763,10 @@ const result = await until((push) => push.type === "event_submitted"
 const turn = result.payload.event.content;
 if (turn.data.outcome !== "completed") throw new Error("the real turn did not complete: " + JSON.stringify(turn));
 step("real turn completed as ${account.label}: " + JSON.stringify(turn.text.slice(0, 80)));
+await logWritten;
+const dirty = git("status", "--porcelain", "--untracked-files=all");
+if (dirty !== "") throw new Error("a full Actor turn changed the person's tracked workspace:\\n" + dirty);
+step("the turn's work log is in .floe/state and git status is clean");
 
 // An Actor created at runtime must be reachable like one Floe was installed with:
 // create it, publish it, bind it to the Floe Actor's runtime, send it work, and

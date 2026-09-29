@@ -83,12 +83,35 @@ describe("browser connection transport", () => {
     const cookie = passCookie(adapter.claim(request(cookieHeader(started.cookie!), starMap)));
     expect(adapter.corsAllows(starMap, "/v1/workspaces/workspace%3Aone/operations")).toBe(true);
     expect(adapter.session(request(cookie, starMap))?.workspace_id).toBe("workspace:one");
-    // An origin with no pass of its own is refused outright; a trusted one just finds no pass.
-    expect(() => adapter.session(request(cookie, "http://127.0.0.1:43128"))).toThrow("not allowed");
+    // A cookie from another loopback origin does not apply there: no session, and no refusal either.
+    expect(adapter.session(request(cookie, "http://127.0.0.1:43128"))).toBeNull();
+    expect(adapter.mode(request(cookie, "http://127.0.0.1:43128"))).toBeNull();
+    expect(() => adapter.session(request(cookie, "https://attacker.example"))).toThrow("not allowed");
     expect(adapter.session(request(cookie, origin))).toBeNull();
     expect(adapter.session(request(cookie, starMap), "workspace:two")).toBeNull();
     expect(adapter.session(request(`${cookie}; ${cookie}`, starMap))).toBeNull();
     expect(() => adapter.session({ headers: { cookie } })).toThrow();
+  });
+
+  it("lets a new loopback origin pair while a stale cookie from an earlier origin is still sent", () => {
+    const { adapter, issue } = fixture();
+    const pair = (pageOrigin: string, staleCookies: string) => {
+      const started = adapter.start(request(staleCookies, pageOrigin));
+      adapter.approve(started.connection.connection_id, issue);
+      const pending = cookieHeader(started.cookie!);
+      return passCookie(adapter.claim(request(`${staleCookies}; ${pending}`, pageOrigin)));
+    };
+    const firstRun = "http://127.0.0.1:43127";
+    const secondRun = "http://127.0.0.1:51844";
+    const firstPass = pair(firstRun, "");
+    // The browser still sends the first run's cookie to Floe from the second run's page.
+    expect(adapter.resolve(request(firstPass, secondRun))).toBeNull();
+    const secondPass = pair(secondRun, firstPass);
+    expect(adapter.session(request(secondPass, secondRun))?.workspace_id).toBe("workspace:one");
+    // Each pass stays bound to exactly the origin that paired it.
+    expect(adapter.session(request(firstPass, secondRun))).toBeNull();
+    expect(adapter.session(request(secondPass, firstRun))).toBeNull();
+    expect(adapter.session(request(firstPass, firstRun))?.workspace_id).toBe("workspace:one");
   });
 
   it("renews the short session and rotates the cookie without a new approval", () => {

@@ -211,8 +211,9 @@ ScopeExecution. See [[Delivery and Turn]].
 
 ## Work Log
 
-A committed Markdown audit projection for a runtime Turn. It is evidence, not
-execution state, topology, or communication.
+A local Markdown audit projection for a runtime Turn, kept in the Workspace's
+git-ignored `.floe/state/agents/<id>/worklogs/`. It is evidence, not
+configuration, execution state, topology, or communication.
 
 ## Workspace
 

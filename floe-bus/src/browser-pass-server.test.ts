@@ -105,6 +105,24 @@ describe("durable browser pass (A2 live proof)", () => {
     expect([401, 403]).toContain(otherWorkspace.statusCode);
   });
 
+  it("pairs a second run on a new loopback port while the first run's cookie is still sent", async () => {
+    const { handle } = await fixture();
+    const person = await admitPerson(handle, HOST_TOKEN, WORKSPACE);
+    const first = await pairBrowser(handle, person.token, WORKSPACE, ORIGIN);
+    const secondOrigin = "http://127.0.0.1:51844";
+    const stale = { origin: secondOrigin, cookie: first.headers.cookie };
+
+    const status = await handle.app.inject({ method: "GET", url: "/v1/browser/session", headers: stale });
+    expect(status.statusCode, status.body).toBe(401);
+    const second = await pairBrowser(handle, person.token, WORKSPACE, secondOrigin, ["actor.list"], first.headers.cookie);
+    expect(completed(await invokeAs(handle, null, WORKSPACE, "actor.list", {}, second.headers))).toBe(true);
+    // Each pass still works only from the exact origin that paired it.
+    expect([401, 403]).toContain((await invokeAs(handle, null, WORKSPACE, "actor.list", {}, stale)).statusCode);
+    const swapped = { origin: ORIGIN, cookie: second.headers.cookie };
+    expect([401, 403]).toContain((await invokeAs(handle, null, WORKSPACE, "actor.list", {}, swapped)).statusCode);
+    expect(completed(await invokeAs(handle, null, WORKSPACE, "actor.list", {}, first.headers))).toBe(true);
+  });
+
   it("saves a Scope's layout from a person's session and an allowed browser pass, without host control", async () => {
     const { handle } = await fixture();
     handle.store.createScope({ workspace_id: WORKSPACE, scope_id: "map", title: "Map" }, () => {});

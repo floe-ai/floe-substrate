@@ -27,6 +27,7 @@ import {
   type ProjectLoadResult,
 } from "./project.js";
 import { migrateTemplateDefaultScope, type TemplateScopeMigration } from "./template-scope-migration.js";
+import { migrateWorkLogsToState, type WorkLogLocationMigration } from "./worklog-location-migration.js";
 import type { RuntimeAdapter } from "./adapters/runtime-adapter.js";
 import { EngineControl, type EngineAccount } from "./engines/engine-control.js";
 import { runtimeEndpointRegistration } from "./runtime-endpoint-registration.js";
@@ -607,6 +608,7 @@ export class BridgeDaemon {
       try {
         ensureProjectTemplate(locator, String(workspace.name ?? "Floe Project"));
         reportTemplateScopeMigration(workspaceId, migrateTemplateDefaultScope(locator));
+        reportWorkLogLocationMigration(workspaceId, migrateWorkLogsToState(locator));
         project = loadProject(locator);
         canonicalImport = await this.importProjectConfiguration(workspaceId, bindingId, project);
       } catch (error) {
@@ -1320,6 +1322,18 @@ function extractRuntimeConfig(frontmatter: Record<string, unknown>): AgentRuntim
     model: typeof runtime.model === "string" ? runtime.model : undefined,
     auth_profile: typeof runtime.auth_profile === "string" ? runtime.auth_profile : undefined
   };
+}
+
+function reportWorkLogLocationMigration(workspaceId: string, migration: WorkLogLocationMigration): void {
+  if (migration.moved.length > 0) {
+    console.log("[floe-bridge] moved Actor work logs into .floe/state", { workspace_id: workspaceId, moved: migration.moved });
+  }
+  if (migration.kept_tracked.length > 0) {
+    console.warn("[floe-bridge] kept Actor work logs that are committed to git; new entries go to .floe/state", { workspace_id: workspaceId, kept: migration.kept_tracked });
+  }
+  if (migration.kept_uncertain) {
+    console.warn("[floe-bridge] kept Actor work logs because git could not say which are committed", { workspace_id: workspaceId, kept: migration.kept_uncertain.paths, reason: migration.kept_uncertain.reason });
+  }
 }
 
 function reportTemplateScopeMigration(workspaceId: string, migration: TemplateScopeMigration): void {
