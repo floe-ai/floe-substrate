@@ -228,9 +228,10 @@ describe("runtime tool policy", () => {
     expect(outcome({ sandbox_bypass: true })).toBe("allow");
     access.setSystemAccess({ workspace_id: WS, enabled: false, principal_id: OPERATOR });
     expect(outcome({ paths: [join(elsewhere, "x")] })).toBe("authority.tool_path_outside_workspace");
-    expect(access.inspect(WS).records.map((record) => record.kind)).toEqual([
+    expect(access.inspect(WS).records.map((record) => record.kind).filter((kind) => !kind.startsWith("actor_access_"))).toEqual([
       "system_access_turned_off", "system_access_turned_on", "folder_removed", "folder_added",
     ]);
+    expect(access.inspect(WS).records.map((record) => record.kind)).toContain("actor_access_lapsing");
   });
 
   it("keeps an Actor's own folder scope inside the home folder even when other folders are added", async () => {

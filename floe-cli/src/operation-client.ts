@@ -72,7 +72,8 @@ export type CliOperationInvocation = Readonly<{
   input_schema_version: string;
   target: OperationTarget | null;
   expected_resource_revision?: string | null;
-  idempotency_key: string;
+  /** Omitted for a read: the Bus gives each keyless read its own key. */
+  idempotency_key?: string;
   input: unknown;
 }>;
 
@@ -229,7 +230,7 @@ export class CliOperationClient {
       operation_version: descriptor.operation_version,
       input_schema_version: descriptor.input.version,
       target: input.target ?? null,
-      idempotency_key: resolveIdempotencyKey(descriptor, input.idempotency_key),
+      ...optionalIdempotencyKey(descriptor, input.idempotency_key),
       input: input.input,
       ...(input.expected_resource_revision !== undefined
         ? { expected_resource_revision: input.expected_resource_revision }
@@ -522,12 +523,12 @@ function requireText(value: string, label: string): string {
  * require it only for a write (stating that at the point of need) and mint an
  * ephemeral key for a read, so the wire contract stays satisfied.
  */
-function resolveIdempotencyKey(
+function optionalIdempotencyKey(
   descriptor: CliOperationDescriptor,
   provided: string | undefined,
-): string {
+): { idempotency_key?: string } {
   if (provided !== undefined && provided.trim()) {
-    return requireText(provided, "idempotency key");
+    return { idempotency_key: requireText(provided, "idempotency key") };
   }
   if (descriptor.effects.mode === "write") {
     throw new Error(
@@ -535,5 +536,5 @@ function resolveIdempotencyKey(
       + "<stable key> — a stable key lets a retry replay safely instead of applying twice.",
     );
   }
-  return `read:${randomBytes(12).toString("base64url")}`;
+  return {};
 }

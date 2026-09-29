@@ -271,6 +271,37 @@ and where they may act. `DELETE` revokes: it marks the
 identity revoked **and** revokes its live `workspace_operation` session, so the
 bearer stops working immediately and the key can no longer authenticate.
 
+## Browser pass (a web page acting for a person)
+
+A web page cannot hold an identity key safely. Instead, a signed-in person
+allows one exact browser origin to act in one Workspace with a named set of
+operations. The page never sees a bearer.
+
+1. The page calls `POST /v1/browser/connections` from its origin. HTTPS
+   origins, and HTTP on loopback only, are accepted; `null`, wildcard and
+   user-info origins are refused. The Bus sets a `floe_browser_pending` cookie
+   and pushes `browser_connection_requested` (`connection_id`, `code`,
+   `origin`, `expires_at`) to every Workspace stream.
+2. The person, with their own Workspace bearer, invokes
+   `browser.connection.list`, then `browser.pass.approve`
+   `{connection_id, workspace_id, operation_ids, until_revoked | expires_at}`.
+   The pass cannot be wider than the person's own authority
+   (`browser_pass_widening_refused`) and cannot outlive it.
+3. The page calls `POST /v1/browser/connections/claim` with the pending cookie
+   and receives an HttpOnly `floe_browser_pass` cookie.
+4. The page calls Workspace routes and opens the event stream
+   (`{"type":"authenticate","browser_session":true,"workspace_id":…}`) with
+   credentials included and no `Authorization` header.
+
+The pass survives Bus restarts. Each use mints a short Workspace session behind
+the scenes and renews it transparently; the cookie itself rotates at most daily.
+The pass works only from its exact origin and Workspace.
+
+`browser.pass.list` shows the person's passes. `browser.pass.revoke {pass_id}`,
+revoking the identity, or removing the person from the Workspace ends the pass:
+the next HTTP call is refused and a live event stream closes with `4401`.
+Every change pushes `browser_pass_changed`.
+
 ## Answering as a client-executed Actor
 
 **Answering is not a special emit. It is the Actor's turn ending — exactly as a

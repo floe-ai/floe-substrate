@@ -118,7 +118,7 @@ export class BusIdentityClient {
     const response = await this.call("/v1/identities", {
       method: "POST",
       headers: { ...hostHeaders(hostToken), "content-type": "application/json" },
-      body: JSON.stringify(input),
+      body: JSON.stringify({ ...input, until_revoked: true }),
     });
     if (!response.ok) throw new Error(`The bus refused to admit the new identity to ${input.workspace_id} (${response.status}).`);
   }

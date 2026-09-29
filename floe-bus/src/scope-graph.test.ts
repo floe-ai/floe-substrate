@@ -432,10 +432,8 @@ describe("Scope Graph API", () => {
         ]
       }
     });
-    // Pre-existing bug (unrelated to this ticket): the body schema is parsed
-    // with `.parse()` outside any try/catch, so a Zod validation failure
-    // throws uncaught and Fastify's default handler returns 500, not 400.
-    expect(created.statusCode).toBe(500);
+    expect(created.statusCode).toBe(400);
+    expect(created.json().error).toBe("request_invalid");
   });
 
   it("stores an actor node's instructions binding — node-specific material, not the actor's general instructions", async () => {
@@ -480,8 +478,8 @@ describe("Scope Graph API", () => {
         ]
       }
     });
-    // Same pre-existing Zod .parse()-outside-try/catch behaviour as above: min(1) fails -> 500.
-    expect(created.statusCode).toBe(500);
+    expect(created.statusCode).toBe(400);
+    expect(created.json().error).toBe("request_invalid");
   });
 
   it("does not resurrect stored graphs when a removed workspace locator is re-registered", async () => {

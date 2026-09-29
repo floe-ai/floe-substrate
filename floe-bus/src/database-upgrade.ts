@@ -3,7 +3,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 
-export const CURRENT_BUS_SCHEMA_VERSION = 15;
+export const CURRENT_BUS_SCHEMA_VERSION = 16;
 
 /**
  * Canonical fingerprint of every persistent schema object (tables, indexes,
@@ -96,6 +96,12 @@ export function runDatabaseUpgrade(input: {
   database_path: string;
   target_version?: number;
   migrate: () => void;
+  /**
+   * Table rebuilds SQLite cannot do in place (for example relaxing NOT NULL).
+   * Runs after the backup, in its own transaction with foreign keys disabled,
+   * and must leave every foreign key intact. Must be idempotent.
+   */
+  rebuild?: () => void;
   backup_directory?: string;
   now?: () => Date;
   warn?: (message: string) => void;
@@ -130,6 +136,8 @@ export function runDatabaseUpgrade(input: {
   // detectable and reportable.
   const beforeFingerprint = computeSchemaFingerprint(input.db);
   const beforeObjects = schemaObjectNames(input.db);
+
+  if (input.rebuild) runTableRebuild(input.db, input.rebuild);
 
   input.db.exec("BEGIN IMMEDIATE");
   try {
@@ -181,6 +189,28 @@ export function runDatabaseUpgrade(input: {
     changed: versionRises,
     backup_path: backupPath,
   };
+}
+
+/** SQLite's documented rebuild procedure: foreign keys off, rebuild, verify, restore. */
+function runTableRebuild(db: DatabaseSync, rebuild: () => void): void {
+  const foreignKeysWereOn = Number((db.prepare("PRAGMA foreign_keys").get() as { foreign_keys: number }).foreign_keys) === 1;
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      rebuild();
+      const broken = db.prepare("PRAGMA foreign_key_check").all();
+      if (broken.length > 0) {
+        throw new Error(`Database table rebuild would break ${broken.length} foreign key reference(s).`);
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  } finally {
+    if (foreignKeysWereOn) db.exec("PRAGMA foreign_keys = ON");
+  }
 }
 
 function createVerifiedBackup(input: {

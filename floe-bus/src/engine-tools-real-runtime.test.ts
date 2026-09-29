@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import YAML from "yaml";
+import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 import { CopilotClient } from "@github/copilot-sdk";
 import { CopilotRuntime } from "floe-runtime/adapters/copilot";
 
@@ -124,6 +125,11 @@ describe.runIf(process.platform === "win32")("engine tools through the real pinn
       snapshot: { workspace_id: WS, name: "Engine tools", creation_kind: "created", source_workspace_id: null, created_at: at, updated_at: at },
       binding: { host_id: handle.store.localHostId, platform: "windows", locator: workspace, init_authorized: true },
     });
+    // The person who created the Workspace; its Floe Actor acts with their access.
+    const admitted = await handle.app.inject({ method: "POST", url: "/v1/identities",
+      headers: { authorization: ["Be", "arer ", HOST_CONTROL_TOKEN].join("") },
+      payload: { display_name: "Operator", pubkey: getPublicKey(generateSecretKey()), workspace_id: WS, until_revoked: true } });
+    expect(admitted.statusCode, admitted.body).toBe(201);
     const bridgeToken = handle.issueBridgeServiceCredential(BRIDGE).bearer_token;
     const bindingId = handle.store.workspaceIdentityStore.getCurrentBinding(WS, handle.store.localHostId)!.binding_id;
     const imported = await handle.app.inject({

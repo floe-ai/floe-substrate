@@ -7,6 +7,30 @@ below. Provider credentials now enter through the trusted native broker and
 remain in the operating-system vault; neither Tauri presentation commands nor
 the Bus write `auth.json` or `profiles.yaml` as canonical state.
 
+**Agent file access amendment (2026-09-29, operator ruling Q31, O33, O35,
+D14):** this replaces Decision 2's boundary; Decision 2 is left as written for
+the record.
+
+- A Workspace has one or more folders: its own folder, which cannot be
+  removed, plus any folders a person adds on the same machine. By default
+  Actors are unrestricted inside those folders, with no prompts. File tools
+  that name a path outside them are refused.
+- **System access** is a Workspace setting, off by default. When on, it lets
+  that Workspace's file tools reach the whole machine, and an engine's request
+  to run outside its own sandbox may be allowed (D14: refused while off).
+  Changing it is recorded and shown to people.
+- Shell commands are **not confined by Floe** (O33). Floe decides which
+  commands an Actor may run, not which files they touch, and the engine's own
+  sandbox does not confine them on Windows. Nothing may describe the folder
+  boundary as confining commands.
+- OS-level confinement of commands, through a Floe-owned command runner, is
+  deferred until Floe is multi-user or server-based (O35).
+
+Folders and System access belong to one machine: a same-machine copy or fork
+keeps them, and a portable Workspace package leaves them behind with a notice
+(see `docs/guide/setup/workspace-transfer.md`). Current behaviour is described
+in `docs/guide/concepts/actor.md`.
+
 As Floe evolves from a browser-based frontend (`floe-web`) to a desktop-native application (`floe-app`), managing how files are read and written across the local disk, the daemon (`floe-bus`), and autonomous agents is a critical security and architectural concern. 
 
 Exposing generic file-writing endpoints over standard HTTP daemon routes can lead to severe security vectors, such as remote directory traversal or unauthorized profile modification. A clear, first-principles policy must define file-system boundaries for every role in the ecosystem.

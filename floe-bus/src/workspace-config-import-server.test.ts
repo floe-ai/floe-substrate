@@ -3,14 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import YAML from "yaml";
+import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 
 import { defaultConfig } from "./config.js";
 import { createBusServer } from "./server.js";
 import { openAuthenticatedPushStream } from "./event-probe.test-helper.js";
 import { emitViaRoute } from "./test-support/emit-via-route.js";
 import { LEGACY_WORKSPACE_MODEL_ACTOR_OPERATION_IDS_V1 } from "./workspace-config-import.js";
-import { applyLocalFloeDelegationPolicy, applyLocalFloeExportPolicy, applyLocalFloeApprovalResponsePolicy, applyLocalFloeToolPolicy, localProductWorkspacePolicy, LOCAL_FLOE_ACTOR_OPERATIONS_V1 } from "./local-product-policy.js";
-import { TOOL_ACCESS_NOTICE } from "./workspace-access.js";
+import { DEFAULT_ACTOR_OPERATIONS_V1, localProductWorkspacePolicy } from "./local-product-policy.js";
 import type { BusServerOptions } from "./server.js";
 import { BridgeDaemon } from "../../floe-bridge/src/daemon.js";
 import { BusClient } from "../../floe-bridge/src/bus-client.js";
@@ -353,26 +353,48 @@ describe("authenticated canonical Workspace configuration import", () => {
       { kind: "workspace", workspace_id: workspaceId })).toEqual([]);
   });
 
-  it("installs local Floe permissions without granting unrelated Actors or depending on their backing", async () => {
+  async function admit(handle: ServerHandle, workspaceId: string, name: string) {
+    const response = await handle.app.inject({ method: "POST", url: "/v1/identities", headers: bearer(HOST_CONTROL_TOKEN),
+      payload: { display_name: name, pubkey: getPublicKey(generateSecretKey()), workspace_id: workspaceId, until_revoked: true } });
+    expect(response.statusCode, response.body).toBe(201);
+    return response.json().authority as { authority_id: string; principal_id: string; root_grant_id: string };
+  }
+
+  it("gives a new Workspace's Actors access from its one person, lasting as long as that person's access", async () => {
     const { handle, bridge_headers, binding_id } = await fixture({ workspace_configuration_policy: localProductWorkspacePolicy });
+    const person = await admit(handle, CREATED_WORKSPACE, "Ada");
     const payload = inventory(binding_id(CREATED_WORKSPACE));
     // Backing is deliberately different from the shipped model default.
     payload.actors[0]!.runtime.backing_kind = "service";
     payload.actors.push({ ...structuredClone(payload.actors[0]!), source_actor_id: "another-actor" });
     const response = await handle.app.inject({ method: "POST", url: `/v1/workspaces/${encodeURIComponent(CREATED_WORKSPACE)}/import-config`, headers: bridge_headers, payload });
     expect(response.statusCode, response.body).toBe(200);
-    const actors = response.json().import_result.receipt.imported_actors as Array<{ source_actor_id: string; capability_grant_id: string | null; runtime_status: string; unresolved_reasons: string[] }>;
-    const floe = actors.find(actor => actor.source_actor_id === "floe")!;
-    expect(floe.runtime_status).toBe("resolved");
-    const grant = handle.store.capabilityGrantStore.getGrant(floe.capability_grant_id!)!;
-    expect(grant.operation_ids).toEqual(LOCAL_FLOE_ACTOR_OPERATIONS_V1.filter(id => !["credential.use", "credential.refresh"].includes(id)).sort());
-    expect(grant.issuer_id).toBe("policy:local-floe-actor:v1");
-    // Unrestricted by default: every engine tool, with no target limits.
-    expect(grant.operation_ids.filter(id => id.startsWith("engine.tool."))).toEqual([
-      "engine.tool.filesystem.read", "engine.tool.filesystem.write", "engine.tool.network.fetch", "engine.tool.process.execute",
-    ]);
-    expect(grant.targets).toEqual([]);
-    expect(actors.find(actor => actor.source_actor_id === "another-actor")).toMatchObject({ capability_grant_id: null, runtime_status: "unresolved", unresolved_reasons: ["operation_authority_unmapped"] });
+    const grants = handle.store.capabilityGrantStore;
+    const rootOperations = grants.getGrant(person.root_grant_id)!.operation_ids;
+    const imported = response.json().import_result.receipt.imported_actors as Array<{ runtime_status: string; capability_grant_id: string }>;
+    expect(imported).toHaveLength(2);
+    for (const actor of imported) {
+      expect(actor.runtime_status).toBe("resolved");
+      const grant = grants.getGrant(actor.capability_grant_id)!;
+      // No date: it lasts until the person's own access ends.
+      expect(grant).toMatchObject({ expires_at: null, issuer_id: person.principal_id, targets: [] });
+      expect(grants.getDelegation(grant.grant_id)?.source_grant_id).toBe(person.root_grant_id);
+      expect(grant.operation_ids).toEqual(DEFAULT_ACTOR_OPERATIONS_V1.filter(id => rootOperations.includes(id)).sort());
+      expect(grant.operation_ids.filter(id => id.startsWith("engine.tool."))).toEqual([
+        "engine.tool.filesystem.read", "engine.tool.filesystem.write", "engine.tool.network.fetch", "engine.tool.process.execute",
+      ]);
+    }
+    expect(handle.store.workspaceAccessStore.inspect(CREATED_WORKSPACE).records.map(record => record.kind)).not.toContain("actor_access_lapsing");
+    // Ending the person's access ends the access they gave.
+    handle.store.identityWorkspaceAuthorityStore.revoke(person.authority_id, "revoked");
+    for (const actor of imported) expect(grants.isActiveGrant(grants.getGrant(actor.capability_grant_id)!)).toBe(false);
+  });
+
+  it("gives a new Workspace's Actors no access when nobody has joined it", async () => {
+    const { handle, bridge_headers, binding_id } = await fixture({ workspace_configuration_policy: localProductWorkspacePolicy });
+    const response = await handle.app.inject({ method: "POST", url: `/v1/workspaces/${encodeURIComponent(CREATED_WORKSPACE)}/import-config`,
+      headers: bridge_headers, payload: inventory(binding_id(CREATED_WORKSPACE)) });
+    expect(response.json().import_result.receipt.imported_actors[0]).toMatchObject({ capability_grant_id: null, runtime_status: "unresolved" });
   });
 
   it("does not revive revoked authority when the local policy renews", async () => {
@@ -381,6 +403,7 @@ describe("authenticated canonical Workspace configuration import", () => {
       const policy = localProductWorkspacePolicy(input);
       return policy ? { ...policy, policy_revision: `${policy.policy_revision}:${revision}` } : null;
     } });
+    await admit(handle, CREATED_WORKSPACE, "Ada");
     const url = `/v1/workspaces/${encodeURIComponent(CREATED_WORKSPACE)}/import-config`;
     const first = await handle.app.inject({ method: "POST", url, headers: bridge_headers, payload: inventory(binding_id(CREATED_WORKSPACE)) });
     const imported = first.json().import_result.receipt.imported_actors[0];
@@ -391,82 +414,56 @@ describe("authenticated canonical Workspace configuration import", () => {
     expect(handle.store.actorDefinitionStore.getActor(imported.actor_id)?.current_definition_revision_id).toBe(imported.actor_definition_revision_id);
   });
 
-  it("gives an older Workspace's Floe Actor default tool access once, with a notice, and keeps a person's tool choices", async () => {
-    const { handle, bridge_headers, binding_id } = await fixture();
-    const imported = await handle.app.inject({ method: "POST",
-      url: `/v1/workspaces/${encodeURIComponent(LEGACY_WORKSPACE)}/import-config`, headers: bridge_headers,
-      payload: inventory(binding_id(LEGACY_WORKSPACE)) });
-    const [floe] = imported.json().import_result.receipt.imported_actors;
-    const access = () => handle.store.workspaceAccessStore.inspect(LEGACY_WORKSPACE);
-    expect(access().records).toEqual([]);
+  async function legacyFloe() {
+    const f = await fixture();
+    const url = `/v1/workspaces/${encodeURIComponent(LEGACY_WORKSPACE)}/import-config`;
+    const imported = await f.handle.app.inject({ method: "POST", url, headers: f.bridge_headers, payload: inventory(f.binding_id(LEGACY_WORKSPACE)) });
+    const floe = imported.json().import_result.receipt.imported_actors[0] as { actor_id: string; capability_grant_id: string };
+    const records = () => f.handle.store.workspaceAccessStore.inspect(LEGACY_WORKSPACE).records;
+    const reimport = (hash: string) => f.handle.app.inject({ method: "POST", url, headers: f.bridge_headers, payload: inventory(f.binding_id(LEGACY_WORKSPACE), hash) });
+    return { ...f, floe, records, reimport };
+  }
 
-    expect(applyLocalFloeToolPolicy(handle.store)).toEqual([LEGACY_WORKSPACE]);
-    const notices = access().records.filter(record => record.kind === "tool_access_given");
-    expect(notices).toEqual([expect.objectContaining({ summary: TOOL_ACCESS_NOTICE, principal_id: "policy:local-floe-tools:v1" })]);
-    expect(TOOL_ACCESS_NOTICE).toBe("Floe Actors in this workspace can now use tools inside its folders.");
-    // Every later start finds nothing to give and records nothing more.
-    expect(applyLocalFloeToolPolicy(handle.store)).toEqual([]);
-    expect(access().records).toEqual(notices);
-
-    // A person's own choice of tool access, even a narrow one, is never widened.
-    const grants = handle.store.capabilityGrantStore, actors = handle.store.actorDefinitionStore;
-    const current = actors.getCurrentDefinition(floe.actor_id)!;
-    const given = current.content.capability_grant_ids.find(id => grants.getGrant(id)?.issuer_id === "policy:local-floe-tools:v1")!;
-    const chosen = grants.issueGrant({ principal_id: floe.actor_id, boundary: { kind: "workspace", workspace_id: LEGACY_WORKSPACE },
-      operation_ids: ["engine.tool.filesystem.read"], targets: [{ kind: "filesystem_path", id: "docs" }],
-      expires_at: "2099-01-01T00:00:00.000Z", issuer_id: "operator", evidence: [{ kind: "test_fixture", ref: "chosen" }] });
-    const narrowed = actors.createDraft({ actor_id: floe.actor_id, created_by_principal_id: "operator", definition: {
-      ...current.content, capability_grant_ids: [...current.content.capability_grant_ids.filter(id => id !== given), chosen.grant_id] } });
-    actors.publishDraft({ actor_definition_revision_id: narrowed.actor_definition_revision_id,
-      expected_current_revision_id: current.actor_definition_revision_id, changed_by_principal_id: "operator" });
-    expect(applyLocalFloeToolPolicy(handle.store)).toEqual([]);
-    expect(actors.getCurrentDefinition(floe.actor_id)?.actor_definition_revision_id).toBe(narrowed.actor_definition_revision_id);
+  it("warns with the date when Floe's own access is heading for a lapse", async () => {
+    const { handle, floe, records } = await legacyFloe();
+    const ends = handle.store.capabilityGrantStore.getGrant(floe.capability_grant_id)!.expires_at!;
+    expect(records().filter(record => record.kind === "actor_access_lapsing")).toEqual([expect.objectContaining({
+      summary: `Floe loses its access to this workspace on ${ends.slice(0, 10)}, unless a person here adopts it.`,
+    })]);
   });
 
-  it.each([
-    { name: "delegation", apply: applyLocalFloeDelegationPolicy, operations: ["capability.grant.delegate", "capability.grant.list", "capability.grant.revoke"] },
-    { name: "export", apply: applyLocalFloeExportPolicy, operations: ["artefact.version.export"] },
-    { name: "approval response", apply: applyLocalFloeApprovalResponsePolicy, operations: ["approval.response.configure"] },
-    { name: "tool", apply: applyLocalFloeToolPolicy, operations: [
-      "engine.tool.filesystem.read", "engine.tool.filesystem.write", "engine.tool.network.fetch", "engine.tool.process.execute"] },
-  ])("adds local $name responsibility without replacing saved settings or restoring removed access", async ({apply, operations}) => {
-    const { handle, bridge_headers, binding_id } = await fixture();
-    const input = inventory(binding_id(LEGACY_WORKSPACE));
-    input.actors.push({ ...structuredClone(input.actors[0]!), source_actor_id: "separate" });
-    const imported = await handle.app.inject({ method: "POST",
-      url: `/v1/workspaces/${encodeURIComponent(LEGACY_WORKSPACE)}/import-config`, headers: bridge_headers, payload: input });
-    const [floe, separate] = imported.json().import_result.receipt.imported_actors;
-    const actors = handle.store.actorDefinitionStore, profiles = handle.store.runtimeProfileStore;
-    const draft = actors.createDraft({ actor_id: floe.actor_id, created_by_principal_id: "operator",
-      definition: { ...actors.requireRevision(floe.actor_definition_revision_id).content, instructions: "Preserve this independent correction." } });
-    actors.publishDraft({ actor_definition_revision_id: draft.actor_definition_revision_id,
-      expected_current_revision_id: floe.actor_definition_revision_id, changed_by_principal_id: "operator" });
-    const binding = profiles.getCurrentActorBinding(floe.actor_id);
-    apply(handle.store);
-    const updated = actors.getCurrentDefinition(floe.actor_id)!;
-    const grantId = updated.content.capability_grant_ids.find(id => !draft.content.capability_grant_ids.includes(id))!;
-    expect(handle.store.capabilityGrantStore.getGrant(grantId)?.operation_ids).toEqual(operations);
-    if (operations.includes("approval.response.configure")) {
-      expect(handle.store.capabilityGrantStore.getGrant(grantId)?.targets).toEqual([{kind:"approval_request",id:null}]);
-      const resolved = handle.store.capabilityGrantStore.resolveSessionAuthority({principal_id:floe.actor_id,
-        boundary:{kind:"workspace",workspace_id:LEGACY_WORKSPACE},grant_ids:updated.content.capability_grant_ids,
-        interaction:{mode:"unattended",session_id:"test:response-upgrade",confirmed_prompts:[],approval_refs:[]}}, {kind:"artefact_version",id:"saved:gallery"});
-      expect(resolved.authority.capability_grant_ids).not.toContain(grantId);
-      expect(resolved.authority.capability_grant_ids).toEqual(draft.content.capability_grant_ids);
-    }
-    expect({ ...updated.content, capability_grant_ids: draft.content.capability_grant_ids }).toEqual(draft.content);
-    expect(profiles.getCurrentActorBinding(floe.actor_id)).toEqual(binding);
-    expect(actors.getCurrentDefinition(separate.actor_id)?.actor_definition_revision_id).toBe(separate.actor_definition_revision_id);
-    apply(handle.store);
-    expect(actors.getCurrentDefinition(floe.actor_id)).toEqual(updated);
-    handle.store.capabilityGrantStore.revokeGrant(grantId);
-    apply(handle.store);
-    expect(actors.getCurrentDefinition(floe.actor_id)).toEqual(updated);
-    const removed = actors.createDraft({ actor_id: floe.actor_id, created_by_principal_id: "operator", definition: draft.content });
-    actors.publishDraft({ actor_definition_revision_id: removed.actor_definition_revision_id,
-      expected_current_revision_id: updated.actor_definition_revision_id, changed_by_principal_id: "operator" });
-    apply(handle.store);
-    expect(actors.getCurrentDefinition(floe.actor_id)?.actor_definition_revision_id).toBe(removed.actor_definition_revision_id);
+  it("moves Floe's own access onto the one person in an older Workspace, with a notice, and never again", async () => {
+    const { handle, floe, records, reimport } = await legacyFloe();
+    const grants = handle.store.capabilityGrantStore, actors = handle.store.actorDefinitionStore;
+    const old = grants.getGrant(floe.capability_grant_id)!;
+    const person = await admit(handle, LEGACY_WORKSPACE, "Ada");
+
+    const moves = handle.store.actorAccessAdoption.migrate();
+    expect(moves).toEqual([expect.objectContaining({ actor_id: floe.actor_id, moved_grant_ids: [old.grant_id], dropped_operation_ids: [] })]);
+    const [adoptedId] = moves[0]!.issued_grant_ids;
+    const adopted = grants.getGrant(adoptedId!)!;
+    // The same access, no wider, now carried by the person and without a date.
+    expect(adopted).toMatchObject({ operation_ids: old.operation_ids, targets: old.targets, expires_at: null, issuer_id: person.principal_id });
+    expect(grants.getDelegation(adopted.grant_id)?.source_grant_id).toBe(person.root_grant_id);
+    expect(grants.getGrant(old.grant_id)?.revoked_at).not.toBeNull();
+    expect(actors.getCurrentDefinition(floe.actor_id)?.content.capability_grant_ids).toEqual([adopted.grant_id]);
+    expect(records().map(record => record.kind)).toEqual(["actor_access_moved"]);
+    expect(records()[0]!.summary).toBe("Floe now acts with Ada's access in this workspace. Nothing was added, and it no longer expires.");
+
+    // The files may change later; the import keeps the moved access and is not refused.
+    const next = await reimport("c");
+    expect(next.json().import_result.receipt.outcome).toBe("applied");
+    expect(actors.getCurrentDefinition(floe.actor_id)?.content.capability_grant_ids).toEqual([adopted.grant_id]);
+    expect(handle.store.actorAccessAdoption.migrate()).toEqual([]);
+  });
+
+  it("moves nothing when several people share an older Workspace, and keeps the dated warning", async () => {
+    const { handle, floe, records } = await legacyFloe();
+    await admit(handle, LEGACY_WORKSPACE, "Ada");
+    await admit(handle, LEGACY_WORKSPACE, "Grace");
+    expect(handle.store.actorAccessAdoption.migrate()).toEqual([]);
+    expect(handle.store.actorDefinitionStore.getCurrentDefinition(floe.actor_id)?.content.capability_grant_ids).toEqual([floe.capability_grant_id]);
+    expect(records().map(record => record.kind)).toEqual(["actor_access_lapsing"]);
   });
 
   it("advances the active config hash only from an applied receipt and refuses a stale binding", async () => {

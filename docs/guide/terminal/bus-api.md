@@ -174,8 +174,14 @@ intent is refused.
 
 `idempotency_key` is a write concept: it lets a retried write replay safely
 instead of applying twice. A read operation (its discovered `effects.mode` is
-`read`) cannot apply twice, so you do not need to supply one — send it only for
-a write, using a stable value so a retry of that exact intent is safe.
+`read`) cannot apply twice, so you do not need to supply one; the Bus gives each
+keyless read its own key. Send it for a write, using a stable value so a retry
+of that exact intent is safe. A write without one is answered `400` with
+refusal code `idempotency_key_required`.
+
+A request whose shape is wrong (missing or mistyped fields) is answered `400`
+with `error: "request_invalid"` and a message naming each field to fix. The Bus
+answers `500` only for its own faults.
 
 Every consequential invocation returns a stable receipt. Query it after timeout
 or reconnection rather than guessing whether the operation committed:
@@ -243,8 +249,12 @@ GET /v1/workspaces/:workspace_id/scopes/:scope_id/projection/layout/:renderer
 PUT /v1/workspaces/:workspace_id/scopes/:scope_id/projection/layout/:renderer
 ```
 
-The layout write is a host-local presentation adapter, not a semantic
-composition operation.
+These routes are shorthand for the Workspace operations
+`scope.projection.layout.get` and `scope.projection.layout.save`
+(`{scope_id, renderer, layout}`). Any session that may act in the Workspace,
+including a person's session or a browser pass allowed those operations, can
+use them; no host control is needed. Each renderer keeps its own layout, and a
+save pushes `scope_projection.layout.upserted` to the Workspace.
 
 ## Canonical Context operations
 
@@ -400,8 +410,9 @@ These are pushed on the stream to the Workspace's connections:
 - `approval_decided` / `approval_invalidated` — the answer, or the request
   no longer applying;
 - `policy_decision_resolved` — how a call that needed a decision ended.
-- `workspace_access_changed` — the Workspace's folders or System access
-  changed; carries the current `access`.
+- `workspace_access_changed` — the Workspace's folders, System access or
+  notices changed, or a person marked a notice seen; carries the current
+  `access`.
 
 ## Resumable WebSocket stream
 

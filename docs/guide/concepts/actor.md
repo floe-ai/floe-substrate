@@ -127,16 +127,31 @@ interactive only, so an Actor cannot widen its own boundary:
 
 | Operation | What it does |
 |---|---|
-| `workspace.access.inspect` | Lists the folders, whether System access is on, and recent changes. |
+| `workspace.access.inspect` | Lists the folders, whether System access is on, and recent changes and notices, each marked `seen` or not by you. |
 | `workspace.folder.add` | Adds a folder by full path. Refuses a relative path, a missing folder, a file, or a folder already inside the Workspace's folders. |
 | `workspace.folder.remove` | Removes an added folder. The Workspace's own folder stays. |
 | `workspace.system_access.set` | Turns System access on or off. |
+| `workspace.notice.acknowledge` | Marks one change or notice (`record_id`) as seen by you. |
 
 Every change is recorded with who made it and is pushed as
 `workspace_access_changed`. A Workspace connection also receives the current
 folders and setting, as `workspace_access`, with `caught_up`. A change that
 removes what a waiting approval needed ends that wait, and the call is refused
 with a reason.
+
+Seen is recorded per person in Floe, not in a surface, so every surface a
+person uses agrees. Each record lists `seen_by`, the people who have seen it as
+it now reads. A notice that changes, such as a lapse date moving, shows as new
+again. Marking a notice seen, and Floe recording, changing or removing a notice
+by itself, are pushed as `workspace_access_changed` too.
+
+Folders and System access belong to this machine. Copying or forking a
+Workspace on the same machine keeps both exactly, and the copy records an
+`access_carried` notice saying what came across. A
+[portable package](../setup/workspace-transfer.md) carries neither, because it
+may be handed to someone else: the restored Workspace has only its own folder
+and System access off, and records an `access_left_behind` notice naming the
+folders (by name, never by path) and saying whether System access was on.
 
 **Commands are not confined by any of this.** Floe decides which commands an
 Actor may run, not which files they touch. The engine's own sandbox does not

@@ -1,5 +1,5 @@
 import type { ActorDefinitionStore } from "./actor-definitions.js";
-import type { SqliteCapabilityGrantStore } from "./capability-grants.js";
+import { expiryMs, type SqliteCapabilityGrantStore } from "./capability-grants.js";
 import type { SecretRefRecord, SqliteSecretRefStore } from "./credential-broker.js";
 import { RUNTIME_CREDENTIAL_PURPOSE } from "./credential-operations.js";
 import { refusal, type SemanticOperationDefinition } from "./operations.js";
@@ -56,7 +56,7 @@ export function runtimeCredentialAccessOperations(deps: Dependencies): SemanticO
         try {
           const existing = deps.grants.listActiveGrantsForPrincipalBoundary(actor.actor_id, { kind: "workspace", workspace_id: actor.workspace_id }).find(grant => {
             const constraint = deps.refs.getGrantConstraint(grant.grant_id);
-            return Date.parse(grant.expires_at) >= Date.parse(input.expires_at)
+            return expiryMs(grant.expires_at) >= Date.parse(input.expires_at)
               && grant.operation_ids.length === 2 && grant.operation_ids.includes("credential.use") && grant.operation_ids.includes("credential.refresh")
               && grant.targets.length === 2 && grant.targets.some(target => target.kind === "secret_ref" && target.id === ref.secret_ref_id)
               && grant.targets.some(target => target.kind === ref.resource.kind && target.id === ref.resource.id)

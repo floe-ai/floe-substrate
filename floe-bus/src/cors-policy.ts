@@ -22,15 +22,20 @@ export function trustedBrowserOrigins(configured?: string): ReadonlySet<string> 
   return new Set([...DEFAULT_TRUSTED_BROWSER_ORIGINS, ...additions]);
 }
 
-export function createCorsOriginPolicy(
-  trusted: ReadonlySet<string> = trustedBrowserOrigins(),
-): (origin: string | undefined, callback: (error: Error | null, allowed: boolean) => void) => void {
-  return (origin, callback) => {
+/**
+ * Per-request CORS: a built-in trusted origin, or whatever the browser
+ * connections allow for this exact origin and path (an active pass's origin,
+ * or a loopback origin asking to pair). Credentials are allowed because a pass
+ * is an HttpOnly cookie; the cookie, not CORS, carries any authority.
+ */
+export function createCorsDelegator(
+  allows: (origin: string, path: string) => boolean,
+): (request: Readonly<{ headers: Readonly<{ origin?: string }>; url: string }>,
+  callback: (error: Error | null, options: { origin: boolean; credentials: boolean }) => void) => void {
+  return (request, callback) => {
+    const origin = request.headers.origin;
     // Native processes and same-origin requests do not carry an Origin header.
-    if (!origin || trusted.has(origin)) {
-      callback(null, true);
-      return;
-    }
-    callback(null, false);
+    const allowed = !origin || allows(origin, request.url.split("?", 1)[0]!);
+    callback(null, { origin: allowed, credentials: allowed && origin !== undefined });
   };
 }

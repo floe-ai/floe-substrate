@@ -1,7 +1,7 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import YAML from "yaml";
 
 import { defaultConfig } from "./config.js";
@@ -73,6 +73,47 @@ describe("BusStore portable Workspace integration", () => {
     expect(exported.manifest.workspace_id).toBe(WORKSPACE_ID);
     expect(exported.manifest.records.find((record) => record.table === "workspaces")?.record_count).toBe(1);
     expect(exported.bundle_directory).not.toContain(workspaceRoot);
+  });
+
+  it("a copy on this machine keeps folders and System access; a package leaves them behind and says so", async () => {
+    const { store, workspaceRoot } = await makeServer();
+    const shared = join(workspaceRoot, "..", "shared-library");
+    mkdirSync(shared, { recursive: true });
+    store.workspaceAccessStore.addFolder({ workspace_id: WORKSPACE_ID, path: shared, principal_id: "principal:chooser" });
+    store.workspaceAccessStore.setSystemAccess({ workspace_id: WORKSPACE_ID, enabled: true, principal_id: "principal:chooser" });
+
+    const copyRoot = join(workspaceRoot, "..", "copy-on-host-a");
+    mkdirSync(copyRoot, { recursive: true });
+    const copy = store.deriveWorkspaceIdentity({
+      source_workspace_id: WORKSPACE_ID, kind: "copied", name: "Copy", locator: copyRoot, principal_id: "principal:copier",
+    }, () => {});
+    const copied = store.workspaceAccessStore.inspect(copy.workspace_id);
+    expect(copied.system_access).toBe(true);
+    expect(copied.folders.filter((folder) => !folder.home).map((folder) => folder.path)).toEqual([shared]);
+    expect(copied.records).toEqual([expect.objectContaining({ kind: "access_carried", principal_id: "principal:copier" })]);
+    expect(copied.records[0]?.summary).toContain(shared);
+    expect(copied.records[0]?.summary).toContain("System access");
+
+    const exported = store.workspacePortabilityService.exportWorkspace(WORKSPACE_ID);
+    expect(exported.manifest.host_access_left_behind).toEqual({ folder_names: ["shared-library"], system_access: true });
+    expect(readFileSync(join(exported.bundle_directory, "manifest.json"), "utf8")).not.toContain(shared);
+
+    const target = await makeServer({ bare: true });
+    const pushed = vi.spyOn(target.store as unknown as { pushWorkspaceAccess(id: string): void }, "pushWorkspaceAccess");
+    const restoreRoot = join(target.workspaceRoot, "..", "restored-on-host-b");
+    target.store.workspacePortabilityService.restoreWorkspace({ bundle_directory: exported.bundle_directory, workspace_locator: restoreRoot });
+    const restored = target.store.workspaceAccessStore.inspect(WORKSPACE_ID);
+    expect(restored.system_access).toBe(false);
+    expect(restored.folders.map((folder) => folder.home)).toEqual([true]);
+    expect(restored.records).toEqual([expect.objectContaining({ kind: "access_left_behind", seen_by: [] })]);
+    expect(restored.records[0]?.summary).toContain("shared-library");
+    expect(restored.records[0]?.summary).toContain("System access");
+    expect(restored.records[0]?.summary).not.toContain(shared);
+    expect(pushed).toHaveBeenCalledTimes(1);
+
+    target.store.workspacePortabilityService.restoreWorkspace({ bundle_directory: exported.bundle_directory, workspace_locator: restoreRoot });
+    expect(target.store.workspaceAccessStore.inspect(WORKSPACE_ID).records).toHaveLength(1);
+    expect(pushed).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed when any application table has no portability classification", async () => {
@@ -148,7 +189,7 @@ describe("BusStore portable Workspace integration", () => {
   });
 });
 
-async function makeServer(): Promise<{ handle: ServerHandle; store: BusStore; workspaceRoot: string }> {
+async function makeServer(options: { bare?: boolean } = {}): Promise<{ handle: ServerHandle; store: BusStore; workspaceRoot: string }> {
   const root = mkdtempSync(join(tmpdir(), "floe-portability-store-"));
   const configPath = join(root, "config.yaml");
   const config = defaultConfig(root);
@@ -157,6 +198,10 @@ async function makeServer(): Promise<{ handle: ServerHandle; store: BusStore; wo
   await handle.app.ready();
   const workspaceRoot = join(root, "workspace-on-host-a");
   mkdirSync(workspaceRoot, { recursive: true });
+  if (options.bare) {
+    opened.push({ handle, root });
+    return { handle, store: handle.store, workspaceRoot };
+  }
   const timestamp = "2026-09-04T00:00:00.000Z";
   handle.store.workspaceIdentityStore.restoreWorkspace({
     snapshot: {

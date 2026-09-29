@@ -3,7 +3,7 @@
  * API handlers must expose bus-owned truth without bypassing BusStore precedence,
  * bridge-reported runtime state, or the shared auth/model registry.
  */
-import Fastify from "fastify";
+import Fastify, { type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import { createHash, randomUUID } from "node:crypto";
@@ -17,11 +17,7 @@ import { BROADCAST_TARGETS, BusStore, ContextAnchorError, ContextNotFoundError, 
 import { PulseScheduler } from "./pulse-scheduler.js";
 import { BUS_VERSION } from "./version.js";
 import { EVENT_INGRESS_CAPABILITY } from "./event-ingress.js";
-import {
-  isValidRenderer,
-  loadScopeProjectionLayout,
-  upsertScopeProjectionLayout
-} from "./scope-projection-layout-store.js";
+import { SCOPE_PROJECTION_LAYOUT_INVALID_CODES } from "./scope-projection-layout-operations.js";
 import { ScopeAlreadyExistsError, ScopeNotEmptyError, ScopeNotFoundError, ScopeReservedIdError } from "./scopes/store.js";
 import {
   ScopeGraphInvalidError,
@@ -45,7 +41,7 @@ import { browseDir } from "./fs/browseDir.js";
 import { listAgentFiles } from "./fs/agentFiles.js";
 import { PathEscapesRootError, resolveWithinRoot, RootNotFoundError } from "./fs/resolveWithinRoot.js";
 import { registerContextDiagnosticRoutes } from "./context-diagnostics.js";
-import { createCorsOriginPolicy, trustedBrowserOrigins } from "./cors-policy.js";
+import { createCorsDelegator, trustedBrowserOrigins } from "./cors-policy.js";
 import { BrowserConnections, BrowserConnectionError, loopbackBrowserOrigins } from "./browser-connections.js";
 import {
   ArtefactContentMismatchError,
@@ -101,13 +97,16 @@ import type {
 } from "./transport-credentials.js";
 import {
   ACCOUNT_CONNECTION_PURPOSE,
-  BIND_CREDENTIAL_OPERATION_ID,
   CREDENTIAL_MAINTENANCE_PURPOSE,
-  HEALTH_CREDENTIAL_OPERATION_ID,
-  REVOKE_CREDENTIAL_OPERATION_ID,
-  ROTATE_CREDENTIAL_OPERATION_ID,
+  OPERATOR_CREDENTIAL_OPERATION_IDS,
 } from "./credential-operations.js";
 import { WINDOWS_DPAPI_CREDENTIAL_BROKER_ID } from "./windows-dpapi-credential-protector.js";
+import { expiryMs } from "./capability-grants.js";
+import {
+  parseAuthorityLifetime,
+  type AuthorityLifetime,
+  type IdentityWorkspaceAuthorityRecord,
+} from "./identity-workspace-authority.js";
 import { WorkspacePortabilityError } from "./workspace-portability.js";
 import {
   AttachmentIngressError,
@@ -122,12 +121,6 @@ const ConfirmedOperationInvocationSchema = z.object({
   interaction_session_id: z.string().min(1),
   invocation: OperationInvocationSchema.strict(),
 }).strict();
-const OPERATOR_CREDENTIAL_OPERATION_IDS = Object.freeze([
-  BIND_CREDENTIAL_OPERATION_ID,
-  HEALTH_CREDENTIAL_OPERATION_ID,
-  ROTATE_CREDENTIAL_OPERATION_ID,
-  REVOKE_CREDENTIAL_OPERATION_ID,
-]);
 const HOST_CREDENTIAL_OPERATION_IDS = new Set([
   "credential.runtime-access.grant",
   "credential.runtime-access.revoke",
@@ -302,6 +295,15 @@ export async function createBusServer(
   // answered with a generic, correlatable error; request-level failures (4xx,
   // schema validation) describe the caller's own request and are safe to return.
   app.setErrorHandler((error, request, reply) => {
+    // A request that fails its schema is the caller's fault and names what to fix.
+    if ((error as { name?: unknown }).name === "ZodError") {
+      const issues = (error as unknown as { issues: readonly { path: readonly (string | number)[]; message: string }[] }).issues;
+      return reply.code(400).send({
+        error: "request_invalid",
+        message: issues.map((issue) => `${issue.path.join(".") || "request"}: ${issue.message}`).join("; "),
+        request_id: request.id,
+      });
+    }
     const rawStatus = (error as { statusCode?: unknown }).statusCode;
     const statusCode = typeof rawStatus === "number" ? rawStatus : 500;
     if (statusCode >= 500) {
@@ -340,7 +342,7 @@ export async function createBusServer(
   const localOrigins = options.local_browser_access ? loopbackBrowserOrigins(browserOrigins) : new Set<string>();
   const browserConnections = new BrowserConnections(browserOrigins, id => {
     store.operationAuthoritySessions.revokeSession(id);
-  }, Date.now, options.local_browser_access ? {
+  }, store.browserPassStore, Date.now, options.local_browser_access ? {
     origins: localOrigins,
     issueSession: workspaceId => {
       const host = transportAuthenticator.authenticateHostControl(localControlToken);
@@ -356,6 +358,40 @@ export async function createBusServer(
       }, "floe-local-browser-session");
     },
   } : undefined);
+  function renewBrowserSocketAuthority(request: FastifyRequest, workspaceId: string) {
+    try {
+      const session = browserConnections.session(request, workspaceId);
+      if (!session) return null;
+      const verified = transportAuthenticator.authenticateWorkspaceOperation(session.bearer_token, workspaceId);
+      return verified.verified && verified.authority.audience === "workspace_operation" ? verified.authority : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * A live Workspace socket keeps authority only while its session does. After a
+   * revocation each affected socket is checked now and closed if its session
+   * was revoked or every grant it rests on has ended.
+   */
+  function closeSocketsWithoutAuthority(authoritySessionId: string | null): void {
+    for (const [socket, authority] of socketAuthorities) {
+      if (authority.audience !== "workspace_operation") continue;
+      if (authoritySessionId !== null && authority.authority_session_id !== authoritySessionId) continue;
+      const session = store.operationAuthoritySessions.getSession(authority.authority_session_id);
+      const active = session !== null && session.revoked_at === null
+        && store.capabilityGrantStore.inspectSessionGrantIds(session).active_grants.length > 0;
+      if (active) continue;
+      socketAuthorities.delete(socket);
+      socket.close(4401, "Authority revoked");
+    }
+  }
+  const stopWatchingAuthority = store.onAuthorityLost(closeSocketsWithoutAuthority);
+
+  store.setBrowserPairing({
+    list: () => browserConnections.list(),
+    approve: (connectionId, issue) => browserConnections.approve(connectionId, issue),
+  });
   const pushStream = new TransportPushStreamStore(store.db);
   const socketAuthorities = new Map<SocketLike, BusTransportAuthority>();
   const requestAuthorities = new WeakMap<object, BusTransportAuthority>();
@@ -731,22 +767,18 @@ export async function createBusServer(
       provenance: verified.provenance,
       resolve_resource: (resource) => store.resolveOperationResource(resource, verified.authority.boundary),
     }, invocation);
+    const status = (code: string) => code.includes("not_found") ? 404
+      : code.includes("grant_required") ? 403
+        : code.includes("invalid") || code.includes("schema") || code === "context_parent_cycle" || code === "scope_id_reserved"
+          || SCOPE_PROJECTION_LAYOUT_INVALID_CODES.includes(code) ? 400
+          : 409;
     if (response.kind === "rejected" || response.kind === "conflict") {
-      const code = response.refusal.code;
-      const status = code.includes("not_found") ? 404
-        : code.includes("grant_required") ? 403
-          : code.includes("invalid") || code.includes("schema") || code === "context_parent_cycle" || code === "scope_id_reserved" ? 400
-            : 409;
-      reply.code(status).send({ error: code, ...response.refusal });
+      reply.code(status(response.refusal.code)).send({ error: response.refusal.code, ...response.refusal });
       return null;
     }
     if (response.receipt.state === "refused") {
       const refusal = response.receipt.refusal!;
-      const status = refusal.code.includes("not_found") ? 404
-        : refusal.code.includes("grant_required") ? 403
-          : refusal.code.includes("invalid") || refusal.code.includes("schema") || refusal.code === "context_parent_cycle" || refusal.code === "scope_id_reserved" ? 400
-            : 409;
-      reply.code(status).send({ error: refusal.code, ...refusal, receipt_id: response.receipt.receipt_id });
+      reply.code(status(refusal.code)).send({ error: refusal.code, ...refusal, receipt_id: response.receipt.receipt_id });
       return null;
     }
     return response.receipt;
@@ -755,7 +787,7 @@ export async function createBusServer(
   // Inject broadcast into the store so lease-expiry requeue can self-schedule (D5).
   store.setBroadcast(broadcast);
 
-  await app.register(cors, { origin: createCorsOriginPolicy(browserOrigins) });
+  await app.register(cors, { delegator: createCorsDelegator((origin, path) => browserConnections.corsAllows(origin, path)) });
   await app.register(websocket);
   app.addHook("preHandler", async (request, reply) => {
     // Static sandbox bootstrap only: no Workspace, content or authority. An
@@ -765,7 +797,9 @@ export async function createBusServer(
     // bearer. The same verifier and operation routes still decide authority.
     try {
       const workspace = resolveRequestWorkspace(request, store);
-      const session = workspace.conflicted ? null : browserConnections.session(request, workspace.workspace_id ?? undefined);
+      const resolved = workspace.conflicted ? null : browserConnections.resolve(request, workspace.workspace_id ?? undefined, true);
+      if (resolved?.cookie) reply.header("set-cookie", resolved.cookie);
+      const session = resolved?.session;
       if (session && !request.headers.authorization) request.headers.authorization = `Bearer ${session.bearer_token}`;
     } catch (error) {
       if (error instanceof BrowserConnectionError) return reply.code(error.status).send({ error: "browser_origin_refused", message: error.message });
@@ -875,6 +909,8 @@ export async function createBusServer(
     socketAuthorities.clear();
     bridgeSockets.clear();
     browserConnections.close();
+    store.setBrowserPairing(null);
+    stopWatchingAuthority();
     store.close();
   });
 
@@ -962,7 +998,13 @@ export async function createBusServer(
       if (!z.object({}).strict().safeParse(request.body ?? {}).success) return reply.code(400).send({ error: "browser_connection_request_invalid" });
       const started = browserConnections.start(request);
       reply.header("cache-control", "no-store");
-      if (started.cookie) reply.header("set-cookie", started.cookie);
+      if (started.cookie) {
+        reply.header("set-cookie", started.cookie);
+        // Every Workspace's connections hear of it, since any person there may allow it.
+        for (const workspace of store.listWorkspaces()) {
+          broadcast("browser_connection_requested", { ...started.connection, workspace_id: workspace.workspace_id });
+        }
+      }
       return reply.code(201).send(started.connection);
     } catch (error) { return browserFailure(error, reply); }
   });
@@ -994,10 +1036,6 @@ export async function createBusServer(
       return { mode, workspaces, profiles, bindings, runtime: getRuntimeStatus(), expires_at: session?.expires_at ?? null };
     } catch (error) { return browserFailure(error, reply); }
   });
-  app.get("/v1/local/browser-connections", async (request, reply) => {
-    if (!requireLocalControl(request, reply)) return reply;
-    return { connections: browserConnections.list() };
-  });
   app.get("/v1/browser/session/models", async (request, reply) => {
     try {
       const session = browserConnections.session(request);
@@ -1010,23 +1048,6 @@ export async function createBusServer(
       return { models: await listAuthModels(configPath, config, query.data.provider) };
     } catch (error) { return browserFailure(error, reply); }
   });
-  app.post("/v1/local/browser-connections/:code/approve", async (request, reply) => {
-    const authority = requireLocalControl(request, reply);
-    if (!authority) return reply;
-    const params = z.object({ code: z.string().regex(/^[A-F0-9]{8}$/) }).safeParse(request.params);
-    const body = z.object({ workspace_id: z.string().min(1) }).strict().safeParse(request.body);
-    if (!params.success || !body.success) return reply.code(400).send({ error: "browser_connection_request_invalid" });
-    if (!store.getWorkspace(body.data.workspace_id)) return reply.code(404).send({ error: "workspace_not_found" });
-    try {
-      browserConnections.approve(params.data.code, () => issueWorkspaceOperationSession(
-        authority, body.data.workspace_id,
-        { interaction_session_id: `browser:${params.data.code}`, expires_in_seconds: 3_600 },
-        "floe-browser-session",
-      ));
-      return { approved: true };
-    } catch (error) { return browserFailure(error, reply); }
-  });
-
   app.get("/v1/events/stream", { websocket: true }, (socket, request) => {
     const client = socket as unknown as SocketLike;
     let connectedBridgeId: string | null = null;
@@ -1139,9 +1160,21 @@ export async function createBusServer(
 
       authenticated = true;
       socketAuthority = authority;
-      if (authority.audience === "workspace_operation") {
-        sessionExpiryTimeout = setTimeout(() => client.close(4401, "Session expired"), Math.max(0, Date.parse(authority.verification.expires_at) - Date.now()));
-      }
+      // A browser-pass socket moves onto the pass's next short session at expiry;
+      // any other Workspace socket closes, and its client authenticates again.
+      const armSessionExpiry = (current: Extract<BusTransportAuthority, { audience: "workspace_operation" }>) => {
+        sessionExpiryTimeout = setTimeout(() => {
+          const renewed = parsed.data.browser_session ? renewBrowserSocketAuthority(request, current.workspace_id) : null;
+          if (!renewed) {
+            client.close(4401, "Session expired");
+            return;
+          }
+          socketAuthority = renewed;
+          if (socketAuthorities.has(client)) socketAuthorities.set(client, renewed);
+          armSessionExpiry(renewed);
+        }, Math.max(0, Date.parse(current.verification.expires_at) - Date.now()) + 50);
+      };
+      if (authority.audience === "workspace_operation") armSessionExpiry(authority);
       clearTimeout(authenticationTimeout);
       client.send(JSON.stringify({
         type: "authenticated",
@@ -1450,18 +1483,18 @@ export async function createBusServer(
     workspaceId: string,
     body: { expires_in_seconds?: number; interaction_session_id?: string },
     brokerId = WINDOWS_DPAPI_CREDENTIAL_BROKER_ID,
+    // A person's session references their durable Workspace authority rather
+    // than creating authority of its own; ending the session leaves it intact.
+    identityAuthority: Readonly<{ principal_id: string; root_grant_id: string }> | null = null,
   ) {
     const expiresAt = new Date(Date.now() + (body.expires_in_seconds ?? 3_600) * 1_000).toISOString();
-    const principalId = store.localOperatorPrincipalId;
-    const operationIds = store.operationRegistry
-      .listCurrentOperationIds({ interaction_mode: "interactive", boundary_kind: "workspace" });
-    if (operationIds.length === 0) {
+    const principalId = identityAuthority?.principal_id ?? store.localOperatorPrincipalId;
+    const ordinaryOperationIds = store.identityAuthorityOperationIds();
+    if (ordinaryOperationIds.length === 0) {
       throw new Error("No interactive semantic operations are currently registered.");
     }
-    const ordinaryOperationIds = operationIds.filter((operationId) =>
-      !OPERATOR_CREDENTIAL_OPERATION_IDS.includes(operationId as typeof OPERATOR_CREDENTIAL_OPERATION_IDS[number]));
-    const grantIds: string[] = [];
-    if (ordinaryOperationIds.length > 0) {
+    const grantIds: string[] = identityAuthority ? [identityAuthority.root_grant_id] : [];
+    if (!identityAuthority) {
       grantIds.push(store.capabilityGrantStore.issueGrant({
         principal_id: principalId,
         boundary: { kind: "workspace", workspace_id: workspaceId },
@@ -2349,97 +2382,33 @@ export async function createBusServer(
     return locator;
   }
 
-  function mapScopeProjectionLayoutError(err: unknown, reply: any): { error: string; message: string } | null {
-    if (!(err instanceof Error)) return null;
-    switch (err.name) {
-      case "ScopeProjectionLayoutValidationError":
-        reply.code(400);
-        return { error: "scope_projection_layout_validation_error", message: err.message };
-      case "ScopeProjectionLayoutIdMismatchError":
-        reply.code(400);
-        return { error: "scope_projection_layout_id_mismatch", message: err.message };
-      case "ScopeProjectionLayoutRendererInvalidError":
-        reply.code(400);
-        return { error: "scope_projection_layout_renderer_invalid", message: err.message };
-      default:
-        return null;
-    }
-  }
-
+  // Layout routes are shorthand for the layout operations, under the same authority.
+  const layoutParams = z.object({ workspace_id: z.string(), scope_id: z.string(), renderer: z.string() });
   app.get("/v1/workspaces/:workspace_id/scopes/:scope_id/projection/layout/:renderer", async (request, reply) => {
-    if (!requireLocalControl(request, reply)) return reply;
-    const params = z.object({
-      workspace_id: z.string(),
-      scope_id: z.string(),
-      renderer: z.string()
-    }).parse(request.params);
-    if (!isValidRenderer(params.renderer)) {
-      reply.code(400);
-      return { error: "scope_projection_layout_renderer_invalid", message: `renderer '${params.renderer}' is not a valid renderer identity` };
-    }
+    const params = layoutParams.parse(request.params);
     if (!store.getWorkspace(params.workspace_id)) {
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
     }
-    if (!store.getScope(params.workspace_id, params.scope_id)) {
-      return reply.code(404).send({
-        error: "scope_not_found",
-        workspace_id: params.workspace_id,
-        scope_id: params.scope_id
-      });
-    }
-    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
-    if (locator === null) return reply;
-    try {
-      const layout = loadScopeProjectionLayout(locator, params.scope_id, params.renderer);
-      if (!layout) {
-        reply.code(404);
-        return { error: "scope_projection_layout_not_found" };
-      }
-      return { layout };
-    } catch (err) {
-      const mapped = mapScopeProjectionLayoutError(err, reply);
-      if (mapped) return mapped;
-      throw err;
-    }
+    const receipt = await invokeWorkspaceCompatibility(request, reply, {
+      workspace_id: params.workspace_id, operation_id: "scope.projection.layout.get",
+      value: { scope_id: params.scope_id, renderer: params.renderer },
+    });
+    if (!receipt) return reply;
+    const { layout } = receipt.result as { layout: unknown };
+    return layout ? { layout } : reply.code(404).send({ error: "scope_projection_layout_not_found" });
   });
 
   app.put("/v1/workspaces/:workspace_id/scopes/:scope_id/projection/layout/:renderer", async (request, reply) => {
-    if (!requireLocalControl(request, reply)) return reply;
-    const params = z.object({
-      workspace_id: z.string(),
-      scope_id: z.string(),
-      renderer: z.string()
-    }).parse(request.params);
-    if (!isValidRenderer(params.renderer)) {
-      reply.code(400);
-      return { error: "scope_projection_layout_renderer_invalid", message: `renderer '${params.renderer}' is not a valid renderer identity` };
-    }
+    const params = layoutParams.parse(request.params);
     if (!store.getWorkspace(params.workspace_id)) {
       return reply.code(404).send({ error: "workspace_not_found", workspace_id: params.workspace_id });
     }
-    if (!store.getScope(params.workspace_id, params.scope_id)) {
-      return reply.code(404).send({
-        error: "scope_not_found",
-        workspace_id: params.workspace_id,
-        scope_id: params.scope_id
-      });
-    }
-    const locator = resolveWorkspaceLocator(params.workspace_id, reply);
-    if (locator === null) return reply;
-    try {
-      const layout = upsertScopeProjectionLayout(locator, params.scope_id, params.renderer, request.body);
-      broadcast("scope_projection.layout.upserted", {
-        workspace_id: params.workspace_id,
-        scope_id: params.scope_id,
-        source: "api",
-        renderer: params.renderer
-      });
-      return { layout };
-    } catch (err) {
-      const mapped = mapScopeProjectionLayoutError(err, reply);
-      if (mapped) return mapped;
-      throw err;
-    }
+    const receipt = await invokeWorkspaceCompatibility(request, reply, {
+      workspace_id: params.workspace_id, operation_id: "scope.projection.layout.save",
+      value: { scope_id: params.scope_id, renderer: params.renderer, layout: request.body },
+    });
+    if (!receipt) return reply;
+    return { layout: (receipt.result as { layout: unknown }).layout };
   });
 
   app.post("/v1/workspaces/register", async (request, reply) => {
@@ -3194,26 +3163,45 @@ export async function createBusServer(
       display_name: z.string().min(1).max(200),
       pubkey: z.string().min(1),
       workspace_id: z.string().min(1),
+      until_revoked: z.literal(true).optional(),
+      expires_at: z.string().min(1).optional(),
     }).strict().safeParse(request.body);
     if (!body.success) return reply.code(400).send({ error: "identity_request_invalid" });
+    let lifetime: AuthorityLifetime;
+    try {
+      lifetime = parseAuthorityLifetime(body.data);
+    } catch (error) {
+      return reply.code(400).send({ error: "authority_lifetime_required", message: (error as Error).message });
+    }
+    if ("expires_at" in lifetime && Date.parse(lifetime.expires_at) <= Date.now()) {
+      return reply.code(400).send({ error: "authority_lifetime_required", message: "expires_at must be in the future." });
+    }
     if (!store.getWorkspace(body.data.workspace_id)) return reply.code(404).send({ error: "workspace_not_found" });
     const pubkeyHex = normalizePubkeyToHex(body.data.pubkey);
     if (!pubkeyHex) return reply.code(400).send({ error: "identity_pubkey_invalid" });
     const identity = store.clientIdentityStore.admitIdentity({
       pubkey_hex: pubkeyHex,
       display_name: body.data.display_name,
-      principal_id: store.localOperatorPrincipalId,
       admitted_by: authority.credential_id,
     });
-    // Admission binds the identity to the workspace it may act in (ADR-0015 F3).
+    // Admission binds the identity to the workspace it may act in (ADR-0015 F3),
+    // with durable authority for the lifetime the admitting host chose.
     store.clientIdentityStore.addWorkspaceMembership({
       identity_id: identity.identity_id,
       workspace_id: body.data.workspace_id,
       admitted_by: authority.credential_id,
     });
+    const workspaceAuthority = store.ensureIdentityWorkspaceAuthority({
+      identity_id: identity.identity_id,
+      workspace_id: body.data.workspace_id,
+      issued_by: `transport:${authority.credential_id}`,
+      lifetime,
+      evidence: [{ kind: "authenticated_host_control", ref: authority.credential_id }],
+    });
     return reply.code(201).send({
       identity: publicIdentity(identity),
       workspaces: identityWorkspaces(store, identity.identity_id),
+      authority: publicWorkspaceAuthority(workspaceAuthority),
     });
   });
 
@@ -3281,6 +3269,10 @@ export async function createBusServer(
       };
     }
 
+    const workspaceAuthority = store.identityWorkspaceAuthorityStore.getActive(identity.identity_id, targetWorkspaceId);
+    if (!workspaceAuthority || expiryMs(workspaceAuthority.expires_at) <= Date.now()) {
+      return reply.code(403).send({ error: "identity_workspace_authority_unavailable", workspaces });
+    }
     const host = transportAuthenticator.authenticateHostControl(localControlToken);
     if (!host.verified || host.authority.audience !== "host_control") {
       return reply.code(503).send({ error: "identity_mint_unavailable" });
@@ -3290,6 +3282,7 @@ export async function createBusServer(
       targetWorkspaceId,
       { interaction_session_id: `client-identity:${identity.identity_id}:${randomUUID()}`, expires_in_seconds: 3_600 },
       `floe-client-identity:${identity.identity_id}`,
+      { principal_id: workspaceAuthority.principal_id, root_grant_id: workspaceAuthority.root_grant_id },
     );
     store.clientIdentityStore.recordSession({
       authority_session_id: session.authority_session_id,
@@ -3381,13 +3374,21 @@ export async function createBusServer(
     const identity = store.clientIdentityStore.admitIdentity({
       pubkey_hex: verification.pubkey_hex,
       display_name: body.data.display_name,
-      principal_id: store.localOperatorPrincipalId,
       admitted_by: host.authority.credential_id,
     });
     store.clientIdentityStore.addWorkspaceMembership({
       identity_id: identity.identity_id,
       workspace_id: workspace.workspace_id,
       admitted_by: host.authority.credential_id,
+    });
+    // Choosing the folder is the person's explicit act, so their authority in
+    // it lasts until revoked.
+    store.ensureIdentityWorkspaceAuthority({
+      identity_id: identity.identity_id,
+      workspace_id: workspace.workspace_id,
+      issued_by: `transport:${host.authority.credential_id}`,
+      lifetime: { until_revoked: true },
+      evidence: [{ kind: "client_identity_workspace_registration", ref: workspace.workspace_id }],
     });
 
     // 5. Registration and admission are now durable. But choosing a folder is
@@ -3431,6 +3432,8 @@ export async function createBusServer(
     const clients = store.clientIdentityStore.listIdentities().map((identity) => ({
       ...publicIdentity(identity),
       workspaces: identityWorkspaces(store, identity.identity_id),
+      authorities: store.identityWorkspaceAuthorityStore.listActiveForIdentity(identity.identity_id)
+        .map(publicWorkspaceAuthority),
       sessions: store.clientIdentityStore.listSessionsForIdentity(identity.identity_id)
         .filter((session) => Date.parse(session.expires_at) > nowMs)
         .map((session) => ({
@@ -3449,11 +3452,31 @@ export async function createBusServer(
     const params = z.object({ identity_id: z.string().min(1) }).parse(request.params);
     const identity = store.clientIdentityStore.getIdentity(params.identity_id);
     if (!identity) return reply.code(404).send({ error: "identity_not_found" });
-    store.clientIdentityStore.revokeIdentity(identity.identity_id);
-    for (const session of store.clientIdentityStore.listSessionsForIdentity(identity.identity_id)) {
-      store.operationAuthoritySessions.revokeSession(session.authority_session_id);
-    }
+    store.transaction(() => {
+      store.clientIdentityStore.revokeIdentity(identity.identity_id);
+      store.identityWorkspaceAuthorityStore.revokeAllForIdentity(identity.identity_id, "identity_revoked");
+      for (const session of store.clientIdentityStore.listSessionsForIdentity(identity.identity_id)) {
+        store.operationAuthoritySessions.revokeSession(session.authority_session_id);
+      }
+    });
     return { revoked: true, identity_id: identity.identity_id };
+  });
+
+  // End one membership: the identity's authority in that Workspace, its
+  // sessions there, and everything delegated from it stop together.
+  app.delete("/v1/clients/:identity_id/workspaces/:workspace_id", async (request, reply) => {
+    const authority = requestAuthorities.get(request);
+    if (authority?.audience !== "host_control") return sendTransportForbidden(reply);
+    const params = z.object({ identity_id: z.string().min(1), workspace_id: z.string().min(1) }).parse(request.params);
+    if (!store.clientIdentityStore.isMemberOfWorkspace(params.identity_id, params.workspace_id)) {
+      return reply.code(404).send({ error: "identity_membership_not_found" });
+    }
+    store.transaction(() => {
+      store.clientIdentityStore.removeWorkspaceMembership(params.identity_id, params.workspace_id);
+      const active = store.identityWorkspaceAuthorityStore.getActive(params.identity_id, params.workspace_id);
+      if (active) store.identityWorkspaceAuthorityStore.revoke(active.authority_id, "membership_revoked");
+    });
+    return { revoked: true, identity_id: params.identity_id, workspace_id: params.workspace_id };
   });
 
   // Revoke one bearer an identity holds, leaving the identity and its other
@@ -4654,6 +4677,7 @@ export function resolveTransportRequirement(request: any, store: BusStore): Tran
     || route === "/v1/clients"
     || route === "/v1/clients/:identity_id"
     || route === "/v1/clients/:identity_id/sessions/:authority_session_id"
+    || route === "/v1/clients/:identity_id/workspaces/:workspace_id"
     || (route === "/v1/configs" && method !== "GET")
   ) {
     return { kind: "host_control" };
@@ -4774,6 +4798,7 @@ function sendIdentityAuthFailed(reply: any) {
 /** Public projection of an admitted identity; never exposes internal-only fields. */
 function publicIdentity(identity: {
   identity_id: string;
+  principal_id: string;
   pubkey_hex: string;
   display_name: string;
   admitted_at: string;
@@ -4781,11 +4806,26 @@ function publicIdentity(identity: {
 }) {
   return {
     identity_id: identity.identity_id,
+    principal_id: identity.principal_id,
     display_name: identity.display_name,
     pubkey_hex: identity.pubkey_hex,
     npub: encodeNpub(identity.pubkey_hex),
     admitted_at: identity.admitted_at,
     revoked_at: identity.revoked_at,
+  };
+}
+
+/** A person's durable authority in one Workspace; the root grant holds what it covers. */
+function publicWorkspaceAuthority(authority: IdentityWorkspaceAuthorityRecord) {
+  return {
+    authority_id: authority.authority_id,
+    workspace_id: authority.workspace_id,
+    principal_id: authority.principal_id,
+    root_grant_id: authority.root_grant_id,
+    status: authority.status,
+    issued_at: authority.issued_at,
+    expires_at: authority.expires_at,
+    revoked_at: authority.revoked_at,
   };
 }
 

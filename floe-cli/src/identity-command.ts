@@ -46,7 +46,8 @@ export function registerIdentityCommand(
     .requiredOption("--name <name>", "the human display name for this identity")
     .requiredOption("--pubkey <npub|hex>", "the identity public key, as npub or 64-char hex")
     .option("--workspace <workspace_id>", "the workspace this identity may act in; defaults to the workspace for the current directory")
-    .action(async (options: { name: string; pubkey: string; workspace?: string }) => {
+    .option("--expires-at <iso_time>", "when this identity's authority in the workspace ends; without it, it lasts until revoked")
+    .action(async (options: { name: string; pubkey: string; workspace?: string; expiresAt?: string }) => {
       const { config } = resolveConfig();
       const token = await hostControlToken(busBase(config));
       const workspaceId = options.workspace
@@ -54,7 +55,10 @@ export function registerIdentityCommand(
       const response = await httpFetch(`${busBase(config)}/v1/identities`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-        body: JSON.stringify({ display_name: options.name, pubkey: options.pubkey, workspace_id: workspaceId }),
+        body: JSON.stringify({
+          display_name: options.name, pubkey: options.pubkey, workspace_id: workspaceId,
+          ...(options.expiresAt ? { expires_at: options.expiresAt } : { until_revoked: true }),
+        }),
       });
       if (!response.ok) {
         throw new Error(`Admission failed (${response.status}): ${await safeBody(response)}`);
@@ -66,6 +70,7 @@ export function registerIdentityCommand(
       write(`Admitted "${body.identity.display_name}" as ${body.identity.identity_id}`);
       write(`  ${body.identity.npub}`);
       write(`  workspaces: ${body.workspaces.map((w) => `${w.name} (${w.workspace_id})`).join(", ") || "none"}`);
+      write(`  authority: ${options.expiresAt ? `until ${options.expiresAt}` : "until revoked"}`);
       write("");
       write("Re-admitting a lost key is re-admission, not recovery: a lost recovery phrase is unrecoverable.");
     });

@@ -1,6 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
+import { identityPrincipalId } from "./identity-workspace-authority.js";
+
 /**
  * Durable store for admitted client identities, single-use authentication
  * challenges, and the sessions minted for each identity (ADR-0015).
@@ -102,6 +104,9 @@ export function applyClientIdentitySchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_client_identity_session_identity
       ON client_identity_sessions(identity_id);
   `);
+  // Every identity acts as itself. Rows admitted before v0.4.0 carried the
+  // host's shared operator principal; they take their own principal now.
+  db.exec("UPDATE client_identities SET principal_id = 'identity:' || identity_id WHERE principal_id != 'identity:' || identity_id");
 }
 
 export class SqliteClientIdentityStore {
@@ -126,21 +131,19 @@ export class SqliteClientIdentityStore {
   admitIdentity(input: Readonly<{
     pubkey_hex: string;
     display_name: string;
-    principal_id: string;
     admitted_by: string;
   }>): ClientIdentityRecord {
     assertNonEmpty("pubkey_hex", input.pubkey_hex);
     assertNonEmpty("display_name", input.display_name);
-    assertNonEmpty("principal_id", input.principal_id);
     assertNonEmpty("admitted_by", input.admitted_by);
     const existing = this.getIdentityByPubkey(input.pubkey_hex);
     const admittedAt = this.now();
     if (existing) {
       this.db.prepare(`
         UPDATE client_identities
-        SET display_name = ?, principal_id = ?, admitted_by = ?, admitted_at = ?, revoked_at = NULL
+        SET display_name = ?, admitted_by = ?, admitted_at = ?, revoked_at = NULL
         WHERE identity_id = ?
-      `).run(input.display_name, input.principal_id, input.admitted_by, admittedAt, existing.identity_id);
+      `).run(input.display_name, input.admitted_by, admittedAt, existing.identity_id);
       return this.getIdentity(existing.identity_id)!;
     }
     const identityId = this.identityIdFactory();
@@ -148,7 +151,7 @@ export class SqliteClientIdentityStore {
       INSERT INTO client_identities (
         identity_id, pubkey_hex, display_name, principal_id, admitted_by, admitted_at, revoked_at
       ) VALUES (?, ?, ?, ?, ?, ?, NULL)
-    `).run(identityId, input.pubkey_hex, input.display_name, input.principal_id, input.admitted_by, admittedAt);
+    `).run(identityId, input.pubkey_hex, input.display_name, identityPrincipalId(identityId), input.admitted_by, admittedAt);
     return this.getIdentity(identityId)!;
   }
 
@@ -171,6 +174,14 @@ export class SqliteClientIdentityStore {
       VALUES (?, ?, ?, ?)
       ON CONFLICT(identity_id, workspace_id) DO NOTHING
     `).run(input.identity_id, input.workspace_id, input.admitted_by, this.now());
+  }
+
+  /** End one membership. The caller revokes the Workspace authority with it. */
+  removeWorkspaceMembership(identityId: string, workspaceId: string): boolean {
+    const result = this.db.prepare(
+      "DELETE FROM client_identity_workspaces WHERE identity_id = ? AND workspace_id = ?",
+    ).run(identityId, workspaceId);
+    return Number(result.changes) === 1;
   }
 
   /** The workspace ids this identity has been admitted to. */
