@@ -122,6 +122,13 @@ export const ACTOR_DEFINITION_CONTENT_SCHEMA: JsonSchema = {
       },
     },
     escalation_rules: { type: "array", items: escalationRuleSchema },
+    scope: {
+      type: "object",
+      additionalProperties: false,
+      required: ["paths"],
+      description: "Workspace-relative folders bounding filesystem authority. Omit for no filesystem authority. Use '.' for the whole Workspace.",
+      properties: { paths: { type: "array", items: nonEmptyString, minItems: 1, uniqueItems: true } },
+    },
   },
 };
 const actorSchema: JsonSchema = {

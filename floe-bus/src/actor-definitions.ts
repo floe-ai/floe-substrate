@@ -38,7 +38,31 @@ export type ActorDefinitionContent = Readonly<{
     approval: VersionedResourceRef | null;
   }>;
   escalation_rules: readonly ActorEscalationRule[];
+  /**
+   * Workspace-relative folders that bound this Actor's filesystem authority.
+   * Absent means no filesystem authority at all; grants never widen it.
+   */
+  scope?: ActorScope;
 }>;
+
+export type ActorScope = Readonly<{ paths: readonly string[] }>;
+
+/**
+ * Canonical workspace-relative scope path: forward slashes, no leading "./",
+ * no trailing slash, and "." for the Workspace root. Returns null when the
+ * path is absolute or climbs out of the Workspace.
+ */
+export function canonicalActorScopePath(value: string): string | null {
+  const segments: string[] = [];
+  const text = value.trim().replace(/\\/g, "/");
+  if (!text || text.startsWith("/") || /^[a-z]:/i.test(text)) return null;
+  for (const segment of text.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") return null;
+    segments.push(segment);
+  }
+  return segments.length ? segments.join("/") : ".";
+}
 
 export type ActorRecord = Readonly<{
   actor_id: string;
@@ -150,6 +174,19 @@ export function validateActorDefinition(content: ActorDefinitionContent): void {
   for (const ref of content.knowledge_refs) validateRef(ref, "knowledge reference");
   for (const [name, ref] of Object.entries(content.policy_refs)) {
     if (ref) validateRef(ref, `${name} policy reference`);
+  }
+  if (content.scope !== undefined) {
+    if (!content.scope || !Array.isArray(content.scope.paths) || content.scope.paths.length === 0) {
+      throw new ActorDefinitionValidationError("scope.paths must list at least one workspace-relative folder");
+    }
+    for (const path of content.scope.paths) {
+      if (typeof path !== "string" || canonicalActorScopePath(path) !== path) {
+        throw new ActorDefinitionValidationError(
+          `scope path '${String(path)}' must be canonical and stay within the Workspace (for example '.' or 'src/app')`,
+        );
+      }
+    }
+    unique(content.scope.paths, "scope path");
   }
   for (const rule of content.escalation_rules) {
     nonEmpty("escalation condition", rule.when);

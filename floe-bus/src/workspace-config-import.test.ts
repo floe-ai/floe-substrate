@@ -164,6 +164,22 @@ describe("canonical Workspace configuration import", () => {
     });
   }
 
+  it("imports the Actor's declared scope as canonical definition data and refuses a scope that leaves the Workspace", () => {
+    const scoped = actor("floe", {
+      definition: { ...actor("floe").definition, scope: { paths: ["src\\app\\", "./", "."] } },
+    });
+    const applied = importer().import(WORKSPACE_ID, inventory([scoped]));
+    const imported = applied.receipt.imported_actors[0]!;
+    expect(actorDefinitions.requireRevision(imported.actor_definition_revision_id).content.scope)
+      .toEqual({ paths: [".", "src/app"] });
+
+    const escaping = actor("floe", {
+      definition: { ...actor("floe").definition, scope: { paths: ["../neighbour"] } },
+    });
+    expect(() => importer().import(WORKSPACE_ID, inventory([escaping])))
+      .toThrow(/must stay within the Workspace/);
+  });
+
   it("creates exact canonical records before runtime use and replays the same inventory without duplicates", () => {
     const imports = importer();
     const first = imports.import(WORKSPACE_ID, inventory());

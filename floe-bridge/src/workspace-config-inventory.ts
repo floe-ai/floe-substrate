@@ -72,6 +72,7 @@ export type WorkspaceConfigurationActorInventory = Readonly<{
       action: "decline" | "delegate" | "escalate" | "signal_unowned";
       target_actor_id?: string | null;
     }>[];
+    scope?: Readonly<{ paths: readonly string[] }>;
   }>;
   runtime: Readonly<{
     label: string;
@@ -179,6 +180,7 @@ function actorInventory(
     knowledge_refs: parseRefs(frontmatter.knowledge_refs),
     policy_refs: parsePolicyRefs(frontmatter.policy_refs),
     escalation_rules: parseEscalationRules(frontmatter.escalation_rules),
+    ...parseScope(frontmatter.scope, agent.agent_id),
   };
   const checkpointPolicy = normalizeCheckpointPolicy(runtime.checkpoint_policy);
   const runtimeInventory = {
@@ -311,6 +313,17 @@ function parseEscalationRules(value: unknown): WorkspaceConfigurationActorInvent
         : { target_actor_id: requiredText(object.target_actor_id, `escalation_rules[${index}].target_actor_id`) }),
     };
   });
+}
+
+function parseScope(value: unknown, agentId: string): { scope?: { paths: string[] } } {
+  if (value == null) return {};
+  const paths = plainObject(value, `Actor '${agentId}' scope`).paths;
+  if (paths == null) return {};
+  if (!Array.isArray(paths)) {
+    throw new WorkspaceConfigurationInventoryError(`Actor '${agentId}' scope.paths must be a list`);
+  }
+  // The Bus import owns canonical path validation; the inventory keeps the author's text.
+  return { scope: { paths: paths.map((path, index) => requiredText(path, `Actor '${agentId}' scope.paths[${index}]`)) } };
 }
 
 function normalizeCheckpointPolicy(

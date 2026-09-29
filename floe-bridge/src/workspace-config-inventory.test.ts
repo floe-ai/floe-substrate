@@ -84,6 +84,24 @@ describe("Workspace configuration inventory", () => {
     expect(serialized).not.toContain("must-never-cross-the-import-boundary");
   });
 
+  it("carries the Actor's declared filesystem scope instead of dropping it", () => {
+    const withScope = project({
+      agents: [{ ...project().agents[0]!, frontmatter: { scope: { paths: ["./", "src\\app"], services: [] } } }],
+    });
+    const inventory = buildWorkspaceConfigurationInventory({
+      binding_id: "binding:one",
+      project: withScope,
+      runtimes: [{ agent_id: "floe", adapter_id: "fake", model: "gpt-5.6" }],
+    });
+    expect(inventory.actors[0]!.definition.scope).toEqual({ paths: ["./", "src\\app"] });
+    const unscoped = buildWorkspaceConfigurationInventory({
+      binding_id: "binding:one",
+      project: project(),
+      runtimes: [{ agent_id: "floe", adapter_id: "fake", model: "gpt-5.6" }],
+    });
+    expect(unscoped.actors[0]!.definition).not.toHaveProperty("scope");
+  });
+
   it("sorts Actors and set-like runtime fields so equivalent observations are stable", () => {
     const actors = [
       project().agents[0]!,
