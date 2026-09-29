@@ -192,7 +192,8 @@ See [[CLI reference]] for the complete command list.
 ## Implementation
 
 - `scripts/install-cli.mjs` - builds, packs, and globally installs `floe` from a checkout
-- `scripts/release.mjs` - builds, verifies, tags, and publishes the `floe-ai/floe` artifact
+- `scripts/release.mjs` - builds, verifies, tags, and publishes the `floe-ai/floe` artifact from a fresh clone of the released commit, installed with `npm ci`
+- `scripts/pinned-dependencies.mjs` - refuses a release whose git-pinned dependencies (floe-runtime) are not exactly their pinned commit
 - `floe-cli/src/cli.ts` - launcher and command definitions
 - `floe-cli/src/surface-manifests.ts` - detects surfaces declared by installed packages
 - `floe-cli/src/surface-catalog.ts` - merges detected and registered surfaces
