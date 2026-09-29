@@ -58,6 +58,11 @@ You are Floe, ...
 
 Fields: `schema`, `agent_id`, `label`, `runtime.model` (optional override of the engine's default model), `extensions` (list of [[Extension]] names bound to this actor), `skills`, `mcp`, `pulse.inherit`, `scope`.
 
+`scope.paths` is carried into the canonical Actor definition and enforced: every
+path an engine built-in tool touches must resolve inside it. A new Workspace's
+default Floe Actor may read files within its scope, and has no write, shell or
+network tool. See [[Actor]] for how engine tools are governed.
+
 The engine an Actor runs on is not chosen here. It follows from the runtime
 adapter of the Bridge that runs the Actor, and the Bridge reports it on the
 Actor's endpoint as `metadata.engine` (for example `copilot`).

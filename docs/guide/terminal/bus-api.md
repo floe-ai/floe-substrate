@@ -368,6 +368,37 @@ correlation id, no context. The substrate resumes the asking Actor in its own
 context, correlated by the delivery. See
 [Client identity protocol → Answering as a client-executed Actor](../../reference/client-identity-protocol.md#answering-as-a-client-executed-actor).
 
+### Engine tool decisions
+
+A Bridge running a Delivery asks the Bus to decide each engine built-in tool
+call. Both routes take a `bridge_service` bearer for a Bridge that owns the
+Delivery:
+
+```text
+POST /v1/delivery/:delivery_id/tool-policy/evaluate
+POST /v1/delivery/:delivery_id/tool-policy/:evaluation_id/resolve
+```
+
+`evaluate` takes the normalised call facts (`operation_id`, `tool_call_id`,
+`engine`, `manifest_version`, `native_tools`, workspace-relative `paths`,
+`executables`, `urls`, `write_redirection`, `sandbox_bypass` and a SHA-256
+`argument_digest`) and returns `allow`, `deny` or `require_approval`. `resolve`
+takes `{ "abandon": null | "cancelled" | "unavailable" }` and reports how a
+call that needed a decision ended: `pending`, `allowed`, `denied`, `cancelled`
+or `unavailable`. An approval is used once, for that call.
+
+Runtime preparation returns `engine_tool_operation_ids`: the engine tool
+operations the Actor's live grants cover, which decide the tools offered.
+
+These are pushed on the stream to the Workspace's connections:
+
+- `policy_decision` — every evaluated call and its decision;
+- `approval_requested` — a call needs a decision; answer it with the
+  `approval.decide` operation;
+- `approval_decided` / `approval_invalidated` — the answer, or the request
+  no longer applying;
+- `policy_decision_resolved` — how a call that needed a decision ended.
+
 ## Resumable WebSocket stream
 
 Connect to:

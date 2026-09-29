@@ -56,6 +56,51 @@ and dimensions, alongside the preview dimensions. Unsupported, oversized or
 corrupt input returns a recoverable tool result instead of forwarding those
 bytes to the model. This is a runtime input bound, not an Artefact transformation.
 
+## Engine built-in tools
+
+An engine's own tools (reading files, running a shell, fetching a URL) are
+governed by Floe, not by the engine. Authority is named by canonical
+operations, never by the engine's native tool names:
+
+| Operation | Copilot tools |
+|---|---|
+| `engine.tool.filesystem.read` | `view`, `grep`, `glob` |
+| `engine.tool.filesystem.write` | none yet |
+| `engine.tool.process.execute` | `powershell` |
+| `engine.tool.network.fetch` | `web_fetch` |
+
+An Actor is offered only the built-in tools its live capability grants cover.
+Every call is then decided before it runs, from the intersection of:
+
+1. the Actor's live grants for that operation;
+2. its definition's `scope.paths`: every path must resolve, after symlinks,
+   inside the scope; an escaped or unresolvable path is refused;
+3. the Approval Policy revision its definition pins, which can refuse a call
+   or require a decision, but never widen authority.
+
+A refused call returns structured data to the model: `code`
+(`tool_policy_denied` or `tool_policy_cancelled`), `tool_call_id`,
+`operation_id`, `rule_id` and `reason`. A call that needs a decision waits for
+a pushed answer, bounded by the turn's authority and cancellation. One approval
+covers one exact call; changed arguments need a new decision.
+
+A newly created Actor holds no engine tool grants. The default Floe Actor of a
+new local Workspace holds `engine.tool.filesystem.read` within its scope, and
+nothing else. A grant may be **delegation-only**: its holder cannot use it,
+but can delegate a subset of it to another Actor with
+`capability.grant.delegate`.
+
+Limits:
+
+- The Copilot tool set is proven for Copilot CLI 1.0.83 on Windows only. On
+  another platform no built-in tool is offered. If the engine's tool
+  catalogue differs from the proven one, the session does not start.
+- Copilot has no governed file-write tool yet, so a write grant exposes nothing.
+- Copilot's shell evidence is heuristic. An Actor that needs hard process or
+  filesystem confinement cannot use Copilot's shell tool.
+- Floe controls side effects, not what the engine's own hidden instructions
+  tell the model.
+
 ## Legacy definition files
 
 `.floe/agents/<id>.md` remains a portable definition source used by the current
@@ -71,5 +116,7 @@ Actor's universal identity.
   definition operations
 - `floe-bus/src/runtime-profiles.ts` — runtime profiles and Actor bindings
 - `floe-bridge/src/project.ts` — legacy `.floe/agents/*.md` loading boundary
+- `floe-bus/src/tool-policy.ts` — engine tool operations and authority
+- `floe-bridge/src/adapters/engine-tool-gate.ts` — the per-call gate
 
 See [[Glossary]].
