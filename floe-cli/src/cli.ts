@@ -1,3 +1,12 @@
+/**
+ * @invariant Cell: floe-cli.cli-process-manager
+ * @invariant Module: floe-cli.cli-process-manager.main
+ * @invariant Owns Floe command registration and command routing.
+ * @invariant The process-level entrypoint owns unhandled terminal failure reporting.
+ * @invariant Command actions throw unexpected failures rather than printing raw stack detail.
+ * @invariant Do not bypass the shared cli-error terminal boundary.
+ * @invariant Update this block in the same turn when the structural contract changes.
+ */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -42,7 +51,8 @@ const program = new Command();
 program
   .name("floe")
   .description("Launch and manage the local Floe substrate")
-  .option("--config <path>", "config path");
+  .option("--config <path>", "config path")
+  .option("--debug", "show full error details in the terminal");
 
 program
   .command("setup")
@@ -315,7 +325,9 @@ program
     await runLauncher(surface);
   });
 
-await program.parseAsync(routeSurfaceLaunch(normalizeLegacyCommandArgs(process.argv)));
+export async function runCli(argv: string[] = process.argv): Promise<void> {
+  await program.parseAsync(routeSurfaceLaunch(normalizeLegacyCommandArgs(argv)));
+}
 
 async function runUp(): Promise<void> {
   const { configPath, config } = ensureConfig(program.opts().config);
