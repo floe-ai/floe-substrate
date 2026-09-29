@@ -248,7 +248,16 @@ declareLive("vertical slice exact Copilot SDK tools [live-copilot]", () => {
       }
     }
     if (evidenceError) throw evidenceError;
+    assertInstructionBytesLogged(h.bridgeLog());
     await h.post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/delete`, { delete_locator: true });
+  }
+
+  /** The Bridge's log reports the instructions it actually sent, not zero. */
+  function assertInstructionBytesLogged(log: string): void {
+    const resolved = /effective runtime resolved[\s\S]*?instructions_bytes: (\d+)/.exec(log);
+    const injected = /floe-runtime prompt injected[\s\S]*?system_message_bytes: (\d+)/.exec(log);
+    expect(Number(resolved?.[1] ?? 0), "instructions_bytes in the bridge log").toBeGreaterThan(0);
+    expect(Number(injected?.[1] ?? 0), "system_message_bytes in the bridge log").toBeGreaterThan(0);
   }
 
   it("records one exact successful emit callback", async () => {

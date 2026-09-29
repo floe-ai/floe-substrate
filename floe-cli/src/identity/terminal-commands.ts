@@ -1,5 +1,5 @@
 /**
- * `floe identity status|create|unlock|lock|reveal|restore|replace|join|sessions`
+ * `floe identity status|create|unlock|lock|reveal|restore|replace|join|sessions|held|delete`
  *
  * The person's identity from a terminal. Every command is a client of the
  * identity agent, exactly like any surface: the terminal never holds the key.
@@ -168,16 +168,80 @@ export function registerPersonIdentityCommands(identity: Command, configPath: ()
         console.log(`${session.session_id}  ${session.surface}  ${session.status}${where}${until}`);
       }
     })());
+
+  identity
+    .command("held")
+    .description("Show every identity Floe holds on this machine: your current one and any set aside")
+    .option("--show-npub", "also show each identity's public key (npub)")
+    .action((options: { showNpub?: boolean }) => run(async (client) => {
+      const { identities } = await client.listIdentities({ include_npub: options.showNpub === true });
+      if (!identities.length) {
+        console.log(NO_IDENTITY);
+        return;
+      }
+      for (const entry of identities) {
+        if (!entry.readable) {
+          console.log(`${entry.id}  (unreadable file; it can only be deleted)`);
+          continue;
+        }
+        const when = entry.current ? "current" : `set aside ${entry.set_aside_at}`;
+        const guard = entry.protection === "passphrase" ? "passphrase" : "this device";
+        const backup = entry.has_recovery_phrase ? "has a recovery phrase" : "no recovery phrase";
+        console.log(`${entry.id}  ${entry.display_name}  ${when}, protected by ${guard}, ${backup}${entry.npub ? `  ${entry.npub}` : ""}`);
+      }
+      console.log("\nDelete one with `floe identity delete <id>`.");
+    })());
+
+  identity
+    .command("delete")
+    .argument("<id>", "the identity to delete, as `floe identity held` shows it (`current` for your current one)")
+    .option("--revoke-admissions", "also revoke its workspace admissions on this machine (current identity only)")
+    .option("--keep-admissions", "leave its workspace admissions in place (current identity only)")
+    .description("Delete an identity from this machine for good")
+    .action((id: string, options: { revokeAdmissions?: boolean; keepAdmissions?: boolean }) => run(async (client, prompt) => {
+      const { identities } = await client.listIdentities();
+      const entry = identities.find((held) => held.id === id);
+      if (!entry) throw new Error(`Floe holds no identity called ${id}. See \`floe identity held\`.`);
+      if (options.revokeAdmissions && options.keepAdmissions) throw new Error("Choose one of --revoke-admissions and --keep-admissions.");
+      const name = entry.display_name ?? "this identity";
+      console.log(entry.current
+        ? `This deletes ${name} from this machine for good. This machine stops being that identity.`
+        : `This deletes the set-aside copy of ${name} (${entry.set_aside_at}) for good.`);
+      console.log("Its key file is removed, and so is its device key once nothing else here needs it. Floe keeps no copy.");
+      console.log(entry.has_recovery_phrase === false
+        ? "It has no recovery phrase: it survives elsewhere only if you saved its key from `floe identity reveal`."
+        : "It survives elsewhere only through its recovery phrase. Without those words it is gone forever.");
+      if (!(await prompt.typed("Type delete to confirm: ", "delete"))) throw new Error("Nothing was deleted.");
+      let input: Parameters<IdentityClient["deleteIdentity"]>[0] = { id, confirm: true };
+      if (entry.current) {
+        const revoke = options.revokeAdmissions ? true
+          : options.keepAdmissions ? false
+            : await prompt.yes("Also revoke its admissions to workspaces on this machine? [y/N] ");
+        input = { ...input, revoke_admissions: revoke };
+        if (entry.protection === "passphrase") input = { ...input, passphrase: await prompt.hidden("Passphrase: ") };
+      }
+      const result = await client.deleteIdentity(input);
+      console.log(`\nDeleted ${result.deleted}.`);
+      if (result.revoked_admissions) {
+        const names = result.revoked_admissions.workspaces.map((workspace) => workspace.name);
+        console.log(names.length ? `Revoked its admissions to: ${names.join(", ")}.` : "It was not admitted to any workspace here.");
+      }
+      if (result.device_key_removed) console.log("Its device key was removed from this machine's credential vault.");
+      if (entry.current) console.log(NO_IDENTITY);
+    })());
 }
 
+const NO_IDENTITY = "No identity on this machine yet. Create one with `floe identity create --name <name>`,\n"
+  + "or bring one back from its recovery phrase with `floe identity restore`.";
+
 function requireIdentity(state: IdentityState): Exclude<IdentityState, { kind: "none" }> {
-  if (state.kind === "none") throw new Error("There is no identity on this machine yet. Create one with `floe identity create --name <name>`.");
+  if (state.kind === "none") throw new Error(NO_IDENTITY);
   return state;
 }
 
 function printState(state: IdentityState): void {
   if (state.kind === "none") {
-    console.log("No identity on this machine yet. Create one with `floe identity create --name <name>`.");
+    console.log(NO_IDENTITY);
     return;
   }
   console.log(`${state.display_name}  ${state.npub}`);
@@ -244,6 +308,11 @@ class Prompter {
 
   async yes(question: string): Promise<boolean> {
     return /^y(es)?$/i.test((await this.ask(question, false)).trim());
+  }
+
+  /** True only when the person types exactly `word`. */
+  async typed(question: string, word: string): Promise<boolean> {
+    return (await this.ask(question, false)).trim() === word;
   }
 
   /** Ask for a new passphrase twice. Blank means: protect with this device. */

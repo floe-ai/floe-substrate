@@ -290,6 +290,15 @@ export class SliceHarness {
     if (!response.ok) throw new Error(`${path} failed ${response.status}: ${await response.text()}`);
     return response.json() as Promise<T>;
   }
+
+  /** Everything the Bridge has written to its log so far. */
+  bridgeLog(): string {
+    try {
+      return readFileSync(join(this.temp, "logs", "bridge", "bridge.log"), "utf8");
+    } catch {
+      return "";
+    }
+  }
 }
 
 export function fileExists(path: string): boolean {

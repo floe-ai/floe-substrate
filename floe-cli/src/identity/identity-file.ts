@@ -154,11 +154,17 @@ export function identityFilePath(home: string): string {
 export function loadIdentityFile(home: string): IdentityFile | null {
   const path = identityFilePath(home);
   if (!existsSync(path)) return null;
-  const parsed = IdentityFileSchema.safeParse(JSON.parse(readFileSync(path, "utf8")));
-  if (!parsed.success) {
+  const parsed = parseIdentityFile(JSON.parse(readFileSync(path, "utf8")));
+  if (!parsed) {
     throw new Error(`The identity at ${path} is unreadable. Set it aside and restore from the recovery phrase.`);
   }
-  return parsed.data;
+  return parsed;
+}
+
+/** The identity file format, or null when the value is not one. */
+export function parseIdentityFile(value: unknown): IdentityFile | null {
+  const parsed = IdentityFileSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 /** Write atomically, so a crash never leaves half an identity. */

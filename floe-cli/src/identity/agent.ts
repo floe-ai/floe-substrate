@@ -30,6 +30,7 @@ import {
   type SecretKind,
   identityFilePath,
 } from "./identity-file.js";
+import { anyNeedsDeviceKey, deleteHeldIdentityFile, findHeldIdentity, listHeldIdentities } from "./held-identities.js";
 import {
   generatePhrase,
   isValidPhrase,
@@ -76,6 +77,8 @@ export type AgentDeps = {
   lockAfterIdleMs: number;
   /** Read (or with `create`, mint) the vault key for device protection; null when absent. */
   deviceKey: (create: boolean) => Promise<Uint8Array | null>;
+  /** Remove this home's device key from the vault; true when one was removed. */
+  forgetDeviceKey: () => Promise<boolean>;
   /** host_control from the native broker, for re-admission and revocation only. */
   hostToken: () => Promise<string>;
   fetch?: typeof fetch;
@@ -159,6 +162,8 @@ export class IdentityAgent {
       case "reveal": return this.serial(() => this.reveal(args));
       case "replace": return this.serial(() => this.replace(args));
       case "import_legacy": return this.serial(() => this.importLegacy(args));
+      case "list_identities": return this.listIdentities(args);
+      case "delete_identity": return this.serial(() => this.deleteIdentity(args));
       case "join_folder": return this.joinFolder(args);
       case "session": return this.startSession(conn, args);
       case "select_workspace": return this.selectWorkspace(conn, args);
@@ -250,7 +255,7 @@ export class IdentityAgent {
    * "I forgot my passphrase and have no recovery phrase": re-admission, not
    * recovery. A new identity is made, admitted to every workspace the old one
    * was in, and the old one is revoked on this Floe. The old file is set aside
-   * under a dated name, never deleted.
+   * under a dated name; only the person deletes it, with `delete_identity`.
    */
   private async replace(args: Record<string, unknown>): Promise<unknown> {
     const previous = this.requireFile();
@@ -344,6 +349,82 @@ export class IdentityAgent {
     this.log(`imported identity ${legacy.npub} (${secretKind === "nsec" ? "no recovery phrase" : "with recovery phrase"})`);
     this.broadcastState();
     return { npub: legacy.npub, secret_kind: secretKind, protection, set_aside_as: setAside };
+  }
+
+  // ── identities held ────────────────────────────────────────────────────────
+
+  /** Every identity Floe holds here. The npub only when asked for. */
+  private listIdentities(args: Record<string, unknown>): unknown {
+    const includeNpub = args.include_npub === true;
+    return {
+      identities: listHeldIdentities(this.deps.home).map((entry) => ({
+        id: entry.id,
+        current: entry.current,
+        readable: entry.file !== null,
+        display_name: entry.file?.display_name ?? null,
+        created_at: entry.file?.created_at ?? null,
+        set_aside_at: entry.set_aside_at,
+        protection: entry.file?.protection ?? null,
+        has_recovery_phrase: entry.file ? entry.file.secret_kind === "phrase" : null,
+        ...(includeNpub ? { npub: entry.file?.npub ?? null } : {}),
+      })),
+    };
+  }
+
+  /**
+   * Delete one identity for good. For the current one this machine stops being
+   * that identity: its file goes, and the vault key goes once no identity Floe
+   * still holds needs it. Only its recovery phrase can bring it back elsewhere.
+   */
+  private async deleteIdentity(args: Record<string, unknown>): Promise<unknown> {
+    const id = requireString(args, "id");
+    const entry = findHeldIdentity(this.deps.home, id);
+    if (!entry) throw new AgentError("identity_not_found", "Floe holds no identity with that id. List them with list_identities.");
+    if (args.confirm !== true) {
+      throw new AgentError("confirmation_required", "Deleting an identity is final. Confirm to delete it.");
+    }
+    let revoked: { revoked: boolean; workspaces: Workspace[] } | null = null;
+    if (entry.current) {
+      if (typeof args.revoke_admissions !== "boolean") {
+        throw new AgentError("revoke_choice_required", "Say whether to revoke this identity's workspace admissions on this machine (revoke_admissions: true or false).");
+      }
+      if (entry.file?.protection === "passphrase") {
+        const passphrase = optionalString(args, "passphrase");
+        if (!passphrase) throw new AgentError("passphrase_required", "Enter the passphrase to delete this identity.");
+        (await this.openSecret(entry.file, passphrase)).fill(0);
+      }
+      if (args.revoke_admissions && entry.file) revoked = await this.revokeAdmissions(entry.file);
+      this.lock("deleting the identity");
+    }
+    deleteHeldIdentityFile(this.deps.home, entry);
+    const deviceKeyRemoved = anyNeedsDeviceKey(this.deps.home) ? false : await this.forgetDeviceKey();
+    this.log(`deleted identity ${entry.id}${revoked ? `; revoked its admissions to ${revoked.workspaces.length} workspace(s)` : ""}${deviceKeyRemoved ? "; device key removed" : ""}`);
+    if (entry.current) this.broadcastState();
+    return { deleted: entry.id, revoked_admissions: revoked, device_key_removed: deviceKeyRemoved };
+  }
+
+  private async revokeAdmissions(file: IdentityFile): Promise<{ revoked: boolean; workspaces: Workspace[] }> {
+    let token: string;
+    let clients;
+    try {
+      token = await this.deps.hostToken();
+      clients = await this.bus.listClients(token);
+    } catch (error) {
+      throw new AgentError("bus_unreachable", `Floe could not reach its bus to revoke the admissions, so nothing was deleted. ${messageOf(error)}`);
+    }
+    const client = clients.find((entry) => entry.pubkey_hex === file.pubkey_hex && !entry.revoked_at);
+    if (!client) return { revoked: false, workspaces: [] };
+    await this.bus.revokeIdentity(token, client.identity_id);
+    return { revoked: true, workspaces: client.workspaces };
+  }
+
+  private async forgetDeviceKey(): Promise<boolean> {
+    try {
+      return await this.deps.forgetDeviceKey();
+    } catch (error) {
+      this.log(`could not remove the device key from the credential vault: ${messageOf(error)}`);
+      return false;
+    }
   }
 
   // ── acting for the identity ────────────────────────────────────────────────

@@ -138,6 +138,8 @@ floe identity restore [--name "<display name>"] [--replace]
 floe identity replace [--name "<display name>"]
 floe identity join [folder] [--create]
 floe identity sessions [--revoke <session-id>]
+floe identity held [--show-npub]
+floe identity delete <id> [--revoke-admissions | --keep-admissions]
 ```
 
 Floe holds one identity per Floe home. Surfaces ask Floe's identity agent to act
@@ -159,6 +161,15 @@ as you and never hold the key (see
   stays credited to the old identity. The old file is set aside, not deleted.
 - `join` creates or joins the workspace for a folder as you.
 - `sessions` lists which surfaces are acting as you; `--revoke` ends one.
+- `held` lists every identity Floe holds here: your current one (`current`) and
+  each copy set aside by `restore` or `replace`, with its created date, its
+  protection and whether it has a recovery phrase. `--show-npub` adds the npubs.
+- `delete <id>` deletes one for good, after you type `delete`. Deleting
+  `current` means this machine stops being that identity: its key file and its
+  device key are removed, and it survives elsewhere only through its recovery
+  phrase. It asks for the passphrase when there is one, and whether to also
+  revoke its workspace admissions here. Floe then has no identity, and
+  `create` or `restore` starts again.
 
 ## Admitting other keys
 

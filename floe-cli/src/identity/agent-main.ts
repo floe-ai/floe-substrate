@@ -4,7 +4,7 @@
  */
 import { DEFAULT_IDENTITY_LOCK_AFTER_IDLE_MINUTES, ensureConfig, resolveLocalPath } from "../config.js";
 import { thisInstallation } from "../installation.js";
-import { fetchHostControlToken, fetchIdentityDeviceKey } from "../operation-client.js";
+import { fetchHostControlToken, fetchIdentityDeviceKey, forgetIdentityDeviceKey } from "../operation-client.js";
 import { IdentityAgent } from "./agent.js";
 import { AgentAddressInUseError, serveAgent } from "./agent-server.js";
 import { canonicalHome } from "./protocol.js";
@@ -30,6 +30,7 @@ async function main(argv: string[]): Promise<void> {
     version: thisInstallation().version,
     lockAfterIdleMs: minutes * 60_000,
     deviceKey: (create) => fetchIdentityDeviceKey(home, create),
+    forgetDeviceKey: () => forgetIdentityDeviceKey(home),
     hostToken: () => fetchHostControlToken(busUrl),
     log,
   });

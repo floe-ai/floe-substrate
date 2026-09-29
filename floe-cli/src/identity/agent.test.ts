@@ -29,6 +29,7 @@ function setup(options: { vault?: Map<string, Uint8Array>; home?: string } = {})
       if (!vault.has(home) && create) vault.set(home, new Uint8Array(randomBytes(32)));
       return vault.get(home) ?? null;
     },
+    forgetDeviceKey: async () => vault.delete(home),
     hostToken: async () => bus.hostToken,
     fetch: bus.fetch,
     now: () => now,
@@ -134,11 +135,84 @@ describe("identity agent", () => {
     const offline = new IdentityAgent({
       home, busUrl: "http://fake-bus", version: null, lockAfterIdleMs: 60_000,
       deviceKey: async () => null,
+      forgetDeviceKey: async () => false,
       hostToken: async () => { throw new Error("broker unavailable"); },
       scrypt: FAST_SCRYPT,
     });
     await expect(offline.handle(conn, "replace", { passphrase: "q" })).rejects.toMatchObject({ code: "bus_unreachable" });
     expect(readdirSync(join(home, "identity"))).toEqual(["identity.json"]);
+  });
+
+  it("lists the identities it holds, npub only when asked, and deletes one set aside", async () => {
+    const { agent, conn, home } = setup();
+    const created = await agent.handle(conn, "create", { display_name: "Ada", passphrase: "p" }) as { npub: string; phrase: string };
+    const restored = await agent.handle(conn, "restore", { phrase: created.phrase, passphrase: "q" }) as { set_aside_as: string };
+    const setAsideId = restored.set_aside_as.replace(/^identity\./, "").replace(/\.json$/, "");
+
+    const { identities } = await agent.handle(conn, "list_identities", {}) as { identities: Array<Record<string, unknown>> };
+    expect(identities).toEqual([
+      { id: "current", current: true, readable: true, display_name: "Ada", created_at: expect.any(String), set_aside_at: null, protection: "passphrase", has_recovery_phrase: true },
+      { id: setAsideId, current: false, readable: true, display_name: "Ada", created_at: expect.any(String), set_aside_at: expect.stringMatching(/Z$/), protection: "passphrase", has_recovery_phrase: true },
+    ]);
+    const withNpub = await agent.handle(conn, "list_identities", { include_npub: true }) as { identities: Array<{ npub: string }> };
+    expect(withNpub.identities.map((entry) => entry.npub)).toEqual([created.npub, created.npub]);
+
+    await expect(agent.handle(conn, "delete_identity", { id: "../identity" })).rejects.toMatchObject({ code: "identity_not_found" });
+    await expect(agent.handle(conn, "delete_identity", { id: setAsideId })).rejects.toMatchObject({ code: "confirmation_required" });
+    expect(await agent.handle(conn, "delete_identity", { id: setAsideId, confirm: true }))
+      .toEqual({ deleted: setAsideId, revoked_admissions: null, device_key_removed: false });
+    expect(readdirSync(join(home, "identity"))).toEqual(["identity.json"]);
+    expect(agent.state().kind).toBe("unlocked");
+  });
+
+  it("deletes the current identity only with its passphrase and a revoke choice, revoking at the bus first", async () => {
+    const { agent, conn, bus, home, messages } = setup();
+    const created = await agent.handle(conn, "create", { display_name: "Ada", passphrase: "p" }) as { npub: string };
+    await agent.handle(conn, "join_folder", { locator: "C:/work/alpha" });
+
+    await expect(agent.handle(conn, "delete_identity", { id: "current", confirm: true, passphrase: "p" })).rejects.toMatchObject({ code: "revoke_choice_required" });
+    await expect(agent.handle(conn, "delete_identity", { id: "current", confirm: true, revoke_admissions: true })).rejects.toMatchObject({ code: "passphrase_required" });
+    await expect(agent.handle(conn, "delete_identity", { id: "current", confirm: true, revoke_admissions: true, passphrase: "x" })).rejects.toMatchObject({ code: "wrong_passphrase" });
+    expect(agent.state().kind).toBe("unlocked");
+
+    const result = await agent.handle(conn, "delete_identity", { id: "current", confirm: true, revoke_admissions: true, passphrase: "p" }) as Record<string, any>;
+    expect(result).toMatchObject({ deleted: "current", revoked_admissions: { revoked: true }, device_key_removed: false });
+    expect(result.revoked_admissions.workspaces.map((w: { name: string }) => w.name)).toEqual(["alpha"]);
+    expect([...bus.identities.values()].find((entry) => npubOf(entry.pubkey_hex) === created.npub)?.revoked_at).toBeTruthy();
+    expect(readdirSync(join(home, "identity"))).toEqual([]);
+    expect(agent.state()).toEqual({ kind: "none" });
+    expect(messages.at(-1)).toMatchObject({ type: "state", state: { kind: "none" } });
+  });
+
+  it("removes the device key only when no identity it holds still needs it", async () => {
+    const { agent, conn, home, vault } = setup();
+    const created = await agent.handle(conn, "create", { display_name: "Ada", passphrase: "" }) as { phrase: string };
+    const restored = await agent.handle(conn, "restore", { phrase: created.phrase, passphrase: "" }) as { set_aside_as: string };
+    const setAsideId = restored.set_aside_as.replace(/^identity\./, "").replace(/\.json$/, "");
+
+    expect(await agent.handle(conn, "delete_identity", { id: setAsideId, confirm: true })).toMatchObject({ device_key_removed: false });
+    expect(vault.has(home)).toBe(true);
+    expect(await agent.handle(conn, "delete_identity", { id: "current", confirm: true, revoke_admissions: false }))
+      .toEqual({ deleted: "current", revoked_admissions: null, device_key_removed: true });
+    expect(vault.has(home)).toBe(false);
+    expect(agent.state()).toEqual({ kind: "none" });
+  });
+
+  it("deletes nothing when it cannot reach the bus to revoke, and needs no bus when told not to revoke", async () => {
+    const { agent, conn, home } = setup();
+    await agent.handle(conn, "create", { display_name: "Ada", passphrase: "p" });
+    const offline = new IdentityAgent({
+      home, busUrl: "http://fake-bus", version: null, lockAfterIdleMs: 60_000,
+      deviceKey: async () => null,
+      forgetDeviceKey: async () => false,
+      hostToken: async () => { throw new Error("broker unavailable"); },
+      scrypt: FAST_SCRYPT,
+    });
+    await expect(offline.handle(conn, "delete_identity", { id: "current", confirm: true, revoke_admissions: true, passphrase: "p" })).rejects.toMatchObject({ code: "bus_unreachable" });
+    expect(readdirSync(join(home, "identity"))).toEqual(["identity.json"]);
+    expect(await offline.handle(conn, "delete_identity", { id: "current", confirm: true, revoke_admissions: false, passphrase: "p" }))
+      .toMatchObject({ deleted: "current", revoked_admissions: null });
+    expect(readdirSync(join(home, "identity"))).toEqual([]);
   });
 
   it("pushes a bearer, and a fresh one before expiry from a timer on the known expiry", async () => {

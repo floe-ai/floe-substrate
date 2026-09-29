@@ -21,7 +21,7 @@ async function startAgent() {
   const bus = new FakeBus();
   const agent = new IdentityAgent({
     home, busUrl: "http://fake-bus", version: "0.3.0", lockAfterIdleMs: 60_000,
-    deviceKey: async () => null, hostToken: async () => bus.hostToken, fetch: bus.fetch, scrypt: FAST_SCRYPT,
+    deviceKey: async () => null, forgetDeviceKey: async () => false, hostToken: async () => bus.hostToken, fetch: bus.fetch, scrypt: FAST_SCRYPT,
   });
   const server: AgentServer = await serveAgent(agent, { home });
   cleanup.push(() => server.close());

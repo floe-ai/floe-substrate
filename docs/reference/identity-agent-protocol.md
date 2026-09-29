@@ -50,13 +50,15 @@ const session = await identity.session({}, (event) => {
 
 ### What the surface draws
 
-The surface draws five flows. The agent does the work behind each one.
+The surface draws six flows. The agent does the work behind each one.
 
 1. **Create.** The person chooses a name and a passphrase. An empty passphrase
    means the identity is protected by this device instead. Say plainly what
    that means: "anyone who can use this computer as you can act as you, and the
    recovery phrase is the only copy that survives this machine".
    Show the returned phrase once for backup.
+   When `state.kind` is `"none"`, offer Create and Restore (flow 3) side by
+   side: the person may be bringing an identity back.
 2. **Unlock.** Only for `protection: "passphrase"`. A device-protected identity
    unlocks by itself when a session needs it, so never draw an unlock screen for
    it. The unlock screen must always offer "Forgot passphrase" (flow 5).
@@ -71,13 +73,27 @@ The surface draws five flows. The agent does the work behind each one.
    - "I don't": `replace`. Say: "Your old identity cannot be recovered. Floe will
      create a new one and give it the same workspaces on this machine. Work done
      before stays credited to the old identity."
+6. **Your identities.** `list_identities` returns the current identity and every
+   copy set aside by restore, replace or import, each with its created date, its
+   protection and whether it has a recovery phrase. Do not show npubs unless the
+   person asks; then call with `include_npub: true`. Each can be deleted with
+   `delete_identity`. Deletion is final: no undo, and Floe keeps no copy.
+   - **A set-aside copy.** Confirm, then call with `id` and `confirm: true`.
+   - **The current identity.** Say: "This machine stops being this identity. Its
+     key and its device key are removed. It survives elsewhere only through its
+     recovery phrase; without those words it is gone forever." (For
+     `has_recovery_phrase: false`, name its revealed key instead.) Ask whether to
+     also revoke its workspace admissions on this machine, and ask for the
+     passphrase when `protection` is `"passphrase"`. Then call with
+     `id: "current"`, `confirm: true`, `revoke_admissions` and `passphrase`.
+     Every session ends, state becomes `none`, and flow 1 applies again.
 
 `create`, `restore`, `replace` and `reveal` hand a phrase or key to the surface
 only so it can be shown. Display it, then discard it. Never store it, log it or
 send it anywhere.
 
 The terminal offers the same flows without any surface:
-`floe identity status|create|unlock|lock|reveal|restore|replace|join|sessions`.
+`floe identity status|create|unlock|lock|reveal|restore|replace|join|sessions|held|delete`.
 
 ## Migrating an identity file from an earlier surface
 
@@ -198,6 +214,8 @@ with `floe identity sessions --revoke`.
 | `end_session` | `session_id` | `{ended: true}` | `session_not_found` |
 | `sessions` | – | `{sessions: [{session_id, surface, status, workspace, started_at, expires_at}]}` | – |
 | `revoke_session` | `session_id` (any surface's) | `{revoked: true}` | `session_not_found` |
+| `list_identities` | `include_npub?` | `{identities: [{id, current, readable, display_name, created_at, set_aside_at, protection, has_recovery_phrase, npub?}]}`; `id` is `current` or `set-aside-<when>`; an unreadable file has null details and can still be deleted | – |
+| `delete_identity` | `id`, `confirm: true`; for `current` also `revoke_admissions` (boolean) and `passphrase` when passphrase protected | `{deleted, revoked_admissions: {revoked, workspaces} or null, device_key_removed}`; for `current`, now `none` | `identity_not_found`, `confirmation_required`, `revoke_choice_required`, `passphrase_required`, `wrong_passphrase`, `bus_unreachable` (nothing deleted) |
 
 Any operation can also fail with `unknown_op`, `invalid_request` or `failed`.
 
