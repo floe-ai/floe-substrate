@@ -25,7 +25,10 @@ surface.
 `floe up` is the connect-first entry for clients that need the substrate but do
 not want to launch a surface. It reuses a reachable substrate. If the substrate
 is unavailable, it starts the local services only when
-`services.start_on_demand` permits that.
+`services.start_on_demand` permits that. When the bus is already serving but
+the identity agent or bridge is down, the same setting lets a client start
+the missing one. It does this only for a bus this Floe home started, never for
+someone else's.
 
 Typing `floe` uses the same readiness path and then launches a registered
 surface. See [[Install and first run]].

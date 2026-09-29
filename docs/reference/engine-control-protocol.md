@@ -32,7 +32,8 @@ await engines.refresh("copilot");                           // "Try again"
   `connectIdentity` (see [identity agent protocol](identity-agent-protocol.md)):
   it connects to the Floe already serving this home, or starts Floe when the
   machine's `services.start_on_demand` allows it, and otherwise rejects with
-  `EnginesUnavailableError` (`reason: "not_running"`).
+  `EnginesUnavailableError` (`reason: "not_running"`). If the bus is up but the
+  bridge is down, the same setting lets it start the bridge.
 - `engines.agentVersion` and `engines.versionNote` report a version mismatch
   with the copy of Floe your surface depends on. The running Floe is used as it
   is and never restarted.

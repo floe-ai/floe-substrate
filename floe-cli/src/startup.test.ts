@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import YAML from "yaml";
 import { defaultConfig } from "./config.js";
-import { ForeignBusError, startAll, planSubstrateStart } from "./startup.js";
+import { ForeignBusError, startAll, planSubstrateStart, ensureBridge, floeHome } from "./startup.js";
+import { serveChannel } from "./local-channel/server.js";
+import { ENGINES_CHANNEL } from "./engines/protocol.js";
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -70,6 +72,23 @@ describe("startAll refuses a bus it did not start", () => {
     await expect(startAll(configPath, config)).rejects.toBeInstanceOf(ForeignBusError);
     // The record is left untouched; we refused rather than adopting the foreign bus.
     expect(JSON.parse(readFileSync(servicesPath, "utf8")).bus.instance_id).toBe("our-newer-instance");
+  });
+});
+
+describe("ensureBridge (connect-first)", () => {
+  it("uses a Bridge whose engine control already answers and starts nothing", async () => {
+    const { configPath, config } = environment("http://127.0.0.1:9");
+    const home = floeHome(configPath, config);
+    const server = await serveChannel(ENGINES_CHANNEL, {
+      version: "test", state: () => ({}), attach() {}, detach() {}, handle: async () => ({}),
+    }, { home });
+    try {
+      // No Bus answers at this URL, so any attempt to start a Bridge would fail loudly.
+      await expect(ensureBridge(configPath, config)).resolves.toBeUndefined();
+      expect(existsSync(join(config.home, "services.json"))).toBe(false);
+    } finally {
+      await server.close();
+    }
   });
 });
 

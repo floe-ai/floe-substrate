@@ -203,9 +203,13 @@ export async function ensureSubstrateForClient(configPath: string, config: Local
   const reachable = await isHealthy(config.bus.http_base_url);
   const plan = planSubstrateStart(reachable, config.services.start_on_demand);
   if (plan === "start") await startAll(configPath, config);
-  // The identity agent is a service of its own: a bus that is already serving
-  // does not mean an agent is. It shares the Floe home, so any copy may start it.
-  if (plan === "connect" && config.services.start_on_demand) await ensureIdentityAgent(configPath, config);
+  // The identity agent and the Bridge are services of their own: a bus that is
+  // already serving does not mean they are. Both share the Floe home. Only a Bus
+  // this home started gets a Bridge from here; a foreign Bus is left alone.
+  if (plan === "connect" && config.services.start_on_demand) {
+    await ensureIdentityAgent(configPath, config);
+    if ((await classifyRunningBus(configPath, config)).state === "mine") await ensureBridge(configPath, config);
+  }
   return plan;
 }
 
@@ -274,16 +278,22 @@ export async function startAll(configPath: string, config: LocalConfig): Promise
     }
   }
 
-  // The Bridge authenticates to the Bus as a transport peer. Its ephemeral
-  // service credential is minted by the Bus and obtained through the native
-  // broker on the same trust path as the host-control token, then handed to the
-  // Bridge process environment only — never set by the operator, never on disk.
-  const bridgeServiceToken = await fetchBridgeServiceToken("bridge:local", busUrl);
-  const bridge = await startService(configPath, config, "bridge", { FLOE_BRIDGE_SERVICE_TOKEN: bridgeServiceToken });
   await ensureIdentityAgent(configPath, config);
-  // Launching is not starting: a bridge that died on its first line must not
-  // be reported as a started Floe. It is started once its engine control answers.
+  await ensureBridge(configPath, config);
+}
+
+/**
+ * Connect-first for the Bridge: if its engine control answers for this Floe
+ * home, use it. Otherwise start it with a fresh service credential, obtained
+ * through the native broker and handed over in its environment only, and wait
+ * until its engine control answers. Launching is not starting: a Bridge that
+ * died on its first line must not be reported as started.
+ */
+export async function ensureBridge(configPath: string, config: LocalConfig): Promise<void> {
   const home = floeHome(configPath, config);
+  if (await probeChannel(ENGINES_CHANNEL, home)) return;
+  const bridgeServiceToken = await fetchBridgeServiceToken("bridge:local", config.bus.http_base_url);
+  const bridge = await startService(configPath, config, "bridge", { FLOE_BRIDGE_SERVICE_TOKEN: bridgeServiceToken });
   await waitUntilAnswering("Floe's bridge", bridge, () => probeChannel(ENGINES_CHANNEL, home));
 }
 
