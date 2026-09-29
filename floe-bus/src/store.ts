@@ -265,6 +265,7 @@ import {
   NO_RUNTIME_PROFILE_REVISION,
   registerRuntimeProfileOperations,
 } from "./runtime-profile-operations.js";
+import { setupActorOperation } from "./actor-setup-operation.js";
 import {
   registerConnectorOperations,
   resolveConnectorOperationResource,
@@ -1118,6 +1119,8 @@ export class BusStore {
       cancel: input => this.cancelRuntimeDelivery(input, (type, payload = {}) => this.broadcastFn?.(type, payload)),
     }));
     operationRegistry = registerRuntimeProfileOperations(operationRegistry, this.runtimeProfileStore);
+    operationRegistry.register(setupActorOperation({ actors: this.actorDefinitionStore, runtimes: this.runtimeProfileStore,
+      grants: this.capabilityGrantStore, refs: this.secretRefStore }));
     const authDir = resolveLocalPath(configPath, config.home, "./auth");
     operationRegistry = registerCredentialOperations(operationRegistry, {
       secret_refs: this.secretRefStore,

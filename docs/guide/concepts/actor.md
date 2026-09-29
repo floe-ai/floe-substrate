@@ -17,6 +17,20 @@ Runtime embodiment is a separately replaceable binding to a RuntimeProfile. An
 ExecutionAttempt records the exact ActorDefinitionRevision and runtime binding
 it used, so later edits do not rewrite history.
 
+### Setting up an Actor in one step
+
+`actor.setup` creates an Actor, binds it to a runtime, gives it any further
+access (`grants`, each a subset of one of the caller's grants, as in
+`capability.grant.delegate`) and publishes it, all or nothing. If any part is
+refused, nothing is created and nothing is announced; the refusal is
+`actor_setup_refused`, naming the part (`step`: `create`, `bind_runtime`,
+`delegate_access` or `publish`) and the part's own refusal (`cause_code`).
+Publishing is the last part, so the Actor can receive work the moment the call
+completes. It needs no permission of its own: the caller must hold
+`actor.create`, `actor.runtime-binding.create` and `actor.definition.publish`,
+plus `capability.grant.delegate` when giving grants. The individual operations
+remain for changing one part of an existing Actor.
+
 ## Placement and participation
 
 A NodePlacement may reference an Actor and add placement-specific instructions
@@ -161,7 +175,8 @@ needs a `scope.paths` limit, which refuses every shell call.
 ### Default tool access
 
 The default Floe Actor of a new local Workspace holds all four engine tool
-operations with no targets and no folder limit. `actor.create` gives a new
+operations with no targets and no folder limit. `actor.create` (and
+`actor.setup`) gives a new
 Actor every engine tool its creator holds, as delegated copies with the
 creator's targets. The creator may narrow this with `engine_tool_operation_ids`
 (`[]` for none) but never widen it: asking for a tool the creator does not hold

@@ -173,7 +173,7 @@ const runtimeProfileHeadChangeSchema: JsonSchema = {
     changed_at: nonEmptyString,
   },
 };
-const actorRuntimeBindingSchema: JsonSchema = {
+export const actorRuntimeBindingSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
   required: [
@@ -327,7 +327,7 @@ function profileRevisionRef(revision: RuntimeProfileRevision) {
   };
 }
 
-function bindingRef(binding: ActorRuntimeBindingRecord) {
+export function bindingRef(binding: ActorRuntimeBindingRecord) {
   return {
     kind: "actor_runtime_binding",
     id: binding.actor_runtime_binding_id,
@@ -489,7 +489,7 @@ function bindingAvailability(store: RuntimeProfileStore, context: OperationEvalu
       };
 }
 
-function runtimeOperationRefusal(error: unknown): OperationRefusal {
+export function runtimeOperationRefusal(error: unknown): OperationRefusal {
   if (error instanceof RuntimeProfileConflictError || error instanceof ActorRuntimeBindingConflictError) {
     return refusal(
       "runtime_profile_revision_conflict",
@@ -963,7 +963,7 @@ export function getActorRuntimeBindingOperation(
   };
 }
 
-type BindActorInput = Readonly<{
+export type BindActorInput = Readonly<{
   runtime_profile_revision_id: string;
   endpoint_id?: string | null;
   status: ActorRuntimeBindingRecord["status"];
@@ -988,26 +988,7 @@ export function createActorRuntimeBindingOperation(
     result: { version: "1", schema: bindingOnlySchema },
     availability: (context) => actorAvailability(store, context, true),
     handler: (context, input) => handle(() => {
-      const actor = workspaceActor(store, authorityWorkspaceId(context), context.target!.ref.id);
-      if (!actor) throw new RuntimeProfileValidationError("Actor is not available in this Workspace");
-      const actorRevision = actor.current_definition_revision_id ?? NO_ACTOR_DEFINITION_REVISION;
-      if (actorRevision !== context.expected_resource_revision) {
-        throw new RuntimeProfileConflictError(actor.actor_id, context.expected_resource_revision, actorRevision);
-      }
-      const current = store.getCurrentActorBinding(actor.actor_id);
-      if (current) {
-        throw new ActorRuntimeBindingConflictError(actor.actor_id, null, current.actor_runtime_binding_id);
-      }
-      requireUsableRevision(store, authorityWorkspaceId(context), input.runtime_profile_revision_id);
-      const binding = store.bindActor({
-        actor_id: actor.actor_id,
-        runtime_profile_revision_id: input.runtime_profile_revision_id,
-        endpoint_id: input.endpoint_id ?? actor.actor_id,
-        status: input.status,
-        unresolved_reasons: input.unresolved_reasons ?? [],
-        expected_current_binding_id: null,
-        created_by_principal_id: context.authority.principal_id,
-      });
+      const binding = bindUnboundActor(store, context, context.target!.ref.id, context.expected_resource_revision, input);
       return {
         state: "completed" as const,
         result: { binding },
@@ -1016,6 +997,39 @@ export function createActorRuntimeBindingOperation(
       };
     }),
   };
+}
+
+/**
+ * Bind an Actor that has no binding yet. Synchronous, so a caller can hold it
+ * inside a larger savepoint; throws the errors runtimeOperationRefusal names.
+ */
+export function bindUnboundActor(
+  store: RuntimeProfileStore,
+  context: OperationExecutionContext,
+  actorId: string,
+  expectedActorRevision: string | null,
+  input: BindActorInput,
+): ActorRuntimeBindingRecord {
+  const actor = workspaceActor(store, authorityWorkspaceId(context), actorId);
+  if (!actor) throw new RuntimeProfileValidationError("Actor is not available in this Workspace");
+  const actorRevision = actor.current_definition_revision_id ?? NO_ACTOR_DEFINITION_REVISION;
+  if (actorRevision !== expectedActorRevision) {
+    throw new RuntimeProfileConflictError(actor.actor_id, expectedActorRevision, actorRevision);
+  }
+  const current = store.getCurrentActorBinding(actor.actor_id);
+  if (current) {
+    throw new ActorRuntimeBindingConflictError(actor.actor_id, null, current.actor_runtime_binding_id);
+  }
+  requireUsableRevision(store, authorityWorkspaceId(context), input.runtime_profile_revision_id);
+  return store.bindActor({
+    actor_id: actor.actor_id,
+    runtime_profile_revision_id: input.runtime_profile_revision_id,
+    endpoint_id: input.endpoint_id ?? actor.actor_id,
+    status: input.status,
+    unresolved_reasons: input.unresolved_reasons ?? [],
+    expected_current_binding_id: null,
+    created_by_principal_id: context.authority.principal_id,
+  });
 }
 
 export function replaceActorRuntimeBindingOperation(
