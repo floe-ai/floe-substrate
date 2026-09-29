@@ -774,7 +774,7 @@ describe("authenticated Bus transport boundary", () => {
     expect(caughtUp.payload.connected_bridge_ids).toEqual(["bridge:present"]);
 
     // R3: a Workspace bound while the Bridge is already connected is told at once.
-    const added = handle.store.registerWorkspace({ locator: "C:\\FloeTest\\TransportThree", init_authorized: true }, handle.broadcast);
+    const added = handle.store.registerWorkspace({ locator: join(tmpdir(), "floe-transport-three"), init_authorized: true }, handle.broadcast);
     const told = await waitFor(host.messages, message => message.type === "bridge_connected"
       && message.payload?.workspace_id === added.workspace_id);
     expect(told.payload).toEqual({ bridge_id: "bridge:present", workspace_id: added.workspace_id });
