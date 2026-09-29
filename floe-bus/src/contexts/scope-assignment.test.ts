@@ -5,15 +5,20 @@ import { join } from "node:path";
 import YAML from "yaml";
 import { defaultConfig, type LocalConfig } from "../config.js";
 import { createBusServer } from "../server.js";
+import { openAuthenticatedPushStream } from "../event-probe.test-helper.js";
 
 type ServerHandle = Awaited<ReturnType<typeof createBusServer>>;
+const HOST_TOKEN = `scope-assignment-host-${"h".repeat(40)}`;
 
 async function makeServer(): Promise<{ handle: ServerHandle; tmp: string }> {
   const tmp = mkdtempSync(join(tmpdir(), "floe-bus-context-scope-assignment-"));
   const cfgPath = join(tmp, "config.yaml");
   const cfg: LocalConfig = defaultConfig(tmp);
   writeFileSync(cfgPath, YAML.stringify(cfg), "utf8");
-  const handle = await createBusServer(cfgPath, cfg, { unsafe_in_process_test_auth_bypass: true });
+  const handle = await createBusServer(cfgPath, cfg, {
+    unsafe_in_process_test_auth_bypass: true,
+    host_control_token: HOST_TOKEN,
+  });
   await handle.app.ready();
   return { handle, tmp };
 }
@@ -99,16 +104,6 @@ async function assignScope(handle: ServerHandle, input: {
       ...(input.reason ? { reason: input.reason } : {})
     }
   });
-}
-
-async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 2_000): Promise<T> {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    const result = await fn();
-    if (result) return result;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new Error("Timed out waiting for condition");
 }
 
 describe("Context Scope assignment", () => {
@@ -275,6 +270,11 @@ describe("Context Scope assignment", () => {
     });
     expect(assigned.statusCode).toBe(200);
 
+    const address = await handle.app.listen({ host: "127.0.0.1", port: 0 });
+    const pushes = await openAuthenticatedPushStream(
+      address.replace(/^http/, "ws") + "/v1/events/stream",
+      { bearer_token: HOST_TOKEN, start_at: "current" },
+    );
     const pulseId = `pulse-assigned-context-${Date.now()}`;
     const pulse = await handle.app.inject({
       method: "POST",
@@ -294,14 +294,17 @@ describe("Context Scope assignment", () => {
     });
     expect(pulse.statusCode).toBe(201);
 
-    const pulseEvent = await waitFor(async () => {
-      const res = await handle.app.inject({
-        method: "GET",
-        url: `/v1/contexts/${encodeURIComponent(unscoped.context_id)}/events?limit=20`
-      });
-      const events = res.json().events as any[];
-      return events.find((event) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId) ?? null;
+    await pushes.events.next(
+      (frame) => frame.type === "pulse_fired" && frame.payload?.pulse_id === pulseId,
+      `pulse ${pulseId} firing`,
+    );
+    const eventsResponse = await handle.app.inject({
+      method: "GET",
+      url: `/v1/contexts/${encodeURIComponent(unscoped.context_id)}/events?limit=20`
     });
+    const pulseEvent = (eventsResponse.json().events as any[])
+      .find((event) => event.type === "pulse.fired" && event.metadata?.pulse_id === pulseId);
+    pushes.socket.close();
 
     expect(pulseEvent).toMatchObject({
       context_id: unscoped.context_id,

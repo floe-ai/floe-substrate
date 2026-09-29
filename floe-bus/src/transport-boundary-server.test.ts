@@ -8,6 +8,7 @@ import { defaultConfig, type LocalConfig } from "./config.js";
 import { createBusServer } from "./server.js";
 import { emitViaRoute } from "./test-support/emit-via-route.js";
 import { registerExecutableActorFixture } from "./executable-actor-test-fixture.js";
+import { EventProbe } from "./event-probe.test-helper.js";
 import { BusClient } from "../../floe-bridge/src/bus-client.js";
 import {
   encodeTransportPushCursor,
@@ -24,6 +25,7 @@ type WsClient = {
   on(event: string, listener: (...args: any[]) => void): void;
   send(data: string): void;
 };
+const socketEvents = new WeakMap<any[], EventProbe<any>>();
 
 describe("authenticated Bus transport boundary", () => {
   const cleanups: Array<() => Promise<void>> = [];
@@ -807,7 +809,13 @@ async function openSocket(url: string): Promise<{ socket: WsClient; messages: an
   const WebSocketConstructor = (wsModule as any).WebSocket ?? (wsModule as any).default;
   const socket = new WebSocketConstructor(url) as WsClient;
   const messages: any[] = [];
-  socket.on("message", (data: any) => messages.push(JSON.parse(data.toString())));
+  const events = new EventProbe<any>();
+  socketEvents.set(messages, events);
+  socket.on("message", (data: any) => {
+    const message = JSON.parse(data.toString());
+    messages.push(message);
+    events.push(message);
+  });
   await new Promise<void>((resolve, reject) => {
     socket.on("open", resolve);
     socket.on("error", reject);
@@ -820,13 +828,13 @@ async function waitFor(
   predicate: (message: any) => boolean,
   timeoutMs = 2_000,
 ): Promise<any> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const found = messages.find(predicate);
-    if (found) return found;
-    await delay(10);
+  const events = socketEvents.get(messages);
+  if (!events) throw new Error("No event probe owns this stream capture.");
+  try {
+    return await events.next(predicate, "matching stream frame", timeoutMs);
+  } catch {
+    throw new Error(`Timed out waiting for stream frame. Received: ${JSON.stringify(messages)}`);
   }
-  throw new Error(`Timed out waiting for stream frame. Received: ${JSON.stringify(messages)}`);
 }
 
 function socketClose(socket: WsClient): Promise<number> {

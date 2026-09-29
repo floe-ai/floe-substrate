@@ -13,9 +13,10 @@ import type {
 import { CommandRuntimeHostError } from "./isolated-command-host.js";
 import type { ScopeCompositionContent } from "./scope-compositions.js";
 import { registerExecutableActorFixture } from "./executable-actor-test-fixture.js";
+import { EventProbe } from "./event-probe.test-helper.js";
 import { BusStore, ScopeOutputAuthorityError } from "./store.js";
 
-const broadcast = () => {};
+type BusEvent = { type: string; payload: Record<string, unknown> };
 
 class PlannedCommandHost implements CommandRuntimeHost {
   readonly invocations: CommandHostInvocation[] = [];
@@ -44,6 +45,8 @@ type Fixture = {
   commandId: string;
   definitionId: string;
   actorEndpoint: string;
+  events: EventProbe<BusEvent>;
+  broadcast: (type: string, payload?: Record<string, unknown>) => void;
 };
 
 const cleanups: Array<() => void> = [];
@@ -143,6 +146,10 @@ function makeFixture(host: CommandRuntimeHost, commandDefinition = definition())
   const tmp = mkdtempSync(join(tmpdir(), "floe-command-native-"));
   const configPath = join(tmp, "config.yaml");
   const store = new BusStore(configPath, defaultConfig(tmp), { command_runtime_host: host });
+  const events = new EventProbe<BusEvent>();
+  const broadcast = (type: string, payload: Record<string, unknown> = {}) => {
+    events.push({ type, payload });
+  };
   const locator = join(tmp, "workspace");
   mkdirSync(locator, { recursive: true });
   const workspace = store.registerWorkspace({ locator, name: "Command tests", init_authorized: true }, broadcast);
@@ -195,17 +202,13 @@ function makeFixture(host: CommandRuntimeHost, commandDefinition = definition())
     commandId: created.command.command_id,
     definitionId: published.command_definition_revision_id,
     actorEndpoint,
+    events,
+    broadcast,
   };
 }
 
-async function eventually(assertion: () => void, timeout = 3_000): Promise<void> {
-  const start = Date.now();
-  let last: unknown;
-  while (Date.now() - start < timeout) {
-    try { assertion(); return; } catch (error) { last = error; }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw last;
+function nextCommandEvent(fixture: Fixture, type: string): Promise<BusEvent> {
+  return fixture.events.next((event) => event.type === type, type);
 }
 
 function start(fixture: Fixture, idempotencyKey: string) {
@@ -216,7 +219,7 @@ function start(fixture: Fixture, idempotencyKey: string) {
     output_port_id: "ingress:out",
     content: { work: idempotencyKey },
     idempotency_key: idempotencyKey,
-  }, broadcast);
+  }, fixture.broadcast);
 }
 
 describe("native canonical Command execution", () => {
@@ -228,13 +231,11 @@ describe("native canonical Command execution", () => {
     const fixture = makeFixture(host);
     const started = start(fixture, "work-1");
 
-    await eventually(() => expect(host.invocations).toHaveLength(1));
+    await nextCommandEvent(fixture, "command_execution_started");
+    expect(host.invocations).toHaveLength(1);
     const commandNode = fixture.store.getScopeExecutionProjection(started.execution.execution_id)!
       .node_executions.find((node) => node.node_id === "command")!;
-    await eventually(() => {
-      const observed = fixture.store.scopeExecutionStore.listAttempts(commandNode.node_execution_id)[0];
-      if (observed?.status !== "completed") throw new Error(JSON.stringify(observed));
-    });
+    await nextCommandEvent(fixture, "command_execution_completed");
     const attempt = fixture.store.scopeExecutionStore.listAttempts(commandNode.node_execution_id)[0]!;
     const worker = fixture.store.commandWorkerBindingStore.require(commandNode.command_worker_binding_id!);
 
@@ -267,11 +268,12 @@ describe("native canonical Command execution", () => {
     ]);
     const fixture = makeFixture(host);
     const started = start(fixture, "retry-work");
-    await eventually(() => expect(host.invocations).toHaveLength(1));
+    await nextCommandEvent(fixture, "command_execution_started");
+    expect(host.invocations).toHaveLength(1);
     const commandNode = fixture.store.getScopeExecutionProjection(started.execution.execution_id)!
       .node_executions.find((node) => node.node_id === "command")!;
-    await eventually(() => expect(fixture.store.scopeExecutionStore.getNodeExecution(commandNode.node_execution_id)?.status)
-      .toBe("failed"));
+    await nextCommandEvent(fixture, "command_execution_failed");
+    expect(fixture.store.scopeExecutionStore.getNodeExecution(commandNode.node_execution_id)?.status).toBe("failed");
 
     const draftV2 = fixture.store.commandDefinitionStore.createDraft({
       command_id: fixture.commandId,
@@ -292,11 +294,13 @@ describe("native canonical Command execution", () => {
     fixture.store.retryScopeNodeExecution({
       workspace_id: fixture.workspaceId,
       node_execution_id: commandNode.node_execution_id,
-    }, broadcast);
+    }, fixture.broadcast);
 
-    await eventually(() => expect(host.invocations).toHaveLength(2));
-    await eventually(() => expect(fixture.store.scopeExecutionStore.listAttempts(commandNode.node_execution_id)[1])
-      .toMatchObject({ status: "completed", error: {} }));
+    await nextCommandEvent(fixture, "command_execution_started");
+    expect(host.invocations).toHaveLength(2);
+    await nextCommandEvent(fixture, "command_execution_completed");
+    expect(fixture.store.scopeExecutionStore.listAttempts(commandNode.node_execution_id)[1])
+      .toMatchObject({ status: "completed", error: {} });
     const attempts = fixture.store.scopeExecutionStore.listAttempts(commandNode.node_execution_id);
     expect(attempts.map((attempt) => attempt.command_definition_revision_id))
       .toEqual([fixture.definitionId, fixture.definitionId]);
@@ -309,7 +313,8 @@ describe("native canonical Command execution", () => {
     const host = new PlannedCommandHost(["pending"]);
     const fixture = makeFixture(host);
     const started = start(fixture, "authority-work");
-    await eventually(() => expect(host.invocations).toHaveLength(1));
+    await nextCommandEvent(fixture, "command_execution_started");
+    expect(host.invocations).toHaveLength(1);
     const commandNode = fixture.store.getScopeExecutionProjection(started.execution.execution_id)!
       .node_executions.find((node) => node.node_id === "command")!;
     const worker = fixture.store.commandWorkerBindingStore.require(commandNode.command_worker_binding_id!);
@@ -322,12 +327,12 @@ describe("native canonical Command execution", () => {
         content: { ok: true },
         idempotency_key: `false-publisher:${falsePrincipal}`,
         lifecycle_outcome: "completed",
-      }, broadcast)).toThrow(ScopeOutputAuthorityError);
+      }, fixture.broadcast)).toThrow(ScopeOutputAuthorityError);
     }
     const stopped = fixture.store.stopScopeExecution({
       workspace_id: fixture.workspaceId,
       execution_id: started.execution.execution_id,
-    }, broadcast);
+    }, fixture.broadcast);
     expect(stopped.uncertain_external_effects).toEqual([]);
     expect(host.cancelled).toEqual([host.invocations[0]!.contract.execution_attempt.attempt_id]);
     expect(fixture.store.scopeExecutionStore.listAttempts(commandNode.node_execution_id)[0]?.status).toBe("cancelled");
@@ -336,7 +341,7 @@ describe("native canonical Command execution", () => {
   it("fails publication when the Command Ports do not match its typed contract", () => {
     const host = new PlannedCommandHost([]);
     const fixture = makeFixture(host);
-    fixture.store.createScope({ workspace_id: fixture.workspaceId, scope_id: "invalid-command", title: "Invalid" }, broadcast);
+    fixture.store.createScope({ workspace_id: fixture.workspaceId, scope_id: "invalid-command", title: "Invalid" }, fixture.broadcast);
     const contextId = fixture.store.contextStore.createContext({
       workspace_id: fixture.workspaceId,
       scope_id: "invalid-command",
@@ -352,11 +357,11 @@ describe("native canonical Command execution", () => {
       workspace_id: fixture.workspaceId,
       scope_id: "invalid-command",
       content: bad,
-    }, broadcast);
+    }, fixture.broadcast);
     expect(() => fixture.store.publishScopeComposition({
       revision_id: draft.revision_id,
       expected_published_revision_id: null,
-    }, broadcast)).toThrow(/Ports must exactly match/);
+    }, fixture.broadcast)).toThrow(/Ports must exactly match/);
   });
 
   it("records timeout as a failed attempt for a Command with no external effects", async () => {
@@ -367,8 +372,8 @@ describe("native canonical Command execution", () => {
     const started = start(fixture, "timeout-work");
     const commandNode = fixture.store.getScopeExecutionProjection(started.execution.execution_id)!
       .node_executions.find((node) => node.node_id === "command")!;
-    await eventually(() => expect(fixture.store.scopeExecutionStore.listAttempts(commandNode.node_execution_id)[0]?.status)
-      .toBe("failed"));
+    await nextCommandEvent(fixture, "command_execution_failed");
+    expect(fixture.store.scopeExecutionStore.listAttempts(commandNode.node_execution_id)[0]?.status).toBe("failed");
     expect(fixture.store.scopeExecutionStore.listAttempts(commandNode.node_execution_id)[0]?.error)
       .toMatchObject({ code: "command_timeout", safe_to_retry_automatically: true });
   });
@@ -377,7 +382,8 @@ describe("native canonical Command execution", () => {
     const interruptedHost = new PlannedCommandHost(["pending"]);
     const fixture = makeFixture(interruptedHost);
     const started = start(fixture, "restart-work");
-    await eventually(() => expect(interruptedHost.invocations).toHaveLength(1));
+    await nextCommandEvent(fixture, "command_execution_started");
+    expect(interruptedHost.invocations).toHaveLength(1);
     const commandNode = fixture.store.getScopeExecutionProjection(started.execution.execution_id)!
       .node_executions.find((node) => node.node_id === "command")!;
     const interrupted = fixture.store.scopeExecutionStore.listAttempts(commandNode.node_execution_id)[0]!;
@@ -391,11 +397,12 @@ describe("native canonical Command execution", () => {
       command_runtime_host: recoveredHost,
     });
     cleanups.push(() => reopened.close());
-    reopened.setBroadcast(broadcast);
+    reopened.setBroadcast(fixture.broadcast);
 
-    await eventually(() => expect(recoveredHost.invocations).toHaveLength(1));
-    await eventually(() => expect(reopened.scopeExecutionStore.listAttempts(commandNode.node_execution_id)[1]?.status)
-      .toBe("completed"));
+    await nextCommandEvent(fixture, "command_execution_started");
+    expect(recoveredHost.invocations).toHaveLength(1);
+    await nextCommandEvent(fixture, "command_execution_completed");
+    expect(reopened.scopeExecutionStore.listAttempts(commandNode.node_execution_id)[1]?.status).toBe("completed");
     const attempts = reopened.scopeExecutionStore.listAttempts(commandNode.node_execution_id);
     expect(attempts.map((attempt) => attempt.status)).toEqual(["failed", "completed"]);
     expect(attempts.map((attempt) => attempt.command_definition_revision_id))
@@ -408,7 +415,8 @@ describe("native canonical Command execution", () => {
     const interruptedHost = new PlannedCommandHost(["pending"]);
     const fixture = makeFixture(interruptedHost, definition("External send", { external: true }));
     const started = start(fixture, "external-restart-work");
-    await eventually(() => expect(interruptedHost.invocations).toHaveLength(1));
+    await nextCommandEvent(fixture, "command_execution_started");
+    expect(interruptedHost.invocations).toHaveLength(1);
     const commandNode = fixture.store.getScopeExecutionProjection(started.execution.execution_id)!
       .node_executions.find((node) => node.node_id === "command")!;
     fixture.store.close();
@@ -418,10 +426,10 @@ describe("native canonical Command execution", () => {
       command_runtime_host: recoveredHost,
     });
     cleanups.push(() => reopened.close());
-    reopened.setBroadcast(broadcast);
+    reopened.setBroadcast(fixture.broadcast);
 
-    await eventually(() => expect(reopened.scopeExecutionStore.listAttempts(commandNode.node_execution_id)[0]?.status)
-      .toBe("outcome_unknown"));
+    await nextCommandEvent(fixture, "command_execution_failed");
+    expect(reopened.scopeExecutionStore.listAttempts(commandNode.node_execution_id)[0]?.status).toBe("outcome_unknown");
     expect(recoveredHost.invocations).toEqual([]);
     expect(reopened.scopeExecutionStore.listAttempts(commandNode.node_execution_id)).toHaveLength(1);
   });
