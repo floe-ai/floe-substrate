@@ -232,6 +232,124 @@ describe("FloeRuntimeAdapter SDK route", () => {
     await expect(work).rejects.toThrow(/\[interrupted\]/);
   });
 
+  it("does not confirm quiescence until the cancelled delivery has fully settled", async () => {
+    let finishTool!: () => void;
+    let toolFinished = false;
+    const runtime = new FakeRuntime();
+    runtime.run = vi.fn(async (...args: any[]) => {
+      await args[3]?.("sdk-session");
+      runtime.emit("activity", {
+        id: "shell-call",
+        kind: "tool",
+        status: "started",
+        title: "shell",
+        startedAt: Date.now(),
+      });
+      await new Promise<void>((resolve) => { finishTool = resolve; });
+      toolFinished = true;
+      runtime.emit("activity", {
+        id: "shell-call",
+        kind: "tool",
+        status: "completed",
+        title: "shell",
+        endedAt: Date.now(),
+      });
+      throw Object.assign(new Error("cancelled"), { code: "interrupted" });
+    }) as any;
+    const adapter = new FloeRuntimeAdapter({ runtimeFactory: () => runtime as any });
+    const work = adapter.handleBundle(context(), bundle(), undefined);
+    await vi.waitFor(() => expect(runtime.run).toHaveBeenCalled());
+
+    expect(adapter.cancelDelivery("delivery-1")).toBe(true);
+    let acknowledged = false;
+    const cancellation = adapter.waitForDeliveryCancellation("delivery-1").then((result) => {
+      acknowledged = true;
+      return result;
+    });
+    await runtime.quiesce.mock.results[0]!.value;
+    await Promise.resolve();
+
+    expect(acknowledged).toBe(false);
+    expect(toolFinished).toBe(false);
+
+    finishTool();
+    await expect(work).rejects.toThrow(/\[interrupted\]/);
+    await expect(cancellation).resolves.toMatchObject({
+      outcome: "quiesced",
+      evidence: {
+        timeline: {
+          adapter_cancel_requested_at: expect.any(String),
+          runtime_quiesced_at: expect.any(String),
+          delivery_settled_at: expect.any(String),
+          tool_activity: [{
+            call_id: "shell-call",
+            lifecycle: "completed",
+            started_at: expect.any(String),
+            ended_at: expect.any(String),
+          }],
+        },
+      },
+    });
+  });
+
+  it("force-retires a session when runtime idle arrives before its shell tool ends", async () => {
+    let reportIdle!: () => void;
+    let stopTool!: () => void;
+    let toolStopped = false;
+    const runtime = new FakeRuntime();
+    runtime.run = vi.fn(async (...args: any[]) => {
+      await args[3]?.("sdk-session");
+      runtime.emit("activity", {
+        id: "shell-call",
+        kind: "tool",
+        status: "started",
+        title: "shell",
+        startedAt: Date.now(),
+      });
+      await new Promise<void>((resolve) => { reportIdle = resolve; });
+      throw Object.assign(new Error("runtime reported idle"), { code: "interrupted" });
+    }) as any;
+    runtime.close.mockImplementation(async () => {
+      await new Promise<void>((resolve) => { stopTool = resolve; });
+      toolStopped = true;
+    });
+    const adapter = new FloeRuntimeAdapter({ runtimeFactory: () => runtime as any });
+    const work = adapter.handleBundle(context(), bundle(), undefined);
+    await vi.waitFor(() => expect(runtime.run).toHaveBeenCalled());
+
+    expect(adapter.cancelDelivery("delivery-1")).toBe(true);
+    reportIdle();
+    await expect(work).rejects.toThrow(/\[interrupted\]/);
+    await expect(adapter.waitForDeliveryCancellation("delivery-1")).resolves.toBeNull();
+
+    let retired = false;
+    const retirement = adapter.forceRetireDelivery("delivery-1").then((result) => {
+      retired = true;
+      return result;
+    });
+    await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledOnce());
+    expect(retired).toBe(false);
+    expect(toolStopped).toBe(false);
+
+    stopTool();
+    await expect(retirement).resolves.toMatchObject({
+      outcome: "session_retired",
+      evidence: {
+        timeline: {
+          adapter_cancel_requested_at: expect.any(String),
+          session_retired_at: expect.any(String),
+          delivery_settled_at: expect.any(String),
+          tool_activity: [{
+            call_id: "shell-call",
+            lifecycle: "started",
+            started_at: expect.any(String),
+          }],
+        },
+      },
+    });
+    expect(toolStopped).toBe(true);
+  });
+
   it("force-retires only the isolated session that owns an overdue delivery", async () => {
     let release!: () => void;
     const runtime = new FakeRuntime();
@@ -317,6 +435,8 @@ describe("FloeRuntimeAdapter SDK route", () => {
       is_error: false,
       result_type: "success",
       result_value: expect.stringContaining("event-1"),
+      started_at: expect.any(String),
+      ended_at: expect.any(String),
     }]);
     const toolEvidence = ctx.bus.appendRuntimeTelemetry.mock.calls
       .map(([entry]: any[]) => entry)
@@ -460,6 +580,7 @@ describe("direct substrate tools", () => {
         input_schema_version: "1",
         input: {},
       },
+      started_at: expect.any(String),
     });
     expect(recordToolActivity).toHaveBeenNthCalledWith(2, expect.objectContaining({
       name: "use_capability",
@@ -553,6 +674,7 @@ describe("direct substrate tools", () => {
         lifecycle: "started",
         provenance: "floe_direct_tool_callback",
         arguments: { type: "message", destination: "operator", text: "exact provenance" },
+        started_at: expect.any(String),
       },
       {
         name: "emit",
@@ -563,6 +685,8 @@ describe("direct substrate tools", () => {
         result_type: "success",
         result_value: expect.stringContaining("event-emit-1"),
         result_code: undefined,
+        started_at: expect.any(String),
+        ended_at: expect.any(String),
       },
     ]);
   });

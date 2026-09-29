@@ -76,8 +76,12 @@ type FloeTurn = {
   dependency_requested: boolean;
   finalized: boolean;
   cancelled: boolean;
+  requiresRetirement: boolean;
   cancellation: Promise<void> | null;
   cancellationFault: unknown;
+  cancellationRequestedAt: string | null;
+  runtimeQuiescedAt: string | null;
+  settledAt: string | null;
   settled: Promise<void>;
   settle: () => void;
 };
@@ -122,6 +126,8 @@ function recordToolActivity(turn: FloeTurn, entry: WorkLogToolEntry): void {
   if (entry.result_type !== undefined) existing.result_type = entry.result_type;
   if (entry.result_value !== undefined) existing.result_value = entry.result_value;
   if (entry.result_code !== undefined) existing.result_code = entry.result_code;
+  if (entry.started_at !== undefined) existing.started_at = entry.started_at;
+  if (entry.ended_at !== undefined) existing.ended_at = entry.ended_at;
 }
 
 export class FloeRuntimeAdapter implements RuntimeAdapter {
@@ -167,9 +173,14 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
 
   private beginCancellation(session: FloeSession, turn: FloeTurn): void {
     if (!session.sessionId || turn.cancellation) return;
-    turn.cancellation = session.runtime.quiesce(session.sessionId).catch(error => {
-      turn.cancellationFault = error;
-    });
+    turn.cancellationRequestedAt ??= new Date().toISOString();
+    turn.cancellation = session.runtime.quiesce(session.sessionId)
+      .then(() => {
+        turn.runtimeQuiescedAt = new Date().toISOString();
+      })
+      .catch(error => {
+        turn.cancellationFault = error;
+      });
   }
 
   private async throwIfCancelled(session: FloeSession, turn: FloeTurn): Promise<void> {
@@ -184,7 +195,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
 
   async handleBundle(context: RuntimeContext, bundle: DeliveryBundle, runtimeConfig?: AgentRuntimeConfig): Promise<void> {
     const session = this.getOrCreateSession(context, bundle);
-    if (session.activeTurn && !session.activeTurn.finalized) {
+    if (session.activeTurn && (!session.activeTurn.finalized || session.activeTurn.requiresRetirement)) {
       throw new Error(`Runtime turn already active for endpoint '${bundle.endpoint_id}'.`);
     }
 
@@ -330,6 +341,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       }
 
       this.writeWorkLog(context, bundle, turn, "completed");
+      turn.settledAt = new Date().toISOString();
       turn.settle();
     } catch (caught) {
       let error = caught;
@@ -376,9 +388,12 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       }
 
       turn.finalized = true;
+      turn.requiresRetirement = turn.cancelled
+        && turn.tool_activity.some((activity) => activity.lifecycle === "started");
       this.toolGate.abandonDelivery(turn.delivery_id);
-      if (session.activeTurn === turn) session.activeTurn = undefined;
+      if (session.activeTurn === turn && !turn.requiresRetirement) session.activeTurn = undefined;
       this.writeWorkLog(context, bundle, turn, "error");
+      turn.settledAt = new Date().toISOString();
       turn.settle();
 
       throw new TurnFailedError(
@@ -400,6 +415,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       const turn = session.activeTurn;
       if (!turn || turn.delivery_id !== deliveryId || turn.finalized) continue;
       turn.cancelled = true;
+      turn.cancellationRequestedAt ??= new Date().toISOString();
       this.toolGate.abandonDelivery(deliveryId);
       this.beginCancellation(session, turn);
       return true;
@@ -412,13 +428,23 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       const turn = session.activeTurn;
       if (!turn || turn.delivery_id !== deliveryId) continue;
       if (turn.cancellation) await turn.cancellation;
-      else await turn.settled;
+      await turn.settled;
       if (turn.cancellationFault) return null;
+      if (turn.tool_activity.some((activity) => activity.lifecycle === "started")) {
+        turn.requiresRetirement = true;
+        return null;
+      }
       return {
         outcome: "quiesced" as const,
         evidence: {
           runtime_turn_id: turn.runtime_turn_id,
           session_id: session.sessionId,
+          timeline: {
+            adapter_cancel_requested_at: turn.cancellationRequestedAt,
+            runtime_quiesced_at: turn.runtimeQuiescedAt,
+            delivery_settled_at: turn.settledAt,
+            tool_activity: turn.tool_activity,
+          },
         },
       };
     }
@@ -428,16 +454,24 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
   async forceRetireDelivery(deliveryId: string) {
     for (const [key, session] of this.sessions) {
       const turn = session.activeTurn;
-      if (!turn || turn.delivery_id !== deliveryId || turn.finalized) continue;
+      if (!turn || turn.delivery_id !== deliveryId || (turn.finalized && !turn.requiresRetirement)) continue;
       turn.cancelled = true;
+      turn.cancellationRequestedAt ??= new Date().toISOString();
       this.toolGate.abandonDelivery(deliveryId);
       await session.runtime.close();
+      await turn.settled;
       this.sessions.delete(key);
       return {
         outcome: "session_retired" as const,
         evidence: {
           runtime_turn_id: turn.runtime_turn_id,
           session_id: session.sessionId,
+          timeline: {
+            adapter_cancel_requested_at: turn.cancellationRequestedAt,
+            session_retired_at: new Date().toISOString(),
+            delivery_settled_at: turn.settledAt,
+            tool_activity: turn.tool_activity,
+          },
         },
       };
     }
@@ -533,6 +567,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
           name: event.title || event.kind,
           call_id: event.id,
           lifecycle: "started",
+          started_at: new Date(event.startedAt ?? Date.now()).toISOString(),
         });
       } else {
         recordToolActivity(turn, {
@@ -540,6 +575,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
           call_id: event.id,
           lifecycle: event.status === "failed" ? "failed" : "completed",
           is_error: event.status === "failed",
+          ended_at: new Date(event.endedAt ?? Date.now()).toISOString(),
         });
       }
     });
@@ -587,8 +623,12 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       dependency_requested: false,
       finalized: false,
       cancelled: false,
+      requiresRetirement: false,
       cancellation: null,
       cancellationFault: null,
+      cancellationRequestedAt: null,
+      runtimeQuiescedAt: null,
+      settledAt: null,
       settled,
       settle,
     };

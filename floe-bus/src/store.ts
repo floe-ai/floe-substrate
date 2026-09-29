@@ -2827,11 +2827,14 @@ export class BusStore {
     for (const deliveryId of result.active_delivery_ids) {
       const attempt = this.scopeExecutionStore.getAttemptForBundle(deliveryId);
       const busOwned = attempt?.runtime.host_kind === "isolated_command_host";
+      const cancelRequestedAt = new Date().toISOString();
       broadcast("delivery_cancel_requested", {
         workspace_id: input.workspace_id,
         scope_execution_id: input.execution_id,
         pause_id: result.pause_id,
         delivery_id: deliveryId,
+        pause_requested_at: result.requested_at,
+        cancel_requested_at: cancelRequestedAt,
         deadline_at: result.deadline_at,
         runtime_owner: busOwned ? "bus" : "bridge",
       });
@@ -2845,6 +2848,11 @@ export class BusStore {
             host_kind: attempt.runtime.host_kind,
             attempt_id: attempt.attempt_id,
             active_host_cancelled: cancelled,
+            timeline: {
+              pause_requested_at: result.requested_at,
+              cancel_requested_at: cancelRequestedAt,
+              runtime_quiesced_at: new Date().toISOString(),
+            },
           },
         });
       }
