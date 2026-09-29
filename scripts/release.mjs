@@ -18,6 +18,13 @@
  * from what you get by hand.
  *
  * Order of operations (each a gate — a failure aborts, nothing is published):
+ *   0. source: clone the commit being released (HEAD; with --publish it must be
+ *      on origin/main) into a temporary folder, refuse git dependencies whose
+ *      package.json pin and lockfile disagree, install with `npm ci`, and rerun
+ *      this script inside the clone. There it refuses unless the clone is
+ *      unmodified and every git-pinned dependency's installed files are exactly
+ *      its pinned commit (scripts/pinned-dependencies.mjs). Nothing below reads
+ *      this machine's working tree or node_modules;
  *   1. build every service package from source (a package whose dist did not
  *      build cannot ship);
  *   2. assemble the single package: bundle each service, generate package.json;
@@ -56,8 +63,10 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { pinnedDependencyProblems, pinProblems } from "./pinned-dependencies.mjs";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+const SOURCE_COMMIT_ENV = "FLOE_RELEASE_SOURCE_COMMIT";
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const isWindows = process.platform === "win32";
 
@@ -113,6 +122,61 @@ function runNpm(argv, cwd, opts = {}) {
   if (result.status !== 0) {
     throw new Error(`npm ${argv.join(" ")} failed (exit ${result.status ?? "signal"})`);
   }
+}
+
+// ── 0. source: one commit, cleanly installed ─────────────────────────────────
+
+function git(argv, cwd = repoRoot) {
+  return execFileSync("git", argv, { cwd, encoding: "utf8" }).trim();
+}
+
+function failWithProblems(heading, problems) {
+  fail(`${heading}\n  - ${problems.join("\n  - ")}`);
+}
+
+function releaseFromCleanClone() {
+  const commit = git(["rev-parse", "HEAD"]);
+  if (git(["status", "--porcelain"])) {
+    log("source", "this checkout has uncommitted changes; they are not part of the release, which is built from the commit alone");
+  }
+  if (doPublish) {
+    git(["fetch", "--quiet", "origin", "main"]);
+    const onMain = spawnSync("git", ["merge-base", "--is-ancestor", commit, "origin/main"], { cwd: repoRoot }).status === 0;
+    if (!onMain) fail(`commit ${commit} is not on origin/main. Merge it before publishing, so the release is a commit anyone can check out.`);
+  }
+  const workRoot = mkdtempSync(join(tmpdir(), "floe-release-source-"));
+  const source = join(workRoot, "floe");
+  log("source", `cloning commit ${commit} into ${source}`);
+  execFileSync("git", ["clone", "--quiet", "--no-hardlinks", "--no-checkout", repoRoot, source], { stdio: "inherit" });
+  execFileSync("git", ["checkout", "--quiet", "--detach", commit], { cwd: source, stdio: "inherit" });
+  const pins = pinProblems(source);
+  if (pins.length > 0) failWithProblems(`commit ${commit} pins git dependencies inconsistently:`, pins);
+  log("source", "installing exactly what package-lock.json records (npm ci)");
+  runNpm(["ci", "--no-audit", "--no-fund"], source);
+  const innerArgs = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === "--out") i += 1;
+    else innerArgs.push(args[i]);
+  }
+  const inner = spawnSync(process.execPath, [join(source, "scripts", "release.mjs"), ...innerArgs, "--out", outDir], {
+    cwd: source,
+    stdio: "inherit",
+    env: { ...process.env, [SOURCE_COMMIT_ENV]: commit },
+  });
+  if (inner.status === 0) rmSync(workRoot, { recursive: true, force: true });
+  else log("source", `the release failed; its clone is kept at ${source} for inspection`);
+  process.exit(inner.status ?? 1);
+}
+
+function requireCleanSource() {
+  const commit = process.env[SOURCE_COMMIT_ENV];
+  if (git(["rev-parse", "HEAD"]) !== commit || git(["status", "--porcelain"])) {
+    fail(`this run must be inside an unmodified clone of commit ${commit}. Run \`npm run release\` from a checkout; it makes the clone.`);
+  }
+  log("source", "checking every git-pinned dependency installed here against its pinned commit");
+  const problems = pinnedDependencyProblems(repoRoot);
+  if (problems.length > 0) failWithProblems("git-pinned dependencies do not match their pins, so this build would not be what was pinned:", problems);
+  log("source", "PASS — every git-pinned dependency is its pinned commit");
 }
 
 // ── 1. resolve version ───────────────────────────────────────────────────────
@@ -839,7 +903,7 @@ function publish(version) {
       cpSync(join(outDir, entry), join(clone, entry), { recursive: true });
     }
     execFileSync("git", ["add", "-A"], { cwd: clone, stdio: "inherit" });
-    execFileSync("git", ["commit", "-m", `Release floe ${version}`], { cwd: clone, stdio: "inherit" });
+    execFileSync("git", ["commit", "-m", `Release floe ${version}\n\nBuilt from floe-ai/floe-substrate commit ${process.env[SOURCE_COMMIT_ENV]}.`], { cwd: clone, stdio: "inherit" });
     execFileSync("git", ["tag", "-a", tag, "-m", `floe ${version}`], { cwd: clone, stdio: "inherit" });
     execFileSync("git", ["push", "origin", "HEAD", `refs/tags/${tag}`], { cwd: clone, stdio: "inherit" });
     log("publish", `pushed floe ${version} to ${distRepo}, tagged ${tag}`);
@@ -850,8 +914,16 @@ function publish(version) {
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
+// A release proves and ships one commit, never this machine's working tree or
+// node_modules: the outer run clones the commit, installs exactly what its
+// lockfile records, and reruns this script inside that clone.
+if (process.env[SOURCE_COMMIT_ENV]) {
+  requireCleanSource();
+} else {
+  releaseFromCleanClone();
+}
 const version = resolveVersion();
-log("start", `building floe ${version} (publish: ${doPublish ? "yes" : "no"})`);
+log("start", `building floe ${version} from commit ${process.env[SOURCE_COMMIT_ENV]} (publish: ${doPublish ? "yes" : "no"})`);
 if (doPublish) refuseExistingTag(version);
 buildServices();
 assemble(version);
