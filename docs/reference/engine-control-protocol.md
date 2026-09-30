@@ -42,6 +42,8 @@ await engines.refresh("copilot");                           // "Try again"
   interrupted), `already_serving`, `work_running` (the turns in progress; nothing
   was stopped) or `refused` (`not_running`, `would_downgrade`, `not_this_floe`,
   `unknown_version`). After `switched` this connection has closed; connect again.
+  To wait until no turn is running, follow `followSwitchReadiness` on the
+  `floe/identity` connection (see the identity agent protocol).
 - `engines.onClose(listener)` fires if the Bridge goes away. Reconnect with
   `connectEngines`.
 - A refusal rejects with `EnginesError`, whose `code` is in the table below.

@@ -115,6 +115,7 @@ const EXPECTED_AUTHORITY: Record<string, TransportRequirement["kind"]> = {
   ["GET /v1/local/operation-receipts/:receipt_id"]: "host_control",
   ["GET /v1/local/operations"]: "host_control",
   ["GET /v1/local/workspaces"]: "host_control",
+  ["GET /v1/local/running-turns"]: "host_control",
   ["GET /v1/runtime/status"]: "host_control",
   ["GET /v1/workspaces"]: "host_control",
   ["GET /v1/workspaces/:workspace_id/fs/agents"]: "host_control",

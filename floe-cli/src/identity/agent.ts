@@ -43,6 +43,17 @@ import {
 } from "./keys.js";
 import { BusIdentityClient, BusUnreachableError, type Workspace } from "./bus-identity.js";
 import { ChannelError } from "../local-channel/server.js";
+import type { RunningTurn } from "../version-switch.js";
+import type { RunningTurnsWatch, WatchRunningTurns } from "./running-turns-watch.js";
+
+/**
+ * Whether Floe can switch versions without interrupting anything, pushed to
+ * each surface that asked to follow it. `following: false` means the watch
+ * ended (for example Floe stopped); the surface asks again to resume.
+ */
+export type SwitchReadiness =
+  | { following: true; ready: boolean; running: RunningTurn[] }
+  | { following: false; reason: string };
 
 export type IdentitySummary = {
   npub: string;
@@ -82,6 +93,8 @@ export type AgentDeps = {
   forgetDeviceKey: () => Promise<boolean>;
   /** host_control from the native broker, for re-admission and revocation only. */
   hostToken: () => Promise<string>;
+  /** Follows executing turns host-wide by push; absent means switch readiness is unavailable. */
+  watchRunningTurns?: WatchRunningTurns;
   fetch?: typeof fetch;
   now?: () => number;
   setTimer?: (fn: () => void, ms: number) => Timer;
@@ -111,6 +124,9 @@ export class IdentityAgent {
   private secretKey: Uint8Array | null = null;
   private readonly connections = new Set<AgentConnection>();
   private readonly sessions = new Map<string, Session>();
+  private readonly readinessWatchers = new Set<AgentConnection>();
+  private runningWatch: RunningTurnsWatch | null = null;
+  private readiness: SwitchReadiness | null = null;
   private idleTimer: Timer | null = null;
   private queue: Promise<unknown> = Promise.resolve();
   private readonly bus: BusIdentityClient;
@@ -140,6 +156,7 @@ export class IdentityAgent {
 
   detach(conn: AgentConnection): void {
     this.connections.delete(conn);
+    this.unwatchSwitchReadiness(conn);
     for (const session of [...this.sessions.values()]) {
       if (session.conn === conn) this.endSession(session, "surface_disconnected", false);
     }
@@ -171,6 +188,8 @@ export class IdentityAgent {
       case "end_session": return this.endOwnSession(conn, args);
       case "sessions": return this.listSessions();
       case "revoke_session": return this.revokeSession(args);
+      case "watch_switch_readiness": return this.watchSwitchReadiness(conn);
+      case "unwatch_switch_readiness": this.unwatchSwitchReadiness(conn); return { following: false };
       default: throw new AgentError("unknown_op", `The identity agent has no operation '${op}'.`);
     }
   }
@@ -714,6 +733,47 @@ export class IdentityAgent {
   private broadcastState(): void {
     const state = this.state();
     for (const conn of this.connections) conn.send({ type: "state", state });
+  }
+
+  // ── switch readiness ───────────────────────────────────────────────────────
+
+  /**
+   * Follow, for this connection, whether a version switch would interrupt
+   * work. The current readiness is pushed as soon as it is known, then again
+   * on every change. One Bus watch serves every following connection and is
+   * closed when the last one stops following.
+   */
+  private watchSwitchReadiness(conn: AgentConnection): { following: true } {
+    const watch = this.deps.watchRunningTurns;
+    if (!watch) throw new AgentError("switch_readiness_unavailable", "This identity agent cannot follow running work.");
+    this.readinessWatchers.add(conn);
+    if (this.runningWatch) {
+      if (this.readiness) conn.send({ type: "switch_readiness", readiness: this.readiness });
+      return { following: true };
+    }
+    this.readiness = null;
+    this.runningWatch = watch({
+      running: (running) => this.pushReadiness({ following: true, ready: running.length === 0, running }),
+      ended: (reason) => {
+        this.runningWatch = null;
+        this.pushReadiness({ following: false, reason });
+        this.readinessWatchers.clear();
+        this.readiness = null;
+      },
+    });
+    return { following: true };
+  }
+
+  private unwatchSwitchReadiness(conn: AgentConnection): void {
+    if (!this.readinessWatchers.delete(conn) || this.readinessWatchers.size > 0) return;
+    this.runningWatch?.close();
+    this.runningWatch = null;
+    this.readiness = null;
+  }
+
+  private pushReadiness(readiness: SwitchReadiness): void {
+    this.readiness = readiness;
+    for (const conn of this.readinessWatchers) conn.send({ type: "switch_readiness", readiness });
   }
 
   private serial<T>(fn: () => Promise<T>): Promise<T> {

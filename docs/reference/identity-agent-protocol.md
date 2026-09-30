@@ -50,6 +50,14 @@ const session = await identity.session({}, (event) => {
   interrupted), `already_serving`, `work_running` (the turns in progress; nothing
   was stopped) or `refused` (`not_running`, `would_downgrade`, `not_this_floe`,
   `unknown_version`). After `switched` this connection has closed; connect again.
+- `identity.followSwitchReadiness(listener)` tells you, by push, whether a
+  switch would interrupt work: the listener gets
+  `{following: true, ready, running}` now and on every change, across every
+  workspace. Only turns actually executing count; a question waiting for an
+  answer does not. Wait for `ready: true`, then call `switchToThisVersion()`.
+  `{following: false, reason}` means following ended (for example Floe
+  stopped); call it again to resume. It resolves to a function that stops
+  following.
 - `identity.onClose(listener)` fires if the agent goes away (for example
   `floe stop`). Reconnect with `connectIdentity`.
 - Types ship with the package (`floe/identity` has `.d.ts`).
@@ -188,7 +196,15 @@ closes.
 - `{"type":"state","state":S}` whenever the identity changes. `S` is
   `{"kind":"none"}` or
   `{"kind":"locked"|"unlocked","npub","pubkey_hex","display_name","protection":"passphrase"|"device","secret_kind":"phrase"|"nsec"}`.
-- `{"type":"session","session_id":"…","status":…}` for each session you opened:
+- `{"type":"session","session_id":"…","status":…}` for each session you opened (table below).
+- `{"type":"switch_readiness","readiness":R}` after `watch_switch_readiness`,
+  with the current readiness and then on every change. `R` is
+  `{"following":true,"ready":bool,"running":[{workspace_id,endpoint_id,name}]}`
+  (`ready` when no turn is executing in any workspace) or
+  `{"following":false,"reason":"…"}` when following ended, for example because
+  Floe stopped. Send `watch_switch_readiness` again to resume.
+
+Session events:
 
 | `status` | Fields | Meaning |
 |---|---|---|
@@ -220,6 +236,8 @@ with `floe identity sessions --revoke`.
 | `end_session` | `session_id` | `{ended: true}` | `session_not_found` |
 | `sessions` | – | `{sessions: [{session_id, surface, status, workspace, started_at, expires_at}]}` | – |
 | `revoke_session` | `session_id` (any surface's) | `{revoked: true}` | `session_not_found` |
+| `watch_switch_readiness` | – | `{following: true}`; readiness follows as `switch_readiness` pushes | `switch_readiness_unavailable` |
+| `unwatch_switch_readiness` | – | `{following: false}` | – |
 | `list_identities` | `include_npub?` | `{identities: [{id, current, readable, display_name, created_at, set_aside_at, protection, has_recovery_phrase, npub?}]}`; `id` is `current` or `set-aside-<when>`; an unreadable file has null details and can still be deleted | – |
 | `delete_identity` | `id`, `confirm: true`; for `current` also `revoke_admissions` (boolean) and `passphrase` when passphrase protected | `{deleted, revoked_admissions: {revoked, workspaces} or null, device_key_removed}`; for `current`, now `none` | `identity_not_found`, `confirmation_required`, `revoke_choice_required`, `passphrase_required`, `wrong_passphrase`, `bus_unreachable` (nothing deleted) |
 

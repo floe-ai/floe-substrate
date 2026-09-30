@@ -110,18 +110,16 @@ export function runningTurns(options: { configPath?: string } = {}): Promise<Run
   return listRunningTurns(ensureConfig(options.configPath).config);
 }
 
-/** Endpoints mid-turn across every workspace, read as the host through the native broker. */
+/**
+ * Turns actually executing across every workspace, read as the host through the
+ * native broker. Work that is queued, delivered, or waiting on an answer
+ * executes nothing, so it is not listed.
+ */
 async function listRunningTurns(config: LocalConfig): Promise<RunningTurn[]> {
   const base = config.bus.http_base_url.replace(/\/$/, "");
   const token = await fetchHostControlToken(base);
-  const response = await fetch(`${base}/v1/endpoints`, { headers: { authorization: `Bearer ${token}` } });
+  const response = await fetch(`${base}/v1/local/running-turns`, { headers: { authorization: `Bearer ${token}` } });
   if (!response.ok) throw new Error(`Floe could not list the work in progress (HTTP ${response.status}), so it was not switched.`);
-  const body = (await response.json()) as { endpoints?: Array<Record<string, unknown>> };
-  return (body.endpoints ?? [])
-    .filter((endpoint) => endpoint.status === "active")
-    .map((endpoint) => ({
-      workspace_id: String(endpoint.workspace_id),
-      endpoint_id: String(endpoint.endpoint_id),
-      name: typeof endpoint.name === "string" ? endpoint.name : null,
-    }));
+  const body = (await response.json()) as { running?: RunningTurn[] };
+  return body.running ?? [];
 }

@@ -117,6 +117,8 @@ const ThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "
 const BRIDGE_LIVENESS_MS = 90_000;
 const MAX_WORKSPACE_MEDIA_BYTES = 20 * 1024 * 1024;
 const MAX_RUNTIME_CREDENTIAL_BYTES = 1024 * 1024;
+/** Host-wide push: the set of turns executing right now changed. */
+const RUNNING_TURNS_CHANGED = "running_turns_changed";
 const ConfirmedOperationInvocationSchema = z.object({
   interaction_session_id: z.string().min(1),
   invocation: OperationInvocationSchema.strict(),
@@ -399,6 +401,17 @@ export async function createBusServer(
   /** Maps bridge_id → the WS socket it opened; used for socket-presence liveness (D4). */
   const bridgeSockets = new Map<string, SocketLike>();
 
+  // Every state change reaches here as a push, so the set of executing turns is
+  // re-read after each one and announced host-wide only when it changed.
+  let announcedRunningTurns = JSON.stringify(store.listRunningTurns());
+  function announceRunningTurnsIfChanged(): void {
+    const running = store.listRunningTurns();
+    const signature = JSON.stringify(running);
+    if (signature === announcedRunningTurns) return;
+    announcedRunningTurns = signature;
+    broadcast(RUNNING_TURNS_CHANGED, { running });
+  }
+
   function sendPushEntry(entry: TransportPushEntry): void {
     const message = serializePushEntry(entry);
     for (const [socket, authority] of socketAuthorities) {
@@ -435,6 +448,7 @@ export async function createBusServer(
       payload,
     });
     sendPushEntry(entry);
+    if (type !== RUNNING_TURNS_CHANGED) announceRunningTurnsIfChanged();
     // A Workspace newly bound to a host whose Bridge is already connected learns
     // of that Bridge now, not at its next reconnect.
     if (type === "workspace_attachment_requested" && typeof payload.workspace_id === "string") {
@@ -1244,6 +1258,11 @@ export async function createBusServer(
   app.get("/v1/local/workspaces", async (request, reply) => {
     if (!requireLocalControl(request, reply)) return reply;
     return { workspaces: store.listWorkspaces() };
+  });
+
+  app.get("/v1/local/running-turns", async (request, reply) => {
+    if (!requireLocalControl(request, reply)) return reply;
+    return { running: store.listRunningTurns() };
   });
 
   app.post("/v1/local/credential-ingress-sessions", async (request, reply) => {
