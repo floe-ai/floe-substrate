@@ -1,6 +1,9 @@
 /**
  * @invariant A turn inspection is read-only and shows only names, states and
  * decisions: tool arguments, results and prose never cross it.
+ * @invariant Tool runs and Floe's decisions are listed separately. The engine
+ * gives a decision no id shared with the run it allowed, so they are never
+ * joined by guesswork.
  */
 import type { PolicyEvaluationRecord } from "./policies.js";
 import type { SemanticOperationDefinition } from "./operations.js";
@@ -9,15 +12,22 @@ export const INSPECT_RUNTIME_DELIVERY_OPERATION_ID = "runtime.delivery.inspect";
 
 export type RuntimeTurnTelemetry = Readonly<{ kind: string; payload: Record<string, unknown>; created_at: string }>;
 
+/** One tool call as the engine reported it running. */
 export type RuntimeTurnTool = {
   tool_call_id: string | null;
   name: string | null;
-  status: "started" | "completed" | "failed" | null;
+  status: "started" | "completed" | "failed";
   started_at: string | null;
   ended_at: string | null;
-  operation_id: string | null;
-  decision: PolicyEvaluationRecord["decision"] | null;
-  policy_evaluation_id: string | null;
+};
+
+/** One engine tool call Floe decided before it could run. */
+export type RuntimeTurnToolDecision = {
+  policy_evaluation_id: string;
+  native_tools: readonly string[];
+  operation_id: string;
+  decision: PolicyEvaluationRecord["decision"];
+  evaluated_at: string;
 };
 
 export type RuntimeTurnInspection = {
@@ -29,6 +39,7 @@ export type RuntimeTurnInspection = {
   model: string | null;
   models: string[];
   tools: RuntimeTurnTool[];
+  tool_decisions: RuntimeTurnToolDecision[];
 };
 
 export type RuntimeTurnFacts = Readonly<{
@@ -55,55 +66,46 @@ function turnModels(telemetry: readonly RuntimeTurnTelemetry[]): { model: string
   return { model, models };
 }
 
-/** Every tool call of a turn: its live start and end, joined with Floe's decision on it. */
-function turnTools(telemetry: readonly RuntimeTurnTelemetry[], evaluations: readonly PolicyEvaluationRecord[]): RuntimeTurnTool[] {
+/** Each tool call's live start and end, folded into one entry per call. */
+function turnTools(telemetry: readonly RuntimeTurnTelemetry[]): RuntimeTurnTool[] {
   const tools: RuntimeTurnTool[] = [];
   const byCall = new Map<string, RuntimeTurnTool>();
-  const entry = (toolCallId: string | null): RuntimeTurnTool => {
-    const existing = toolCallId ? byCall.get(toolCallId) : undefined;
-    if (existing) return existing;
-    const created: RuntimeTurnTool = { tool_call_id: toolCallId, name: null, status: null, started_at: null, ended_at: null,
-      operation_id: null, decision: null, policy_evaluation_id: null };
-    tools.push(created);
-    if (toolCallId) byCall.set(toolCallId, created);
-    return created;
-  };
   for (const record of telemetry) {
     if (record.kind !== "tool_activity") continue;
     const status = record.payload.status;
     if (status !== "started" && status !== "completed" && status !== "failed") continue;
-    const tool = entry(text(record.payload.tool_call_id));
+    const toolCallId = text(record.payload.tool_call_id);
+    let tool = toolCallId ? byCall.get(toolCallId) : undefined;
+    if (!tool) {
+      tool = { tool_call_id: toolCallId, name: null, status, started_at: null, ended_at: null };
+      tools.push(tool);
+      if (toolCallId) byCall.set(toolCallId, tool);
+    }
     tool.name = text(record.payload.name) ?? tool.name;
     tool.status = status;
     const at = text(record.payload.at) ?? record.created_at;
     if (status === "started") tool.started_at = at;
     else tool.ended_at = at;
   }
-  for (const evaluation of evaluations) {
-    const tool = entry(text(evaluation.facts?.tool?.tool_call_id));
-    tool.operation_id = evaluation.facts?.operation_id ?? null;
-    tool.decision = evaluation.decision;
-    tool.policy_evaluation_id = evaluation.evaluation_id;
-  }
   return tools;
 }
 
 export function inspectRuntimeTurn(facts: RuntimeTurnFacts): RuntimeTurnInspection {
-  return { ...facts.delivery, ...turnModels(facts.telemetry), tools: turnTools(facts.telemetry, facts.evaluations) };
+  return {
+    ...facts.delivery,
+    ...turnModels(facts.telemetry),
+    tools: turnTools(facts.telemetry),
+    tool_decisions: facts.evaluations.map((evaluation) => ({
+      policy_evaluation_id: evaluation.evaluation_id,
+      native_tools: evaluation.facts?.tool?.native_tools ?? [],
+      operation_id: evaluation.facts?.operation_id ?? "",
+      decision: evaluation.decision,
+      evaluated_at: evaluation.evaluated_at,
+    })),
+  };
 }
 
 const nullableText = { type: ["string", "null"] };
-const toolSchema = {
-  type: "object", additionalProperties: false,
-  required: ["tool_call_id", "name", "status", "started_at", "ended_at", "operation_id", "decision", "policy_evaluation_id"],
-  properties: {
-    tool_call_id: nullableText, name: nullableText,
-    status: nullableText,
-    started_at: nullableText, ended_at: nullableText, operation_id: nullableText,
-    decision: nullableText,
-    policy_evaluation_id: nullableText,
-  },
-};
 
 export function inspectRuntimeDeliveryOperation(backend: {
   inspect(workspaceId: string, deliveryId: string): RuntimeTurnInspection;
@@ -114,7 +116,7 @@ export function inspectRuntimeDeliveryOperation(backend: {
     authority_boundary_kinds: ["workspace"],
     category: "runtime",
     title: "Inspect response",
-    description: "Read one runtime response (turn): the model(s) it actually ran on, from the engine's usage records, and each tool it used, with its state and Floe's decision. Never shows tool arguments, results or prose.",
+    description: "Read one runtime response (turn): the model(s) it actually ran on, from the engine's usage records, each tool it ran with its state, and Floe's decision on each engine tool call. Never shows tool arguments, results or prose.",
     effects: { mode: "read", reversibility: "none", external: false, secret_access: "none" },
     required_grants: [INSPECT_RUNTIME_DELIVERY_OPERATION_ID],
     interaction_constraints: { allowed_modes: ["interactive", "unattended"] },
@@ -122,12 +124,27 @@ export function inspectRuntimeDeliveryOperation(backend: {
     input: { version: "1", schema: { type: "object", additionalProperties: false } },
     result: { version: "1", schema: {
       type: "object", additionalProperties: false,
-      required: ["delivery_id", "state", "endpoint_id", "context_id", "trigger_event_id", "model", "models", "tools"],
+      required: ["delivery_id", "state", "endpoint_id", "context_id", "trigger_event_id", "model", "models", "tools", "tool_decisions"],
       properties: {
         delivery_id: { type: "string" }, state: { type: "string" }, endpoint_id: { type: "string" },
         context_id: nullableText, trigger_event_id: { type: "string" }, model: nullableText,
         models: { type: "array", items: { type: "string" } },
-        tools: { type: "array", items: toolSchema },
+        tools: { type: "array", items: {
+          type: "object", additionalProperties: false,
+          required: ["tool_call_id", "name", "status", "started_at", "ended_at"],
+          properties: {
+            tool_call_id: nullableText, name: nullableText, status: { type: "string" },
+            started_at: nullableText, ended_at: nullableText,
+          },
+        } },
+        tool_decisions: { type: "array", items: {
+          type: "object", additionalProperties: false,
+          required: ["policy_evaluation_id", "native_tools", "operation_id", "decision", "evaluated_at"],
+          properties: {
+            policy_evaluation_id: { type: "string" }, native_tools: { type: "array", items: { type: "string" } },
+            operation_id: { type: "string" }, decision: { type: "string" }, evaluated_at: { type: "string" },
+          },
+        } },
       },
     } },
     availability: () => ({ available: true }),

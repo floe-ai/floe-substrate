@@ -73,9 +73,9 @@ describe("runtime.delivery.inspect", () => {
   const telemetry = (deliveryId: string, kind: string, payload: Record<string, unknown>) =>
     handle.store.appendRuntimeTelemetry({ workspace_id: WS, endpoint_id: ACTOR, delivery_id: deliveryId, kind, payload }, noop);
 
-  it("shows the model a turn ran on and each tool it used, with Floe's decision and no arguments", async () => {
+  it("shows the model a turn ran on, each tool it ran and Floe's decisions for that turn only, with no arguments", async () => {
     const deliveryId = await runningDelivery("check the repo");
-    const decision = handle.store.evaluateRuntimeToolCall({ bridge_id: BRIDGE, delivery_id: deliveryId, request: shell("call-1") }, noop);
+    const decision = handle.store.evaluateRuntimeToolCall({ bridge_id: BRIDGE, delivery_id: deliveryId, request: shell("tool-call_1") }, noop);
     telemetry(deliveryId, "tool_activity", { tool_call_id: "call-1", name: "powershell", status: "started", at: "2026-01-01T00:00:01.000Z" });
     telemetry(deliveryId, "tool_activity", { tool_call_id: "call-1", name: "powershell", status: "completed", at: "2026-01-01T00:00:02.000Z" });
     telemetry(deliveryId, "sdk_tool_evidence", { tool_calls: [{ call_id: "call-1", arguments: { command: "git status" } }] });
@@ -93,14 +93,18 @@ describe("runtime.delivery.inspect", () => {
     expect(inspected.tools).toEqual([{
       tool_call_id: "call-1", name: "powershell", status: "completed",
       started_at: "2026-01-01T00:00:01.000Z", ended_at: "2026-01-01T00:00:02.000Z",
-      operation_id: "engine.tool.process.execute", decision: decision.decision, policy_evaluation_id: decision.evaluation_id,
     }]);
+    expect(inspected.tool_decisions).toEqual([{
+      policy_evaluation_id: decision.evaluation_id, native_tools: ["powershell"],
+      operation_id: "engine.tool.process.execute", decision: decision.decision, evaluated_at: expect.any(String),
+    }]);
+    expect(handle.store.inspectRuntimeTurn(WS, other).tool_decisions).toHaveLength(1);
     expect(JSON.stringify(inspected)).not.toContain("git status");
   });
 
   it("shows no model and no tools for a turn that has not reported any", async () => {
     const deliveryId = await runningDelivery("hello");
-    expect(handle.store.inspectRuntimeTurn(WS, deliveryId)).toMatchObject({ model: null, models: [], tools: [] });
+    expect(handle.store.inspectRuntimeTurn(WS, deliveryId)).toMatchObject({ model: null, models: [], tools: [], tool_decisions: [] });
     expect(() => handle.store.inspectRuntimeTurn("workspace:other", deliveryId)).toThrow(/unavailable in this Workspace/);
   });
 

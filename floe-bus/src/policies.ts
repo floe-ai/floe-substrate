@@ -411,6 +411,10 @@ export function applyPolicySchema(db: DatabaseSync): void {
         ON policy_evaluations(boundary_kind, boundary_id, evaluated_at DESC, evaluation_id DESC);
     `);
   }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_policy_evaluations_target
+      ON policy_evaluations(workspace_id, json_extract(facts_json, '$.target.kind'), json_extract(facts_json, '$.target.id'));
+  `);
   const bindingColumns = new Set(
     (db.prepare("PRAGMA table_info(policy_bindings)").all() as Array<{ name: string }>).map((column) => column.name),
   );
@@ -903,21 +907,16 @@ export class PolicyStore {
     `).all(workspaceId, bounded) as PolicyEvaluationRow[]).map(mapEvaluation);
   }
 
-  /** The tool call decisions made for one runtime turn, oldest first. */
-  listToolEvaluationsForTurn(input: Readonly<{
-    workspace_id: string; cause_event_id: string; delivery_ids: readonly string[];
-  }>): PolicyEvaluationRecord[] {
-    if (input.delivery_ids.length === 0) return [];
+  /** The tool call decisions made inside one runtime turn, oldest first. */
+  listToolEvaluationsForTurn(input: Readonly<{ workspace_id: string; delivery_id: string }>): PolicyEvaluationRecord[] {
     return (this.db.prepare(`
       SELECT * FROM policy_evaluations
       WHERE workspace_id = ?
+        AND json_extract(facts_json, '$.target.kind') = 'runtime_delivery'
+        AND json_extract(facts_json, '$.target.id') = ?
         AND json_extract(facts_json, '$.tool') IS NOT NULL
-        AND json_extract(facts_json, '$.provenance.cause_event_id') = ?
-        AND EXISTS (SELECT 1 FROM json_each(facts_json, '$.provenance.delivery_ids')
-          WHERE value IN (SELECT value FROM json_each(?)))
       ORDER BY evaluated_at, evaluation_id LIMIT 500
-    `).all(input.workspace_id, input.cause_event_id, JSON.stringify(input.delivery_ids)) as PolicyEvaluationRow[])
-      .map(mapEvaluation);
+    `).all(input.workspace_id, input.delivery_id) as PolicyEvaluationRow[]).map(mapEvaluation);
   }
 
   private listApplicableBindings(facts: PolicyEvaluationFacts): PolicyBindingRecord[] {

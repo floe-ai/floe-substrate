@@ -53,11 +53,14 @@ A person can read a finished or running Turn afterwards with
 `runtime.delivery.inspect`, targeting its `runtime_delivery` (the
 `delivery_id` in the Turn's result Event). It returns `model`, the model the
 Turn actually ran on as the engine's own usage record names it (`null` until
-the engine reports usage), `models`, every model it called, and `tools`: each
-tool call with its name, status and times, joined by `tool_call_id` with
-Floe's decision on it (`operation_id`, `decision`, `policy_evaluation_id`).
-Read the full decision with `policy.evaluation.inspect`. The read never shows
-arguments, results or prose.
+the engine reports usage), `models`, every model it called, `tools`, each
+tool call it ran with its name, status and times, and `tool_decisions`, Floe's
+decision on each engine tool call in this Turn (`operation_id`, `decision`,
+`native_tools`, `policy_evaluation_id`). The two lists are not linked: the
+engine gives a decision no id shared with the tool run it allowed. Each
+decision names its exact Turn, so a paused attempt's decisions stay with that
+attempt. Read the full decision with `policy.evaluation.inspect`. The read
+never shows arguments, results or prose.
 
 Direct `request(actor, work)` remains non-graph delegation. Floe owns the exact
 return path and resumes the same NodeExecution, Context, and pinned revision

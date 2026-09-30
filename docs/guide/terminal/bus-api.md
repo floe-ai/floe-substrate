@@ -343,8 +343,8 @@ on the list route. A Delivery transports an Event and exact ArtefactVersion
 references; it does not replace NodeExecution.
 
 `runtime.delivery.inspect` reads one Turn by its `runtime_delivery` target:
-the model it ran on and each tool it used, with Floe's decision and no
-arguments. See [Delivery and Turn](../concepts/delivery-and-turn.md).
+the model it ran on, each tool it ran, and Floe's decisions on its tool calls,
+with no arguments. See [Delivery and Turn](../concepts/delivery-and-turn.md).
 
 ### Direct communication ingress (emit)
 

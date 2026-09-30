@@ -7113,7 +7113,8 @@ export class BusStore {
         scope_execution_id: delivery.scope_execution_id,
       },
       operation_id: operationId,
-      target: null,
+      // The tool call acts inside this one turn, as its approval action says.
+      target: { kind: TOOL_APPROVAL_TARGET_KIND, id: delivery.delivery_id },
       effects: toolOperationEffects(operationId),
       scope_id: scoped?.scope_execution.scope_id ?? null,
       actor_id: contract.actor.actor_id,
@@ -7438,8 +7439,7 @@ export class BusStore {
   /** One turn's model(s) and tool calls, read from its telemetry and tool decisions. */
   inspectRuntimeTurn(workspaceId: string, deliveryId: string): RuntimeTurnInspection {
     const row = this.db.prepare(`
-      SELECT d.delivery_id, d.workspace_id, d.endpoint_id, d.state, d.trigger_event_id, d.stable_delivery_ids_json,
-        e.context_id
+      SELECT d.delivery_id, d.workspace_id, d.endpoint_id, d.state, d.trigger_event_id, e.context_id
       FROM delivery_bundles d LEFT JOIN events e ON e.event_id = d.trigger_event_id
       WHERE d.delivery_id = ?
     `).get(deliveryId) as Record<string, string | null> | undefined;
@@ -7450,11 +7450,7 @@ export class BusStore {
       ORDER BY created_at, telemetry_id
     `).all(workspaceId, deliveryId) as Array<{ kind: string; payload_json: string; created_at: string }>)
       .map((record) => ({ kind: record.kind, payload: parseJson<Record<string, unknown>>(record.payload_json) ?? {}, created_at: record.created_at }));
-    const evaluations = this.policyStore.listToolEvaluationsForTurn({
-      workspace_id: workspaceId,
-      cause_event_id: String(row.trigger_event_id),
-      delivery_ids: parseJson<string[]>(row.stable_delivery_ids_json ?? "[]") ?? [],
-    });
+    const evaluations = this.policyStore.listToolEvaluationsForTurn({ workspace_id: workspaceId, delivery_id: deliveryId });
     return inspectRuntimeTurn({
       delivery: {
         delivery_id: String(row.delivery_id), state: String(row.state), endpoint_id: String(row.endpoint_id),

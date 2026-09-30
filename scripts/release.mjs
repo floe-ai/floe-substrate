@@ -1408,12 +1408,13 @@ for (let pauseRun = 1; pauseRun <= PAUSE_RUNS; pauseRun += 1) {
     if (!resumedDelivery) throw new Error("the resumed turn pushed no tool call, so its tools cannot be read back");
     const turn = await invoke({ operation_id: "runtime.delivery.inspect", operation_version: "1", input_schema_version: "1",
       idempotency_key: "guard-turn-inspect", target: { kind: "runtime_delivery", id: resumedDelivery }, input: {} });
-    const decided = turn.tools.find((tool) => tool.name && tool.decision === "allow" && tool.status === "completed");
-    if (typeof turn.model !== "string" || turn.model === "" || !decided) {
-      throw new Error("runtime.delivery.inspect did not show the resumed turn's model and a decided tool call: " + JSON.stringify(turn));
+    const ran = turn.tools.find((tool) => tool.name && tool.status === "completed");
+    const decided = turn.tool_decisions.find((decision) => decision.decision === "allow" && decision.operation_id === "engine.tool.process.execute");
+    if (typeof turn.model !== "string" || turn.model === "" || !ran || !decided) {
+      throw new Error("runtime.delivery.inspect did not show the resumed turn's model, a completed tool and an allowed shell decision: " + JSON.stringify(turn));
     }
     if (JSON.stringify(turn).includes("guard-pause-started")) throw new Error("runtime.delivery.inspect showed a tool's arguments");
-    step("runtime.delivery.inspect read the resumed turn: ran on " + turn.model + ", used " + decided.name + " (" + decided.operation_id + ", " + decided.decision + ")");
+    step("runtime.delivery.inspect read the resumed turn: ran on " + turn.model + ", ran " + ran.name + ", " + turn.tool_decisions.length + " tool decision(s) for this turn only");
   }
   await new Promise((resolve) => setTimeout(resolve, Math.max(0, commandStarted + (HOLD_SECONDS + 5) * 1000 - Date.now())));
   if (existsSync(finished)) {
