@@ -55,7 +55,7 @@
  * derived from the source packages, so it takes whatever the services become.
  */
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -518,6 +518,8 @@ async function guard(version) {
     requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after `floe start`" });
     requireCopilotCli(home);
     log("guard", "PASS — the official Copilot CLI shipped with the artifact and runs from the install");
+    guardReusedBridgePid({ floeBin, configPath, neutralCwd, home });
+    log("guard", "PASS — with the Bridge's recorded pid reused by an unrelated live program, `floe start` brought the Bridge back and left that program untouched");
     guardSurface({ workRoot, tarball: join(workRoot, tarball), configPath, port, neutralCwd, home, account, floeBin });
     log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label} and left git status clean, an Actor recalled its Context after a Bridge restart, an Actor created at runtime completed its own real turn, a failing step was pushed as failed with a safe reason, a step's reply was handed on as its one required output, a step missing output got one reminder then completed or failed, a real turn paused mid-command and resumed, and a version switch saw the running turn`);
     guardUpgradeWhileRunning({ tarball: join(workRoot, tarball), prefix, port, neutralCwd, home });
@@ -593,6 +595,42 @@ function requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when }) {
     process.stdout.write(status.stdout ?? "");
     dumpLog(home, "bridge");
     throw new Error(`the bridge is not running ${when}.`);
+  }
+}
+
+/**
+ * After a reboot the operating system may give a recorded service pid to an
+ * unrelated program. Floe must treat that pid as not running: `floe start`
+ * fills in the missing Bridge beside the running Bus, and never touches the
+ * unrelated program.
+ */
+function guardReusedBridgePid({ floeBin, configPath, neutralCwd, home }) {
+  const recordsFile = join(home, "services.json");
+  const records = JSON.parse(readFileSync(recordsFile, "utf8"));
+  if (!records.bridge?.pid) throw new Error("no Bridge is recorded after `floe start`.");
+  if (isWindows) spawnSync("taskkill", ["/PID", String(records.bridge.pid), "/T", "/F"], { stdio: "ignore" });
+  else process.kill(-records.bridge.pid, "SIGTERM");
+  const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 60000)"], { stdio: "ignore", windowsHide: true });
+  try {
+    writeFileSync(recordsFile, JSON.stringify({ ...records, bridge: { ...records.bridge, pid: unrelated.pid } }, null, 2), "utf8");
+    const started = spawnSync(floeBin, ["--config", configPath, "start"], { cwd: neutralCwd, stdio: "inherit", shell: isWindows });
+    if (started.status !== 0) {
+      dumpLog(home, "bridge");
+      throw new Error(`\`floe start\` exited ${started.status} when the Bridge's recorded pid belonged to an unrelated program.`);
+    }
+    if (unrelated.exitCode !== null || unrelated.signalCode !== null) {
+      throw new Error("`floe start` killed the unrelated program that held the Bridge's recorded pid.");
+    }
+    try { process.kill(unrelated.pid, 0); } catch {
+      throw new Error("the unrelated program that held the Bridge's recorded pid is no longer running.");
+    }
+    const bridge = JSON.parse(readFileSync(recordsFile, "utf8")).bridge;
+    if (!bridge?.pid || bridge.pid === unrelated.pid) {
+      throw new Error("`floe start` still records the unrelated program as the Bridge: " + JSON.stringify(bridge));
+    }
+    requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after `floe start` with a reused Bridge pid" });
+  } finally {
+    unrelated.kill();
   }
 }
 

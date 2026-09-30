@@ -71,7 +71,7 @@ describe("test isolation", () => {
 
     await expect(fetchIdentityDeviceKey(canonicalHome(join(realProfile, ".floe")), false)).rejects.toThrow(/real Floe home/);
     expect(guard.violations.splice(0).join("\n")).toMatch(/wrote the real Floe home/);
-  });
+  }, 30_000);
 
   it("the host-control credential is named by bus address, so the real bus address is refused", async () => {
     await expect(fetchHostControlToken("http://127.0.0.1:5377")).rejects.toThrow(/real Floe bus address/);

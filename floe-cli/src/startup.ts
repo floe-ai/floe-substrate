@@ -27,6 +27,9 @@ import { probeChannel } from "./local-channel/connection.js";
 import { ENGINES_CHANNEL } from "./engines/protocol.js";
 import { fetchHostControlToken, fetchBridgeServiceToken } from "./operation-client.js";
 import { withStartLock } from "./start-lock.js";
+import { fetchBusHealth } from "./bus-health.js";
+
+export { fetchBusHealth } from "./bus-health.js";
 
 export class ForeignBusError extends Error {
   readonly code = "E_FOREIGN_BUS" as const;
@@ -37,19 +40,6 @@ export class ForeignBusError extends Error {
       + `if another Floe install owns this URL, change bus.http_base_url in your config.`,
     );
     this.name = "ForeignBusError";
-  }
-}
-
-type BusHealth = { ok: boolean; instance_id: string | null; version: string | null };
-
-export async function fetchBusHealth(baseUrl: string): Promise<BusHealth | null> {
-  try {
-    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/health`);
-    if (!response.ok) return null;
-    const body = (await response.json()) as { ok?: boolean; instance_id?: string | null; version?: string | null };
-    return { ok: body.ok === true, instance_id: body.instance_id ?? null, version: body.version ?? null };
-  } catch {
-    return null;
   }
 }
 
@@ -267,8 +257,8 @@ export function startAll(configPath: string, config: LocalConfig): Promise<void>
 }
 
 /** Stop in reverse start order: nothing is left running that depends on a stopped service. */
-export function stopAll(configPath: string, config: LocalConfig): void {
-  for (const service of [...SERVICE_NAMES].reverse()) stopService(configPath, config, service);
+export async function stopAll(configPath: string, config: LocalConfig): Promise<void> {
+  for (const service of [...SERVICE_NAMES].reverse()) await stopService(configPath, config, service);
 }
 
 /**
@@ -283,7 +273,7 @@ export function restartAll(
 ): Promise<boolean> {
   return withStartLock(floeHome(configPath, config), async () => {
     if (!(await beforeStop())) return false;
-    stopAll(configPath, config);
+    await stopAll(configPath, config);
     await startAllHeld(configPath, config);
     return true;
   });

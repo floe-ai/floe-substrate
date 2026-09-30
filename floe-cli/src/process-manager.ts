@@ -8,6 +8,8 @@ import { resolveLocalPath } from "./config.js";
 import { readRunFile, runFilePath } from "./identity/protocol.js";
 import { thisInstallation } from "./installation.js";
 import { ensureStage, isNpmInstalled, pruneStages } from "./staging.js";
+import { isPidRunning } from "./process-identity.js";
+import { recordedServiceOwnership } from "./service-ownership.js";
 
 export type ServiceName = "bus" | "bridge" | "identity";
 
@@ -51,14 +53,7 @@ export function serviceLogPath(configPath: string, config: LocalConfig, service:
   return join(resolveLocalPath(configPath, config.home, dir), `${service}.log`);
 }
 
-export function isPidRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
+export { isPidRunning } from "./process-identity.js";
 
 export function serviceEntry(service: ServiceName): string {
   if (service === "identity") {
@@ -103,7 +98,13 @@ export function serviceEntry(service: ServiceName): string {
 export async function startService(configPath: string, config: LocalConfig, service: ServiceName, extraEnv: Readonly<Record<string, string>> = {}, instanceId?: string): Promise<ServiceRecord> {
   const records = readRecords(configPath, config);
   const existing = records[service];
-  if (existing && isPidRunning(existing.pid)) return existing;
+  if (existing) {
+    const ownership = await recordedServiceOwnership(configPath, config, service, existing);
+    if (ownership === "answering") return existing;
+    // Floe's own process, alive but not serving: replace it rather than run two.
+    // A pid that is no longer provably Floe's is left alone and simply forgotten.
+    if (ownership === "silent") killProcessTree(existing.pid);
+  }
 
   const entry = await runnableEntry(configPath, config, records, serviceEntry(service));
   const command = process.execPath;
@@ -173,36 +174,43 @@ function openServiceLog(defaultLogFile: string, service: ServiceName): { logFile
   }
 }
 
-export function stopService(configPath: string, config: LocalConfig, service: ServiceName): boolean {
+/**
+ * Stop a service only if its recorded process is provably the one Floe started
+ * (service-ownership.ts). A pid now held by an unrelated program is never
+ * killed; its stale record is simply removed.
+ */
+export async function stopService(configPath: string, config: LocalConfig, service: ServiceName): Promise<boolean> {
   const records = readRecords(configPath, config);
   const record = records[service];
   if (!record) return false;
-  let stopped = false;
-  if (isPidRunning(record.pid)) {
-    try {
-      if (process.platform === "win32") {
-        spawnSync("taskkill", ["/PID", String(record.pid), "/T", "/F"], { stdio: "ignore" });
-      } else {
-        process.kill(-record.pid, "SIGTERM");
-      }
-      stopped = true;
-    } catch {
-      try {
-        process.kill(record.pid);
-        stopped = true;
-      } catch {
-        stopped = false;
-      }
-    }
-  }
-  delete records[service];
-  writeRecords(configPath, config, records);
+  const ownership = await recordedServiceOwnership(configPath, config, service, record);
+  const stopped = ownership !== "not_ours" && killProcessTree(record.pid);
+  const current = readRecords(configPath, config);
+  delete current[service];
+  writeRecords(configPath, config, current);
   if (service === "identity") {
     // A forced stop skips the agent's own cleanup; its run file would point at a dead agent.
     const home = resolveLocalPath(configPath, config.home, ".");
     if (readRunFile(home)?.pid === record.pid) rmSync(runFilePath(home), { force: true });
   }
   return stopped;
+}
+
+function killProcessTree(pid: number): boolean {
+  try {
+    if (process.platform === "win32") {
+      return spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" }).status === 0;
+    }
+    process.kill(-pid, "SIGTERM");
+    return true;
+  } catch {
+    try {
+      process.kill(pid);
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }
 
 export function clearRecords(configPath: string, config: LocalConfig): void {
