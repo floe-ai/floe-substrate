@@ -202,3 +202,9 @@ This narrows D5's "never restarted by a different copy". What changes:
   waiting work is durable and carries over.
 - A copy cannot find another copy on disk, so "directly installed" reduces to
   "newer": a direct copy at the same version has nothing newer to switch to.
+- Correction (after v0.4.8): "mid-turn" means a turn the runtime has actually started
+  (delivery `injected_to_runtime`). A question waiting for an answer, or work
+  delivered but not started, does not block the switch. The Bus pushes
+  `running_turns_changed` host-wide whenever that set changes, and the identity
+  agent relays it to surfaces that follow switch readiness, so a surface can
+  wait for every workspace, not only its own, without polling.

@@ -1602,6 +1602,9 @@ export class BusStore {
       CREATE INDEX IF NOT EXISTS idx_delivery_bundles_endpoint
         ON delivery_bundles(endpoint_id, state, created_at);
 
+      CREATE INDEX IF NOT EXISTS idx_delivery_bundles_state
+        ON delivery_bundles(state);
+
       CREATE TABLE IF NOT EXISTS pending_responses (
         pending_id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
@@ -7446,6 +7449,22 @@ export class BusStore {
 
   setEndpointWatermark(workspaceId: string, endpointId: string, cursor: string): EndpointWatermark {
     return this.endpointWatermarkStore.set(workspaceId, endpointId, cursor);
+  }
+
+  /**
+   * Turns executing right now, in every Workspace: a Delivery its processor has
+   * started (injected_to_runtime). Work that is reserved, claimed but not
+   * started, or waiting on another Actor's answer executes nothing and carries
+   * over a restart intact, so it is not listed.
+   */
+  listRunningTurns(): Array<{ workspace_id: string; endpoint_id: string; name: string | null }> {
+    return (this.db.prepare(`
+      SELECT d.workspace_id, d.endpoint_id, e.name
+      FROM delivery_bundles d LEFT JOIN endpoints e ON e.endpoint_id = d.endpoint_id
+      WHERE d.state = 'injected_to_runtime'
+      ORDER BY d.workspace_id, d.endpoint_id, d.delivery_id
+    `).all() as Array<{ workspace_id: string; endpoint_id: string; name: string | null }>)
+      .map((row) => ({ workspace_id: row.workspace_id, endpoint_id: row.endpoint_id, name: row.name ?? null }));
   }
 
   listDeliveries(filters: { workspace_id?: string; context_id?: string; limit?: number }): unknown[] {

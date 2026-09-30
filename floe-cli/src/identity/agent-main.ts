@@ -8,6 +8,7 @@ import { fetchHostControlToken, fetchIdentityDeviceKey, forgetIdentityDeviceKey 
 import { IdentityAgent } from "./agent.js";
 import { AgentAddressInUseError, serveAgent } from "./agent-server.js";
 import { canonicalHome } from "./protocol.js";
+import { busRunningTurnsWatcher } from "./running-turns-watch.js";
 
 function log(line: string): void {
   process.stdout.write(`${new Date().toISOString()} identity-agent: ${line}\n`);
@@ -32,6 +33,7 @@ async function main(argv: string[]): Promise<void> {
     deviceKey: (create) => fetchIdentityDeviceKey(home, create),
     forgetDeviceKey: () => forgetIdentityDeviceKey(home),
     hostToken: () => fetchHostControlToken(busUrl),
+    watchRunningTurns: busRunningTurnsWatcher({ busUrl, hostToken: () => fetchHostControlToken(busUrl) }),
     log,
   });
 

@@ -1000,6 +1000,18 @@ const failedExecution = await current({ executionId: failRun.execution_id, idemp
 if (failedExecution.status !== "failed") throw new Error("the route with a failed step is " + failedExecution.status + ", not failed");
 step("a step whose attempt failed without handing anything on was pushed as failed (" + failure.code + "): " + JSON.stringify(failure.message));
 
+const readinessPushes = [];
+let readinessArrived = () => {};
+const stopFollowing = await identity.followSwitchReadiness((readiness) => { readinessPushes.push(readiness); readinessArrived(); });
+const readinessUntil = (check, label, ms) => {
+  const found = () => readinessPushes.find(check);
+  if (found()) return Promise.resolve(found());
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("no switch readiness push for " + label + " within " + ms + "ms: " + JSON.stringify(readinessPushes))), ms);
+    readinessArrived = () => { const hit = found(); if (hit) { clearTimeout(timer); resolve(hit); } };
+  });
+};
+
 for (let pauseRun = 1; pauseRun <= PAUSE_RUNS; pauseRun += 1) {
   const suffix = String(pauseRun).padStart(2, "0");
   const started = join(${JSON.stringify(folder)}, "guard-pause-started-" + suffix + ".txt");
@@ -1027,6 +1039,10 @@ for (let pauseRun = 1; pauseRun <= PAUSE_RUNS; pauseRun += 1) {
       throw new Error("a turn was mid-command but runningTurns() did not name it, so a version switch could interrupt it silently: " + JSON.stringify(turns));
     }
     step("mid-command, runningTurns() named the turn a version switch would interrupt: " + turns.map((turn) => turn.endpoint_id).join(", "));
+    const busy = await readinessUntil((readiness) => readiness.following && !readiness.ready
+      && readiness.running.some((turn) => turn.workspace_id === joined.workspace_id), "the mid-command turn", 30000);
+    step("mid-command, switch readiness was pushed as not ready, naming " + busy.running.map((turn) => turn.endpoint_id).join(", "));
+    readinessPushes.length = 0;
   }
   const nodeReached = (status, label, ms) => until((push) => push.type === "node_execution_state_changed"
     && push.payload.scope_execution_id === run.execution_id && push.payload.node_id === "worker"
@@ -1042,6 +1058,11 @@ for (let pauseRun = 1; pauseRun <= PAUSE_RUNS; pauseRun += 1) {
     throw new Error("pause run " + pauseRun + " completed instead of being interrupted");
   }
   const pausedAt = Date.now();
+  if (pauseRun === 1) {
+    await readinessUntil((readiness) => readiness.following && readiness.ready, "the paused turn stopping", 60000);
+    step("once the turn stopped, switch readiness was pushed as ready, with nothing running");
+    await stopFollowing();
+  }
   await invokeAs("accepted", { operation_id: "scope.execution.resume", idempotency_key: "guard-resume-" + suffix,
     target: { kind: "scope_execution", id: run.execution_id },
     expected_resource_revision: revisionOf(await current({ executionId: run.execution_id, idempotencyKey: "guard-inspect-resume-" + suffix })), input: {} });

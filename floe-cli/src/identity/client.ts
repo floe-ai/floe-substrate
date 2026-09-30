@@ -13,6 +13,8 @@
  * protocol is documented in docs/reference/identity-agent-protocol.md.
  */
 import { ChannelClient } from "../local-channel/client.js";
+import type { SwitchReadiness } from "./agent.js";
+export type { SwitchReadiness };
 export type { RunningTurn, VersionSwitchOutcome } from "../local-channel/client.js";
 import { connectChannel } from "../local-channel/connect.js";
 import { AgentUnavailableError, type AgentChannel } from "./connection.js";
@@ -101,6 +103,7 @@ export class IdentityClient extends ChannelClient {
   private readonly stateListeners = new Set<(state: IdentityState) => void>();
   private readonly sessionListeners = new Map<string, (event: SessionEvent) => void>();
   private readonly early = new Map<string, SessionEvent[]>();
+  private readonly readinessListeners = new Set<(readiness: SwitchReadiness) => void>();
 
   /** @internal Use connectIdentity. */
   constructor(channel: AgentChannel) {
@@ -211,7 +214,34 @@ export class IdentityClient extends ChannelClient {
     return this.request("delete_identity", input);
   }
 
+  /**
+   * Follow whether switching Floe to this version would interrupt work. The
+   * listener gets the current readiness, then each change, by push: wait for
+   * `ready: true` before `switchToThisVersion()`. `following: false` means the
+   * watch ended (for example Floe stopped); call again to resume. Returns a
+   * function that stops following.
+   */
+  async followSwitchReadiness(listener: (readiness: SwitchReadiness) => void): Promise<() => Promise<void>> {
+    this.readinessListeners.add(listener);
+    try {
+      await this.request("watch_switch_readiness", {});
+    } catch (error) {
+      this.readinessListeners.delete(listener);
+      throw error;
+    }
+    return async () => {
+      if (!this.readinessListeners.delete(listener) || this.readinessListeners.size > 0) return;
+      await this.request("unwatch_switch_readiness", {});
+    };
+  }
+
   protected onPush(message: Record<string, unknown>): void {
+    if (message.type === "switch_readiness") {
+      const readiness = message.readiness as SwitchReadiness;
+      for (const listener of this.readinessListeners) listener(readiness);
+      if (!readiness.following) this.readinessListeners.clear();
+      return;
+    }
     if (message.type === "state") {
       this.current = message.state as IdentityState;
       for (const listener of this.stateListeners) listener(this.current);

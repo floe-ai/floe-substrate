@@ -172,8 +172,10 @@ A surface can also make the switch for you: `switchToThisVersion()` on its
 `floe/identity` or `floe/engines` connection restarts Floe from the surface's
 copy, the same way `floe restart` does. It only switches to a newer version,
 never back. If an Actor is in the middle of a turn, it does not switch and names
-the turn instead, unless the surface says to interrupt it; queued work carries
-over.
+the turn instead, unless the surface says to interrupt it; queued work, and
+questions waiting for an answer, carry over and do not block it. A surface can
+follow on `floe/identity` whether any turn is running, pushed as it changes, and
+switch as soon as none is.
 
 This works from 0.3.1 on. A Floe 0.3.0 or older that is running still blocks
 npm on Windows (`EBUSY`), so stop it once (`floe stop`) for that upgrade.
