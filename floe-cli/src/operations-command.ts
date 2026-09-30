@@ -3,6 +3,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import type { Command } from "commander";
 
+import { CliRequestError } from "./cli-error.js";
 import {
   CliOperationClient,
   selectLocalWorkspace,
@@ -33,6 +34,7 @@ export type OperationsCommandDependencies = Readonly<{
   client: () => CliOperationClient;
   confirm?: (confirmation: OperationConfirmation) => Promise<boolean>;
   output?: (message: string) => void;
+  error_output?: (message: string) => void;
   read_file?: (path: string) => string;
 }>;
 
@@ -84,23 +86,55 @@ export function registerOperationsCommand(
     .option("--idempotency-key <key>", "stable key so a retry of a write is safe to replay; reads do not need one")
     .option("--expected-revision <revision>", "expected target revision for compare-and-swap")
     .action(async (operationId: string, options: InvokeOptions) => {
+      // The caller's own input is checked before Floe is contacted at all.
+      const input = parseJsonIntent(options.input, dependencies.read_file);
+      const target = parseTarget(options);
       const client = createClient(dependencies);
       const boundary = await resolveBoundary(client, options, dependencies);
       const result = await client.invokeSelected({
         boundary,
         operation_id: operationId,
-        input: parseJsonIntent(options.input, dependencies.read_file),
+        input,
         ...(options.idempotencyKey !== undefined
           ? { idempotency_key: options.idempotencyKey }
           : {}),
-        target: parseTarget(options),
+        target,
         ...(options.expectedRevision !== undefined
           ? { expected_resource_revision: options.expectedRevision }
           : {}),
         confirm: dependencies.confirm ?? confirmInTerminal,
       });
       write(dependencies, JSON.stringify(result, null, 2));
+      const failure = invocationFailure(result);
+      if (failure) {
+        (dependencies.error_output ?? console.error)(failure);
+        process.exitCode = 1;
+      }
     });
+}
+
+/**
+ * The receipt is always printed in full; a refused or unsettled invocation
+ * also fails the command, so a script never mistakes it for success.
+ */
+export function invocationFailure(result: unknown): string | null {
+  if (!result || typeof result !== "object") return null;
+  const record = result as Record<string, unknown>;
+  const receipt = record.receipt && typeof record.receipt === "object"
+    ? record.receipt as Record<string, unknown>
+    : null;
+  const refusal = (record.kind === "rejected" ? record.refusal : receipt?.refusal) as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  const reason = typeof refusal?.message === "string" ? ` ${refusal.message}` : "";
+  if (record.kind === "rejected" || receipt?.state === "refused") {
+    return `Floe refused the operation.${reason}`;
+  }
+  if (receipt?.state === "outcome_unknown") {
+    return `Floe could not confirm the operation's outcome.${reason}`;
+  }
+  return null;
 }
 
 function addCommonOptions(command: Command): Command {
@@ -117,7 +151,7 @@ async function resolveBoundary(
   dependencies: OperationsCommandDependencies,
 ): Promise<CliOperationBoundary> {
   if (options.host) {
-    if (options.workspace) throw new Error("Use either --host or --workspace, not both.");
+    if (options.workspace) throw new CliRequestError("Use either --host or --workspace, not both.");
     return { kind: "host" };
   }
   const workspaces = await client.listLocalWorkspaces();
@@ -131,7 +165,7 @@ async function resolveBoundary(
 
 export function parseTarget(options: Pick<CommonOptions, "targetKind" | "targetId">): OperationTarget | null {
   if (Boolean(options.targetKind) !== Boolean(options.targetId)) {
-    throw new Error("--target-kind and --target-id must be supplied together.");
+    throw new CliRequestError("--target-kind and --target-id must be supplied together.");
   }
   return options.targetKind && options.targetId
     ? { kind: options.targetKind, id: options.targetId }
@@ -143,13 +177,27 @@ export function parseJsonIntent(
   readFile: ((path: string) => string) | undefined = (path) => readFileSync(path, "utf8"),
 ): unknown {
   const source = value.startsWith("@")
-    ? readFile(value.slice(1))
+    ? readInputFile(value.slice(1), readFile)
     : value;
-  if (!source.trim()) throw new Error("Operation input must contain JSON intent.");
+  if (!source.trim()) throw new CliRequestError("Operation input must contain JSON intent.");
   try {
     return JSON.parse(source) as unknown;
   } catch (error) {
-    throw new Error(`Operation input is not valid JSON: ${(error as Error).message}`);
+    throw new CliRequestError(
+      `Operation input is not valid JSON: ${(error as Error).message}`,
+      "Pass valid JSON to --input, or put it in a file and pass --input @path.",
+    );
+  }
+}
+
+function readInputFile(path: string, readFile: (path: string) => string): string {
+  try {
+    return readFile(path);
+  } catch {
+    throw new CliRequestError(
+      `Operation input file '${path}' could not be read.`,
+      "Check the path after @, then run the command again.",
+    );
   }
 }
 

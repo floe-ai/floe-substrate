@@ -33,7 +33,8 @@
  *      build cannot ship);
  *   2. assemble the single package: bundle each service, generate package.json;
  *   3. GUARD: pack it, install it globally into an isolated prefix from a working
- *      directory unrelated to this checkout, start Floe from that install, and
+ *      directory unrelated to this checkout, start Floe from that install, invoke
+ *      one real operation through its `floe operations invoke` CLI, and
  *      complete one real turn through its own Bridge as this machine's Copilot
  *      account in a committed git workspace, leaving git status clean, create,
  *      publish and bind a new Actor and see its own real turn
@@ -665,6 +666,30 @@ step("unlocked");
 const joined = await identity.joinFolder({ locator: ${JSON.stringify(folder)}, create_directory: true });
 if (joined.kind !== "ready" && joined.kind !== "pending") throw new Error("joining a folder failed: " + JSON.stringify(joined));
 step("joined " + joined.workspace_id);
+
+// The CLI is a front door to the substrate: the installed floe binary invokes
+// one real operation in the joined folder and sees it complete, and malformed
+// input is refused with the person's own mistake, never an internal error.
+{
+  const { spawnSync: runCli } = await import("node:child_process");
+  const { writeFileSync: writeInput } = await import("node:fs");
+  const inputFile = ${JSON.stringify(join(surfaceDir, "cli-input.json"))};
+  writeInput(inputFile, "{}", "utf8");
+  const cli = (...args) => runCli(${JSON.stringify(floeBin)}, ["--config", ${JSON.stringify(configPath)}, "operations", "invoke", ...args],
+    { cwd: ${JSON.stringify(folder)}, encoding: "utf8", shell: process.platform === "win32" });
+  const read = cli("artefact.search", "--input", "@" + inputFile);
+  let receipt = null;
+  try { receipt = JSON.parse(read.stdout).receipt; } catch {}
+  if (read.status !== 0 || receipt?.state !== "completed") {
+    throw new Error("floe operations invoke did not complete a read: exit " + read.status + "\\n" + read.stdout + read.stderr);
+  }
+  step("the installed CLI invoked artefact.search and it completed (" + receipt.receipt_id + ")");
+  const malformed = cli("artefact.search", "--input", "{bad");
+  if (malformed.status === 0 || !malformed.stderr.includes("Operation input is not valid JSON") || malformed.stderr.includes("internal error")) {
+    throw new Error("malformed CLI input was not refused plainly: exit " + malformed.status + "\\n" + malformed.stderr);
+  }
+  step("the installed CLI refused malformed input plainly: " + malformed.stderr.split(/\\r?\\n/, 1)[0]);
+}
 const ready = await new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error("no bearer was pushed within 15s")), 15000);
   identity.session({ workspace_id: joined.workspace_id }, (event) => {

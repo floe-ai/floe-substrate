@@ -119,12 +119,19 @@ floe operations invoke <operation-id> --input @input.json
 ```
 
 Commands can select `--workspace <workspace-id>` or `--host`, and may identify a
-target with `--target-kind` plus `--target-id`. Writes can provide
-`--idempotency-key`; compare-and-swap operations can provide
-`--expected-revision`.
+target with `--target-kind` plus `--target-id`. A write must provide
+`--idempotency-key`, so a retry replays instead of applying twice; a read needs
+none. Compare-and-swap operations can provide `--expected-revision`.
 
 The Bus supplies the operation schema, availability, authority requirements,
 confirmation, and result. The CLI does not reproduce those rules.
+
+`invoke` prints the full receipt. It exits non-zero, with the reason on stderr,
+when Floe refuses the operation (for example, input that does not match the
+discovered schema) or cannot confirm its outcome. Input that is not valid JSON
+or an unreadable `@file` is refused before Floe is contacted, and an operation
+id that discovery does not list is refused before anything is invoked, each
+with a plain explanation of what to correct.
 
 ## Your identity
 

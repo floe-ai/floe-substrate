@@ -107,6 +107,19 @@ describe("CLI terminal failure boundary", () => {
     expect(readFileSync(namedLog(result.stderr), "utf8")).toContain("ChannelUnavailableError");
   });
 
+  it("shows a caller's malformed operation input verbatim, never as an internal error", async () => {
+    const root = home();
+    const configPath = config(root);
+
+    const result = await run(["--config", configPath, "operations", "invoke", "context.list", "--host", "--input", "{bad"]);
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("Operation input is not valid JSON");
+    expect(result.stderr).toContain("Next: Pass valid JSON to --input");
+    expect(result.stderr).not.toContain("internal error");
+    expect(result.stderr).not.toMatch(/\n\s+at /);
+  });
+
   it("refuses a bus owned by another install and gives a recovery action", async () => {
     const server = createServer((_request, response) => {
       response.writeHead(200, { "content-type": "application/json" });

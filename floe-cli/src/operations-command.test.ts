@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { formatOperationList, parseJsonIntent, parseTarget } from "./operations-command.js";
+import { CliRequestError } from "./cli-error.js";
+import { formatOperationList, invocationFailure, parseJsonIntent, parseTarget } from "./operations-command.js";
 import type { CliOperationDescriptor } from "./operation-client.js";
 
 const operation: CliOperationDescriptor = {
@@ -29,6 +30,9 @@ describe("operations command input", () => {
   it("rejects malformed JSON before transport", () => {
     expect(() => parseJsonIntent("not-json")).toThrow("Operation input is not valid JSON");
     expect(() => parseJsonIntent("@empty.json", () => " ")).toThrow("must contain JSON intent");
+    expect(() => parseJsonIntent("@missing.json", () => { throw new Error("ENOENT"); }))
+      .toThrow("Operation input file 'missing.json' could not be read.");
+    expect(() => parseJsonIntent("not-json")).toThrow(CliRequestError);
   });
 
   it("requires a complete target identity", () => {
@@ -37,6 +41,19 @@ describe("operations command input", () => {
     expect(parseTarget({})).toBeNull();
     expect(() => parseTarget({ targetKind: "scope_execution" }))
       .toThrow("must be supplied together");
+  });
+
+  it("fails the command for a refused or unsettled invocation, never for a completed one", () => {
+    expect(invocationFailure({ kind: "receipt", receipt: { state: "completed" } })).toBeNull();
+    expect(invocationFailure({ kind: "receipt", receipt: { state: "accepted" } })).toBeNull();
+    expect(invocationFailure({ kind: "cancelled" })).toBeNull();
+    expect(invocationFailure({ kind: "receipt", receipt: { state: "refused",
+      refusal: { message: "The operation input does not match its discovered schema." } } }))
+      .toBe("Floe refused the operation. The operation input does not match its discovered schema.");
+    expect(invocationFailure({ kind: "rejected", refusal: { message: "A write needs a key." } }))
+      .toBe("Floe refused the operation. A write needs a key.");
+    expect(invocationFailure({ kind: "receipt", receipt: { state: "outcome_unknown" } }))
+      .toBe("Floe could not confirm the operation's outcome.");
   });
 });
 
