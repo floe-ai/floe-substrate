@@ -114,11 +114,24 @@ is listed. If two installed packages use the same name, Floe offers neither and
 says which packages conflict. Floe does not contain a built-in list or special
 case for any surface.
 
-When Floe launches a surface (from its menu or `floe <name>`), the surface's
-environment carries `FLOE_LAUNCHED_BY=floe`. A surface started by its own
-command does not have it, so it can tell a launch from Floe apart from a launch
-in a folder, for example to offer the person's workspaces rather than use the
-current folder.
+### How the surface learns Floe launched it
+
+When Floe launches a surface (from its menu or `floe <name>`), it runs the
+surface's command with its own arguments, then appends exactly one argument:
+
+```text
+<command> [registered args...] --launched-by=floe
+```
+
+- It is always the last argument, spelled exactly `--launched-by=floe`.
+- A surface started by its own command (for example `my-surface` in a folder)
+  does not receive it.
+- Floe passes nothing else about the launch: no environment variables.
+
+A surface uses it to choose where to work: without it, the folder it was started
+in decides; with it, the surface can offer the person's workspaces (identity
+`listWorkspaces()`, most recent first). A surface must accept this argument even
+if it ignores it.
 
 ## Set up and manage the substrate
 
