@@ -598,6 +598,40 @@ describe("FloeRuntimeAdapter SDK route", () => {
       })],
     });
   });
+
+  it("pushes each tool call's start and end live, in order, before the turn's evidence, without its arguments", async () => {
+    const runtime = new FakeRuntime();
+    const ctx = context();
+    const kinds: string[] = [];
+    let seenMidTurn: any[] = [];
+    ctx.bus.appendRuntimeTelemetry = vi.fn(async (entry: any) => { kinds.push(entry.kind); });
+    runtime.run = vi.fn(async (...args: any[]) => {
+      await args[3]?.("sdk-session");
+      runtime.emit("activity", { id: "call-1", kind: "tool", status: "started", title: "view", startedAt: 1_000 });
+      runtime.emit("activity", { id: "call-1", kind: "tool", status: "completed", title: "view", endedAt: 2_000 });
+      runtime.emit("activity", { id: "call-2", kind: "tool", status: "started", title: "shell", startedAt: 3_000 });
+      runtime.emit("activity", { id: "call-2", kind: "tool", status: "failed", title: "shell", endedAt: 4_000 });
+      await vi.waitFor(() => expect(kinds.filter(kind => kind === "tool_activity")).toHaveLength(4));
+      seenMidTurn = ctx.bus.appendRuntimeTelemetry.mock.calls
+        .map(([entry]: any[]) => entry)
+        .filter((entry: any) => entry.kind === "tool_activity");
+      return { text: "done", sessionId: "sdk-session", stopReason: "idle", usage: null, elapsedMs: 1 };
+    }) as any;
+    const adapter = new FloeRuntimeAdapter({ runtimeFactory: () => runtime as any });
+
+    await adapter.handleBundle(ctx, bundle(), undefined);
+
+    expect(seenMidTurn.map((entry: any) => [entry.payload.tool_call_id, entry.payload.name, entry.payload.status, entry.payload.at]))
+      .toEqual([
+        ["call-1", "view", "started", new Date(1_000).toISOString()],
+        ["call-1", "view", "completed", new Date(2_000).toISOString()],
+        ["call-2", "shell", "started", new Date(3_000).toISOString()],
+        ["call-2", "shell", "failed", new Date(4_000).toISOString()],
+      ]);
+    expect(seenMidTurn[0]).toMatchObject({ delivery_id: "delivery-1", payload: { delivery_id: "delivery-1" } });
+    expect(Object.keys(seenMidTurn[0].payload)).not.toContain("arguments");
+    expect(kinds.lastIndexOf("tool_activity")).toBeLessThan(kinds.indexOf("sdk_tool_evidence"));
+  });
 });
 
 describe("direct substrate tools", () => {

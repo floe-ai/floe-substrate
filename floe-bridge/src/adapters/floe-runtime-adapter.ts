@@ -82,6 +82,8 @@ type FloeTurn = {
   processing_contract_id: string | null;
   visible_output: string;
   tool_activity: WorkLogToolEntry[];
+  /** Live tool pushes, chained so a call's start always precedes its end on the stream. */
+  live_tool_activity: Promise<void>;
   emitted_events: EmittedEventSummary[];
   dependency_requested: boolean;
   finalized: boolean;
@@ -373,6 +375,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       await this.throwIfCancelled(session, turn);
       turn.visible_output = typeof result.text === "string" ? result.text : "";
       if (model) session.model = model;
+      await turn.live_tool_activity;
       await this.appendTelemetry(context, turn, "sdk_tool_evidence", {
         sdk_session_id: result.sessionId,
         offered_tool_names: availableTools,
@@ -659,6 +662,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
           ended_at: new Date(event.endedAt ?? Date.now()).toISOString(),
         });
       }
+      this.pushToolActivity(session, turn, event);
     });
     runtime.on("diagnostic", (text: string) => {
       console.log("[bridge] floe-runtime diagnostic", { endpoint_id: session.endpointId, text });
@@ -700,6 +704,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       processing_contract_id: bundle.processing_contract?.processing_contract_id ?? null,
       visible_output: "",
       tool_activity: [],
+      live_tool_activity: Promise.resolve(),
       emitted_events: [],
       dependency_requested: false,
       finalized: false,
@@ -713,6 +718,32 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       settled,
       settle,
     };
+  }
+
+  /**
+   * Pushes one tool call's start or end as it happens, so a surface sees a
+   * turn's steps live. Only the tool's name and state: arguments and results
+   * are not public content.
+   */
+  private pushToolActivity(session: FloeSession, turn: FloeTurn, event: ActivityEvent): void {
+    const context = session.context;
+    if (!context) return;
+    const payload = {
+      scope_execution_id: turn.scope_execution_id,
+      tool_call_id: event.id,
+      name: event.title || event.kind,
+      status: event.status === "started" ? "started" : event.status === "failed" ? "failed" : "completed",
+      at: new Date((event.status === "started" ? event.startedAt : event.endedAt) ?? Date.now()).toISOString(),
+    };
+    turn.live_tool_activity = turn.live_tool_activity
+      .then(() => this.appendTelemetry(context, turn, "tool_activity", payload))
+      .catch((error) => {
+        console.log("[bridge] tool activity push failed", {
+          delivery_id: turn.delivery_id,
+          tool_call_id: event.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   }
 
   /** Build the neutral write-back anchor the substrate tools require. */

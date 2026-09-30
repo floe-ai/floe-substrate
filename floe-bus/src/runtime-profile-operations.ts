@@ -178,7 +178,7 @@ export const actorRuntimeBindingSchema: JsonSchema = {
   additionalProperties: false,
   required: [
     "actor_runtime_binding_id", "actor_id", "workspace_id", "runtime_profile_id",
-    "runtime_profile_revision_id", "endpoint_id", "status", "unresolved_reasons",
+    "runtime_profile_revision_id", "endpoint_id", "model", "status", "unresolved_reasons",
     "created_by_principal_id", "created_at", "superseded_at",
   ],
   properties: {
@@ -188,6 +188,7 @@ export const actorRuntimeBindingSchema: JsonSchema = {
     runtime_profile_id: nonEmptyString,
     runtime_profile_revision_id: nonEmptyString,
     endpoint_id: nullableString,
+    model: nullableString,
     status: { enum: ["resolved", "unresolved", "disabled"] },
     unresolved_reasons: stringArray,
     created_by_principal_id: nonEmptyString,
@@ -301,6 +302,8 @@ const bindingInputProperties = {
   runtime_profile_revision_id: nonEmptyString,
   endpoint_id: { ...nullableString,
     description: "Where the Actor receives work. Omit it: the Actor's own ID is its address, and routing resolves the Actor's name there." },
+  model: { oneOf: [{ type: "string", minLength: 1 }, { type: "null" }],
+    description: "This Actor's own model, overriding the profile's model; an id from the engine's model list. null runs the profile's model. On replace, omit it to keep the current override. It takes effect from the Actor's next stop, never mid-stop." },
   status: { enum: ["resolved", "unresolved", "disabled"] },
   unresolved_reasons: stringArray,
 };
@@ -966,6 +969,7 @@ export function getActorRuntimeBindingOperation(
 export type BindActorInput = Readonly<{
   runtime_profile_revision_id: string;
   endpoint_id?: string | null;
+  model?: string | null;
   status: ActorRuntimeBindingRecord["status"];
   unresolved_reasons?: readonly string[];
 }>;
@@ -1025,6 +1029,7 @@ export function bindUnboundActor(
     actor_id: actor.actor_id,
     runtime_profile_revision_id: input.runtime_profile_revision_id,
     endpoint_id: input.endpoint_id ?? actor.actor_id,
+    model: input.model ?? null,
     status: input.status,
     unresolved_reasons: input.unresolved_reasons ?? [],
     expected_current_binding_id: null,
@@ -1081,6 +1086,7 @@ export function replaceActorRuntimeBindingOperation(
         actor_id: previous.actor_id,
         runtime_profile_revision_id: input.runtime_profile_revision_id,
         endpoint_id: input.endpoint_id ?? previous.endpoint_id ?? previous.actor_id,
+        model: input.model === undefined ? previous.model : input.model,
         status: input.status,
         unresolved_reasons: input.unresolved_reasons ?? [],
         expected_current_binding_id: previous.actor_runtime_binding_id,

@@ -85,6 +85,34 @@ export function passOnEngineToolAccess(input: Readonly<{
   };
 }
 
+/**
+ * What an Actor may do right now: the same live check its own turns get. Its
+ * definition names its grants; only those still live for the Actor count.
+ * Engine tool access (files, commands, network) comes from its active grants.
+ */
+export type ActorAccess = Readonly<{
+  active_grants: readonly CapabilityGrantRecord[];
+  delegable_grants: readonly CapabilityGrantRecord[];
+  unavailable_grants: readonly Readonly<{ grant_id: string; code: string }>[];
+  engine_tool_operation_ids: readonly string[];
+}>;
+
+export function actorAccess(grants: SqliteCapabilityGrantStore, workspaceId: string, actorId: string,
+  definition: ActorDefinitionRevision | null): ActorAccess {
+  const inspected = grants.inspectSessionGrantIds({
+    principal_id: actorId,
+    boundary: { kind: "workspace", workspace_id: workspaceId },
+    grant_ids: definition?.content.capability_grant_ids ?? [],
+  });
+  return {
+    active_grants: inspected.active_grants,
+    delegable_grants: inspected.delegable_grants,
+    unavailable_grants: inspected.unavailable_grants,
+    engine_tool_operation_ids: [...new Set(inspected.active_grants
+      .flatMap(grant => grant.operation_ids).filter(id => ALL_ENGINE_TOOL_OPERATION_IDS.includes(id)))].sort(),
+  };
+}
+
 /** The creator's session grants that carry engine tool access, longest-lived first. */
 function heldGrants(grants: SqliteCapabilityGrantStore, authority: OperationAuthorityContext): CapabilityGrantRecord[] {
   const inspection = grants.inspectSessionGrantIds({

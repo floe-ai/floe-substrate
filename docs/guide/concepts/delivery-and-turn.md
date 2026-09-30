@@ -36,10 +36,31 @@ or direct Delivery Context. This does not advance a ScopeExecution. Only
 publication to a named output Port does that.
 
 A step never waits silently for its required output. When a step has exactly
-one required output Port with no schema or saved-file type, the Actor's reply
-is handed on through it, unless the Actor handed it on explicitly. Otherwise a
-step missing required output gets one visible reminder turn, then fails with
-"required output not handed on".
+one required output Port with no saved-file type, the Actor's reply is handed
+on through it, unless the Actor handed it on explicitly. If the Port declares
+an inline `schema`, the reply must match it; a Port naming only a `schema_ref`
+is not handed a reply. Otherwise a step missing required output gets one
+visible reminder turn, saying why the reply could not be handed on, then fails
+with "required output not handed on" and the reason.
+
+While a Turn runs, each tool call's start and end is pushed live as a
+`runtime_telemetry` entry of kind `tool_activity`, with the call's id, tool
+name, status (`started`, `completed` or `failed`), time, and the route run
+(`scope_execution_id`) when the Turn is a step. Only the name is
+pushed: tool arguments and results are not public Context content.
+
+A person can read a finished or running Turn afterwards with
+`runtime.delivery.inspect`, targeting its `runtime_delivery` (the
+`delivery_id` in the Turn's result Event). It returns `model`, the model the
+Turn actually ran on as the engine's own usage record names it (`null` until
+the engine reports usage), `models`, every model it called, `tools`, each
+tool call it ran with its name, status and times, and `tool_decisions`, Floe's
+decision on each engine tool call in this Turn (`operation_id`, `decision`,
+`native_tools`, `policy_evaluation_id`). The two lists are not linked: the
+engine gives a decision no id shared with the tool run it allowed. Each
+decision names its exact Turn, so a paused attempt's decisions stay with that
+attempt. Read the full decision with `policy.evaluation.inspect`. The read
+never shows arguments, results or prose.
 
 Direct `request(actor, work)` remains non-graph delegation. Floe owns the exact
 return path and resumes the same NodeExecution, Context, and pinned revision

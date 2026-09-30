@@ -3,22 +3,10 @@ import { NO_ACTOR_DEFINITION_REVISION } from "./actor-definition-operations.js";
 import type { CapabilityGrantRecord, SqliteCapabilityGrantStore } from "./capability-grants.js";
 import type { SqliteSecretRefStore } from "./credential-broker.js";
 import { refusal, requireWorkspaceAuthorityId, type OperationExecutionContext, type OperationRefusal, type SemanticOperationDefinition } from "./operations.js";
+import { capabilityGrantSchema as grantSchema, grantTargetsSchema as targets, unavailableGrantSchema } from "./capability-grant-schema.js";
 
 export const CAPABILITY_GRANT_OPERATION_IDS = ["capability.grant.list", "capability.grant.delegate", "capability.grant.revoke"] as const;
 const text = { type: "string", minLength: 1 } as const;
-const targets = { type: "array", items: { type: "object", additionalProperties: false,
-  required: ["kind", "id"], properties: { kind: text, id: { oneOf: [text, { type: "null" }] } } } };
-const grantSchema = { type: "object", additionalProperties: false,
-  required: ["grant_id", "principal_id", "boundary", "operation_ids", "targets", "issued_at", "expires_at", "revoked_at", "issuer_id", "evidence", "delegation_only"],
-  properties: { grant_id: text, principal_id: text,
-    boundary: { type: "object", additionalProperties: false, required: ["kind", "workspace_id"],
-      properties: { kind: { const: "workspace" }, workspace_id: text } },
-    operation_ids: { type: "array", minItems: 1, uniqueItems: true, items: text }, targets,
-    issued_at: text, expires_at: { oneOf: [text, { type: "null" }], description: "Null means until revoked." }, revoked_at: { oneOf: [text, { type: "null" }] }, issuer_id: text,
-    evidence: { type: "array", items: { type: "object", additionalProperties: false, required: ["kind", "ref"],
-      properties: { kind: text, ref: text } } },
-    delegation_only: { type: "boolean" },
-  } };
 const resultSchema = (properties: Record<string, unknown>) => ({ version: "1", schema: {
   type: "object", additionalProperties: false, required: Object.keys(properties), properties,
 } });
@@ -114,8 +102,7 @@ export function capabilityGrantOperations(deps: Dependencies): SemanticOperation
     target: { resource_kinds: [], expected_revision: "not_applicable" },
     result: resultSchema({ active_grants: { type: "array", items: grantSchema },
       delegable_grants: { type: "array", items: grantSchema },
-      unavailable_grants: { type: "array", items: { type: "object", additionalProperties: false,
-        required: ["grant_id", "code"], properties: { grant_id: text, code: text } } } }),
+      unavailable_grants: { type: "array", items: unavailableGrantSchema } }),
     input: { version: "1", schema: { type: "object", additionalProperties: false } },
     handler: context => ({ state: "completed", result: deps.grants.inspectSessionGrantIds({
       principal_id: context.authority.principal_id, boundary: context.authority.boundary,

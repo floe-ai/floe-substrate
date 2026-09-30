@@ -213,3 +213,28 @@ describe("An Actor cannot take another Actor's address", () => {
     expect(taken.endpoint_id).toBe("endpoint:chosen");
   });
 });
+
+describe("An Actor's binding carries its own model", () => {
+  it("sets it on bind, keeps it when a replace omits it, and clears it with null", async () => {
+    const { store, workspace } = await server();
+    const w = await workspace("one");
+    const { actor, binding } = await w.createBoundActor("greeter", { model: "claude-sonnet-4.5" });
+    expect(binding.model).toBe("claude-sonnet-4.5");
+    const replace = (previous: { actor_runtime_binding_id: string; runtime_profile_revision_id: string }, extra: object) =>
+      w.invoke("actor.runtime-binding.replace",
+        { runtime_profile_revision_id: previous.runtime_profile_revision_id, status: "resolved", ...extra },
+        { kind: "actor_runtime_binding", id: previous.actor_runtime_binding_id }, previous.actor_runtime_binding_id);
+
+    const kept = await replace(binding, {});
+    expect(kept.result.binding.model).toBe("claude-sonnet-4.5");
+    const changed = await replace(kept.result.binding, { model: "gpt-5" });
+    expect(changed.result.binding.model).toBe("gpt-5");
+    const cleared = await replace(changed.result.binding, { model: null });
+    expect(cleared.result.binding.model).toBeNull();
+    expect(store.runtimeProfileStore.listActorBindings(actor.actor_id).map(b => b.model))
+      .toEqual([null, "gpt-5", "claude-sonnet-4.5", "claude-sonnet-4.5"]);
+
+    const refused = await replace(cleared.result.binding, { model: "" });
+    expect(refused.state).toBe("refused");
+  });
+});

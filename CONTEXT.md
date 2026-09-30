@@ -95,6 +95,14 @@ once it has been handed on. The count bounds saved ArtefactVersion references
 only when the Port declares `artefact_types`; otherwise a text or data
 publication satisfies it.
 
+An output Port's optional `schema` (JSON Schema) is enforced on every
+publication, including a reply handed on as output; a mismatch is refused,
+naming the fields. `schema_ref` is only a contract name.
+
+An Actor NodePlacement's `distinct_actor_from` names Actor nodes that must be
+placed with a different Actor; a route breaking it is never saved, published
+or started.
+
 ### Edge
 
 A stored connection from one output Port to one input Port in one
@@ -235,7 +243,10 @@ service, and future runtime backing do not change Actor identity or graph
 semantics.
 
 An Actor has stable identity, a versioned ActorDefinitionRevision, and a
-separately replaceable runtime binding. Assignment to a NodePlacement or Context
+separately replaceable runtime binding. The binding may carry the Actor's own
+model over its RuntimeProfile's. Each stop and each direct message pins the
+binding current when it begins, so a changed binding applies from the Actor's
+next stop, never mid-stop. Assignment to a NodePlacement or Context
 controls responsibility and access, never routing.
 
 An authenticated principal backs an Actor only through a retained Principal–Actor

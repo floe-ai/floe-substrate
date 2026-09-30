@@ -8,12 +8,14 @@
  * when a surface asks. It is never polled. Credentials never pass through here.
  */
 import { ChannelError, type ChannelPeer, type ChannelService } from "floe-cli/local-channel";
-import type { EngineState, EnginesSnapshot, SignInEvent, SignInMode } from "floe-cli/engines/protocol";
+import type { EngineModel, EngineModels, EngineState, EnginesSnapshot, SignInEvent, SignInMode } from "floe-cli/engines/protocol";
 
 /** What an engine's account adapter provides (floe-runtime's CopilotEngineAccountAdapter is one). */
 export interface EngineAccount {
   currentState(): EngineState;
   check(): Promise<EngineState>;
+  /** The engine's own list of models for the signed-in account, asked afresh each time. */
+  models?(): Promise<EngineModel[]>;
   signIn?(input: { mode?: SignInMode }): Promise<{ id: string }>;
   cancelSignIn?(id: string): Promise<void>;
   close?(): Promise<void>;
@@ -110,6 +112,13 @@ export class EngineControl implements ChannelService {
         return this.state();
       case "refresh":
         return this.require(stringArg(args, "engine")).check();
+      case "models": {
+        const engine = stringArg(args, "engine");
+        const account = this.require(engine);
+        if (!account.models) throw new ChannelError("models_unsupported", `The ${engine} engine cannot list its models.`);
+        const models = await vendor(() => account.models!());
+        return { engine, models } satisfies EngineModels;
+      }
       case "sign_in": {
         const engine = stringArg(args, "engine");
         const account = this.require(engine);

@@ -248,6 +248,36 @@ describe("Actor definition semantic operations", () => {
       expect((none.result as any).draft.content.capability_grant_ids).toEqual([]);
     });
 
+    it("lets a person read an Actor's current tools and grants through actor.inspect", async () => {
+      const auth = creator(ENGINE_IDS);
+      const inspectAccess = async (draft: any, actorId: string, key: string) => {
+        receipt(await registry.invoke(environment(store, auth as any), request(
+          PUBLISH_ACTOR_DEFINITION_OPERATION_ID, { expected_current_definition_revision_id: null }, `publish-${key}`,
+          { target: { kind: "actor_definition_revision", id: draft.actor_definition_revision_id }, expected_revision: draft.semantic_digest },
+        )));
+        const inspected = receipt(await registry.invoke(environment(store, auth as any), request(
+          INSPECT_ACTOR_OPERATION_ID, {}, `inspect-${key}`, { target: { kind: "actor", id: actorId } },
+        )));
+        return (inspected.result as any).access;
+      };
+
+      const narrowed = receipt(await create(auth, { engine_tool_operation_ids: [ENGINE_TOOL_OPERATIONS.filesystem_read] }));
+      const access = await inspectAccess((narrowed.result as any).draft, "actor:workspace:one:helper", "helper");
+      expect(access.engine_tool_operation_ids).toEqual([ENGINE_TOOL_OPERATIONS.filesystem_read]);
+      expect(access.active_grants.map((grant: any) => grant.grant_id)).toEqual((narrowed.result as any).tool_access.grant_ids);
+      expect(access.active_grants[0]).toMatchObject({ principal_id: "actor:workspace:one:helper",
+        boundary: { kind: "workspace", workspace_id: "workspace:one" } });
+      expect(access.unavailable_grants).toEqual([]);
+
+      const quiet = receipt(await registry.invoke(environment(store, auth as any), request(
+        CREATE_ACTOR_OPERATION_ID,
+        { actor_id: "quiet", definition: { ...definition("Quiet"), capability_grant_ids: [] }, engine_tool_operation_ids: [] },
+        "create-quiet",
+      )));
+      expect(await inspectAccess((quiet.result as any).draft, "actor:workspace:one:quiet", "quiet"))
+        .toEqual({ active_grants: [], delegable_grants: [], unavailable_grants: [], engine_tool_operation_ids: [] });
+    });
+
     it("refuses to give a tool the creator does not hold, and creates nothing", async () => {
       const auth = creator([ENGINE_TOOL_OPERATIONS.filesystem_read]);
       const refused = receipt(await create(auth, { engine_tool_operation_ids: [ENGINE_TOOL_OPERATIONS.process_execute] }));

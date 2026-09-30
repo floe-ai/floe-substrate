@@ -186,6 +186,15 @@ A delegated copy stops working as soon as the grant it came from is revoked. A
 grant may be **delegation-only**: its holder cannot use it, but can delegate a
 subset of it to another Actor.
 
+`actor.inspect` shows an Actor's current access in `access`, read-only. It
+lists the grants of its current definition, each with its operations, targets
+and boundary: `active_grants` (usable), `delegable_grants` (delegation-only)
+and `unavailable_grants` (expired, revoked or not issued to this Actor, with
+a reason code). `engine_tool_operation_ids` names the engine tools the Actor can
+use now. An Actor with no published definition shows none. A folder or System
+access rule set on the Workspace applies on top of these grants; read it with
+`workspace.access.inspect`.
+
 When access behind a call that is waiting for a person is revoked, the wait
 ends: the call is refused with the reason "The access this request depended on
 was revoked." and the Actor receives that refusal.

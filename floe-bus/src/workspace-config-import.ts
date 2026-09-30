@@ -683,6 +683,7 @@ export class WorkspaceConfigurationImportStore {
           actor_id: actorId,
           runtime_profile_revision_id: profileRevision.runtime_profile_revision_id,
           endpoint_id: endpointId,
+          model: currentBinding?.model ?? null,
           status: status.status,
           unresolved_reasons: status.reasons,
           expected_current_binding_id: currentBinding?.actor_runtime_binding_id ?? null,

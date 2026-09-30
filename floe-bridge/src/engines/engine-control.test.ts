@@ -104,6 +104,22 @@ describe("engine control channel", () => {
     await expect(client.cancelSignIn("signin-1")).rejects.toMatchObject({ code: "sign_in_not_found" });
   });
 
+  it("lists the engine's own models to any surface, keeping the vendor's refusal code", async () => {
+    const account = new FakeAccount();
+    const models = vi.fn(async () => [{ id: "gpt-5", name: "GPT-5", enabled: true }, { id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5", enabled: null }]);
+    (account as EngineAccount).models = models;
+    const { client } = await serve(account);
+    await expect(client.models("copilot")).resolves.toEqual({
+      engine: "copilot",
+      models: [{ id: "gpt-5", name: "GPT-5", enabled: true }, { id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5", enabled: null }],
+    });
+    models.mockRejectedValueOnce(Object.assign(new Error("Copilot returned no available models."), { code: "copilot_models_unavailable" }));
+    await expect(client.models("copilot")).rejects.toMatchObject({ code: "copilot_models_unavailable" });
+    await expect(client.models("codex")).rejects.toMatchObject({ code: "unknown_engine" });
+    delete (account as EngineAccount).models;
+    await expect(client.models("copilot")).rejects.toMatchObject({ code: "models_unsupported" });
+  });
+
   it("refuses clearly, keeping the vendor adapter's own codes", async () => {
     const account = new FakeAccount();
     const { client } = await serve(account);

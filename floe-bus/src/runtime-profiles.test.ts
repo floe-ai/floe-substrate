@@ -125,6 +125,27 @@ describe("RuntimeProfileStore", () => {
       .toBe(second.actor_runtime_binding_id);
     expect(store.requireActorBinding(first.actor_runtime_binding_id).superseded_at).not.toBeNull();
     expect(store.listActorBindings(actor.actor.actor_id)).toHaveLength(2);
+
+    // An Actor's own model lives on its binding; each change is a new, retained binding.
+    expect(second.model).toBeNull();
+    const own = store.bindActor({
+      actor_id: actor.actor.actor_id,
+      runtime_profile_revision_id: revision.runtime_profile_revision_id,
+      model: " claude-sonnet-4.5 ",
+      status: "resolved",
+      expected_current_binding_id: second.actor_runtime_binding_id,
+      created_by_principal_id: "principal:operator",
+    });
+    expect(own.model).toBe("claude-sonnet-4.5");
+    expect(store.requireActorBinding(second.actor_runtime_binding_id).model).toBeNull();
+    expect(() => store.bindActor({
+      actor_id: actor.actor.actor_id,
+      runtime_profile_revision_id: revision.runtime_profile_revision_id,
+      model: "  ",
+      status: "resolved",
+      expected_current_binding_id: own.actor_runtime_binding_id,
+      created_by_principal_id: "principal:operator",
+    })).toThrow(/must name a model/);
   });
 
   it("uses compare-and-swap when replacing a runtime binding", () => {
