@@ -2,7 +2,8 @@
 /**
  * @invariant A release cannot publish until the installed artifact completes
  * its real identity and Actor turns and 20 consecutive mid-command pauses
- * produce no completion marker after Floe reports paused.
+ * produce no completion marker after Floe reports paused. Every resumed turn
+ * must settle as completed; a pushed failure ends the gate immediately.
  *
  * Floe release — assemble the single installable Floe package and prove it runs.
  *
@@ -1219,7 +1220,13 @@ for (let pauseRun = 1; pauseRun <= PAUSE_RUNS; pauseRun += 1) {
   await invokeAs("accepted", { operation_id: "scope.execution.resume", idempotency_key: "guard-resume-" + suffix,
     target: { kind: "scope_execution", id: run.execution_id },
     expected_resource_revision: revisionOf(await current({ executionId: run.execution_id, idempotencyKey: "guard-inspect-resume-" + suffix })), input: {} });
-  await nodeReached("completed", "pause run " + pauseRun + " resumed node completing", 180000);
+  const resumed = await until((push) => push.type === "node_execution_state_changed"
+    && push.payload.scope_execution_id === run.execution_id && push.payload.node_id === "worker"
+    && ["completed", "failed"].includes(push.payload.to_status),
+    "pause run " + pauseRun + " resumed node settling", 180000);
+  if (resumed.payload.to_status !== "completed") {
+    throw new Error("pause run " + pauseRun + " resumed turn failed: " + JSON.stringify(resumed.payload));
+  }
   await new Promise((resolve) => setTimeout(resolve, Math.max(0, commandStarted + (HOLD_SECONDS + 5) * 1000 - Date.now())));
   if (existsSync(finished)) {
     throw new Error("pause run " + pauseRun + " wrote its completion marker after paused was reported at " + new Date(pausedAt).toISOString());
