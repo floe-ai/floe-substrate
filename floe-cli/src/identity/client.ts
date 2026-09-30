@@ -35,7 +35,14 @@ export type IdentityState =
     secret_kind: SecretKind;
   };
 
-export type Workspace = { workspace_id: string; name: string };
+export type Workspace = {
+  workspace_id: string;
+  name: string;
+  /** The folder on this machine the workspace is bound to. */
+  folder_path: string | null;
+  /** When this identity last opened it; null if never. Lists come most recent first. */
+  last_used_at: string | null;
+};
 
 /** One identity Floe holds. Unreadable ones have null details but can still be deleted. */
 export type HeldIdentity = {
@@ -60,6 +67,12 @@ export type SessionEvent =
 export type JoinOutcome =
   | { kind: "ready" | "pending"; workspace_id: string }
   | { kind: "failed"; workspace_id: string; reason: string }
+  | { kind: "invalid"; error: string; message: string }
+  | { kind: "refused"; message: string };
+
+export type FolderLookup =
+  | { kind: "workspace"; workspace: { workspace_id: string; name: string; folder_path: string | null }; joined: boolean }
+  | { kind: "none" }
   | { kind: "invalid"; error: string; message: string }
   | { kind: "refused"; message: string };
 
@@ -168,6 +181,19 @@ export class IdentityClient extends ChannelClient {
   /** Create or join the workspace for a folder. Sessions waiting for a workspace then receive a bearer. */
   joinFolder(input: { locator: string; create_directory?: boolean; name?: string }): Promise<JoinOutcome> {
     return this.request("join_folder", input);
+  }
+
+  /** The identity's workspaces, most recently used first. Opens no session and mints nothing. */
+  async listWorkspaces(): Promise<Workspace[]> {
+    return (await this.request<{ workspaces: Workspace[] }>("list_workspaces", {})).workspaces;
+  }
+
+  /**
+   * Which workspace a folder already is: `workspace` (with `joined` saying whether
+   * this identity is in it) or `none`. Read-only: it never registers or joins.
+   */
+  workspaceForFolder(input: { locator: string }): Promise<FolderLookup> {
+    return this.request("workspace_for_folder", input);
   }
 
   /**

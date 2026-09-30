@@ -114,6 +114,12 @@ is listed. If two installed packages use the same name, Floe offers neither and
 says which packages conflict. Floe does not contain a built-in list or special
 case for any surface.
 
+When Floe launches a surface (from its menu or `floe <name>`), the surface's
+environment carries `FLOE_LAUNCHED_BY=floe`. A surface started by its own
+command does not have it, so it can tell a launch from Floe apart from a launch
+in a folder, for example to offer the person's workspaces rather than use the
+current folder.
+
 ## Set up and manage the substrate
 
 ```bash

@@ -17,12 +17,12 @@ import { ensureConfig, resolveLocalPath, type LocalConfig } from "./config.js";
 import { buildResetPlan, executeReset } from "./reset.js";
 import {
   clearRecords,
-  isPidRunning,
   readRecords,
   serviceLogPath,
   SERVICE_NAMES,
   type ServiceName
 } from "./process-manager.js";
+import { recordedServiceOwnership } from "./service-ownership.js";
 import { CliOperationClient, forgetIdentityDeviceKey, nativeOperationBroker } from "./operation-client.js";
 import { probeAgent } from "./identity/connection.js";
 import { registerOperationsCommand } from "./operations-command.js";
@@ -93,7 +93,7 @@ program.command("start").description("Start local Floe services").action(async (
 
 program.command("stop").description("Stop local Floe services").action(async () => {
   const { configPath, config } = ensureConfig(program.opts().config);
-  stopAll(configPath, config);
+  await stopAll(configPath, config);
   console.log("Stopped Floe services.");
 });
 
@@ -167,7 +167,7 @@ service.command("status").description("Show whether Floe is installed to auto-st
 
 program.command("uninstall").description("Remove auto-start and stop services; preserve ~/.floe data").action(async () => {
   const { configPath, config } = ensureConfig(program.opts().config);
-  stopAll(configPath, config);
+  await stopAll(configPath, config);
   const removal = uninstallService();
   console.log(removal.message);
   console.log("Removed Floe service entries. Local data is preserved.");
@@ -182,7 +182,7 @@ program
     const { configPath, config } = ensureConfig(program.opts().config);
 
     // Stop running services before wiping their databases
-    stopAll(configPath, config);
+    await stopAll(configPath, config);
 
     const includeIdentity = options.includeIdentity === true;
     const plan = buildResetPlan(configPath, config, { includeIdentity });
@@ -543,8 +543,10 @@ async function printStatus(configPath: string, config: LocalConfig): Promise<voi
   const records = readRecords(configPath, config);
   for (const service of SERVICE_NAMES) {
     const record = records[service];
-    const running = record ? isPidRunning(record.pid) : false;
-    console.log(`${service}: ${running ? "running" : "not running"}${record ? ` pid=${record.pid}` : ""}`);
+    const ownership = record ? await recordedServiceOwnership(configPath, config, service, record) : "not_ours";
+    const running = ownership !== "not_ours";
+    const detail = ownership === "silent" ? " (not answering)" : "";
+    console.log(`${service}: ${running ? `running${detail}` : "not running"}${record ? ` pid=${record.pid}` : ""}`);
   }
   const busVersion = await runningBusVersion(config.bus.http_base_url);
   const healthy = await isHealthy(config.bus.http_base_url);

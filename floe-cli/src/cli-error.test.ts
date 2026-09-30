@@ -40,10 +40,10 @@ function config(path: string, busUrl = "http://127.0.0.1:9"): string {
 
 /** `floe start` spawns real services; stop every one it recorded, and prove none survived. */
 function stopsWhatItStarts(configPath: string): void {
-  cleanup.push(() => {
+  cleanup.push(async () => {
     const loaded = YAML.parse(readFileSync(configPath, "utf8")) as LocalConfig;
     const pids = Object.values(readRecords(configPath, loaded)).map((record) => record!.pid);
-    for (const service of [...SERVICE_NAMES].reverse()) stopService(configPath, loaded, service);
+    for (const service of [...SERVICE_NAMES].reverse()) await stopService(configPath, loaded, service);
     expect(pids.filter(isPidRunning), "services left running by the test").toEqual([]);
   });
 }
@@ -162,5 +162,5 @@ describe("CLI terminal failure boundary", () => {
     expect(result.stderr).toContain("Next: Stop the program using that address");
     expect(result.stderr).not.toMatch(/\n\s+at /);
     expect(readFileSync(namedLog(result.stderr), "utf8")).toContain("EADDRINUSE");
-  });
+  }, 30_000);
 });

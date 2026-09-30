@@ -3318,7 +3318,8 @@ export async function createBusServer(
       workspace_id: session.workspace_id,
       expires_at: session.expires_at,
       identity: publicIdentity(identity),
-      workspaces,
+      // Re-read so the session just minted counts as this workspace's latest use.
+      workspaces: identityWorkspaces(store, identity.identity_id),
     };
   });
 
@@ -3440,6 +3441,69 @@ export async function createBusServer(
     if (materialization.outcome === "ready") return reply.code(201).send(responseBody);
     if (materialization.outcome === "failed") return reply.code(422).send(responseBody);
     return reply.code(202).send(responseBody);
+  });
+
+  // Listing: the identity's workspaces, without a session. A surface choosing a
+  // workspace needs the list before any bearer exists, and must not open one
+  // just to read it. Nothing is minted; a key admitted nowhere gets an empty list.
+  app.post("/v1/identity/workspaces", async (request, reply) => {
+    const body = z.object({ auth_event: z.record(z.unknown()) }).strict().safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: "identity_workspaces_request_invalid" });
+    const challenge = challengeTagOf(body.data.auth_event);
+    const consumed = challenge ? store.clientIdentityStore.consumeChallenge(challenge) : null;
+    if (!consumed) return sendIdentityAuthFailed(reply);
+    const verification = verifyAuthEvent(body.data.auth_event, {
+      relay: consumed.relay,
+      challenge,
+      now_ms: Date.now(),
+    });
+    if (!verification.ok) return sendIdentityAuthFailed(reply);
+    const identity = store.clientIdentityStore.getIdentityByPubkey(verification.pubkey_hex);
+    reply.header("cache-control", "no-store");
+    if (!identity || identity.revoked_at !== null) return { workspaces: [] };
+    return { workspaces: identityWorkspaces(store, identity.identity_id) };
+  });
+
+  // Folder lookup: which Workspace, if any, a folder already is — so a surface
+  // launched from a folder can open it rather than guess. Read-only: it never
+  // registers or admits. Like register-workspace it needs only a signed proof
+  // (a first-run key is not admitted yet), and it reveals nothing that route
+  // would not: on this host any proven key may join a folder by registering it.
+  app.post("/v1/identity/workspace-for-folder", async (request, reply) => {
+    const body = z.object({
+      auth_event: z.record(z.unknown()),
+      locator: z.string().min(1),
+    }).strict().safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: "identity_folder_lookup_request_invalid" });
+
+    const challenge = challengeTagOf(body.data.auth_event);
+    const consumed = challenge ? store.clientIdentityStore.consumeChallenge(challenge) : null;
+    if (!consumed) return sendIdentityAuthFailed(reply);
+    const verification = verifyAuthEvent(body.data.auth_event, {
+      relay: consumed.relay,
+      challenge,
+      now_ms: Date.now(),
+    });
+    if (!verification.ok) return sendIdentityAuthFailed(reply);
+
+    let workspace;
+    try {
+      workspace = store.findWorkspaceByLocator(body.data.locator);
+    } catch (error) {
+      if (error instanceof WorkspaceLocatorInvalidError) {
+        return reply.code(400).send({ error: "workspace_locator_invalid", message: error.message });
+      }
+      throw error;
+    }
+    reply.header("cache-control", "no-store");
+    if (!workspace) return { workspace: null, joined: false };
+    const identity = store.clientIdentityStore.getIdentityByPubkey(verification.pubkey_hex);
+    const joined = !!identity && identity.revoked_at === null
+      && store.clientIdentityStore.isMemberOfWorkspace(identity.identity_id, workspace.workspace_id);
+    return {
+      workspace: { workspace_id: workspace.workspace_id, name: workspace.name, folder_path: workspace.locator },
+      joined,
+    };
   });
 
   // Legibility and revocation are host_control. The operator sees exactly who
@@ -4617,6 +4681,8 @@ export function resolveTransportRequirement(request: any, store: BusStore): Tran
     route === "/v1/identity/challenge"
     || route === "/v1/identity/authenticate"
     || route === "/v1/identity/register-workspace"
+    || route === "/v1/identity/workspace-for-folder"
+    || route === "/v1/identity/workspaces"
   ) {
     return { kind: "public" };
   }
@@ -4853,13 +4919,24 @@ function publicWorkspaceAuthority(authority: IdentityWorkspaceAuthorityRecord) {
  * workspaces and reported as { workspace_id, name } so a client can present them
  * to a human and pick one without a host_control workspace listing (ADR-0015 F3).
  */
-function identityWorkspaces(store: BusStore, identityId: string): Array<{ workspace_id: string; name: string }> {
+type IdentityWorkspace = { workspace_id: string; name: string; folder_path: string | null; last_used_at: string | null };
+
+/** The identity's workspaces, most recently used first; never-used ones last. */
+function identityWorkspaces(store: BusStore, identityId: string): IdentityWorkspace[] {
+  const lastUsed = store.clientIdentityStore.lastSessionIssuedByWorkspace(identityId);
   return store.clientIdentityStore.listWorkspaceIdsForIdentity(identityId)
-    .map((workspaceId) => {
-      const workspace = store.getWorkspace(workspaceId) as { name?: string } | null;
-      return workspace ? { workspace_id: workspaceId, name: workspace.name ?? workspaceId } : null;
+    .map((workspaceId): IdentityWorkspace | null => {
+      const workspace = store.getWorkspace(workspaceId);
+      if (!workspace) return null;
+      return {
+        workspace_id: workspaceId,
+        name: workspace.name ?? workspaceId,
+        folder_path: workspace.locator,
+        last_used_at: lastUsed.get(workspaceId) ?? null,
+      };
     })
-    .filter((entry): entry is { workspace_id: string; name: string } => entry !== null);
+    .filter((entry): entry is IdentityWorkspace => entry !== null)
+    .sort((a, b) => (b.last_used_at ?? "").localeCompare(a.last_used_at ?? ""));
 }
 
 /** Read the NIP-42 `challenge` tag value from a candidate event, defensively. */

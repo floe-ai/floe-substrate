@@ -1966,6 +1966,16 @@ export class BusStore {
     return this.workspaceIdentityStore.listRemoteProjections(this.localHostId);
   }
 
+  /** The Workspace currently bound to a folder on this host, or null. Never registers. */
+  findWorkspaceByLocator(locator: string): LocalWorkspaceRecord | null {
+    const identity = this.workspaceIdentityStore.resolveWorkspaceByLocator(
+      this.localHostId,
+      this.localWorkspacePlatform,
+      locator,
+    );
+    return identity ? this.getWorkspace(identity.workspace_id) : null;
+  }
+
   registerWorkspace(
     input: { locator: string; name?: string; init_authorized?: boolean },
     broadcast: Broadcast,

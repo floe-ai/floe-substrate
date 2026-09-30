@@ -55,7 +55,7 @@
  * derived from the source packages, so it takes whatever the services become.
  */
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -518,6 +518,8 @@ async function guard(version) {
     requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after `floe start`" });
     requireCopilotCli(home);
     log("guard", "PASS — the official Copilot CLI shipped with the artifact and runs from the install");
+    guardReusedBridgePid({ floeBin, configPath, neutralCwd, home });
+    log("guard", "PASS — with the Bridge's recorded pid reused by an unrelated live program, `floe start` brought the Bridge back and left that program untouched");
     guardSurface({ workRoot, tarball: join(workRoot, tarball), configPath, port, neutralCwd, home, account, floeBin });
     log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label} and left git status clean, an Actor recalled its Context after a Bridge restart, an Actor created at runtime completed its own real turn, a failing step was pushed as failed with a safe reason, a step's reply was handed on as its one required output, a step missing output got one reminder then completed or failed, a real turn paused mid-command and resumed, and a version switch saw the running turn`);
     guardUpgradeWhileRunning({ tarball: join(workRoot, tarball), prefix, port, neutralCwd, home });
@@ -597,6 +599,42 @@ function requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when }) {
 }
 
 /**
+ * After a reboot the operating system may give a recorded service pid to an
+ * unrelated program. Floe must treat that pid as not running: `floe start`
+ * fills in the missing Bridge beside the running Bus, and never touches the
+ * unrelated program.
+ */
+function guardReusedBridgePid({ floeBin, configPath, neutralCwd, home }) {
+  const recordsFile = join(home, "services.json");
+  const records = JSON.parse(readFileSync(recordsFile, "utf8"));
+  if (!records.bridge?.pid) throw new Error("no Bridge is recorded after `floe start`.");
+  if (isWindows) spawnSync("taskkill", ["/PID", String(records.bridge.pid), "/T", "/F"], { stdio: "ignore" });
+  else process.kill(-records.bridge.pid, "SIGTERM");
+  const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 60000)"], { stdio: "ignore", windowsHide: true });
+  try {
+    writeFileSync(recordsFile, JSON.stringify({ ...records, bridge: { ...records.bridge, pid: unrelated.pid } }, null, 2), "utf8");
+    const started = spawnSync(floeBin, ["--config", configPath, "start"], { cwd: neutralCwd, stdio: "inherit", shell: isWindows });
+    if (started.status !== 0) {
+      dumpLog(home, "bridge");
+      throw new Error(`\`floe start\` exited ${started.status} when the Bridge's recorded pid belonged to an unrelated program.`);
+    }
+    if (unrelated.exitCode !== null || unrelated.signalCode !== null) {
+      throw new Error("`floe start` killed the unrelated program that held the Bridge's recorded pid.");
+    }
+    try { process.kill(unrelated.pid, 0); } catch {
+      throw new Error("the unrelated program that held the Bridge's recorded pid is no longer running.");
+    }
+    const bridge = JSON.parse(readFileSync(recordsFile, "utf8")).bridge;
+    if (!bridge?.pid || bridge.pid === unrelated.pid) {
+      throw new Error("`floe start` still records the unrelated program as the Bridge: " + JSON.stringify(bridge));
+    }
+    requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after `floe start` with a reused Bridge pid" });
+  } finally {
+    unrelated.kill();
+  }
+}
+
+/**
  * Upgrading must never require stopping Floe. On Windows a running process
  * locks its working directory and loaded images, so a Floe running from inside
  * the package makes npm fail with EBUSY. Floe's services run from a stage under
@@ -663,9 +701,30 @@ step("wrong passphrase refused as wrong_passphrase");
 await identity.unlock("guard passphrase");
 if (identity.state.kind !== "unlocked") throw new Error("unlock did not unlock");
 step("unlocked");
+const unregisteredBefore = await identity.workspaceForFolder({ locator: ${JSON.stringify(folder)} });
+if (unregisteredBefore.kind !== "none") throw new Error("an unregistered folder was looked up as " + JSON.stringify(unregisteredBefore));
 const joined = await identity.joinFolder({ locator: ${JSON.stringify(folder)}, create_directory: true });
 if (joined.kind !== "ready" && joined.kind !== "pending") throw new Error("joining a folder failed: " + JSON.stringify(joined));
 step("joined " + joined.workspace_id);
+{
+  const sameFolder = (a, b) => typeof a === "string" && a.replace(/[\\\\/]+$/, "").toLowerCase() === b.replace(/[\\\\/]+$/, "").toLowerCase();
+  const found = await identity.workspaceForFolder({ locator: ${JSON.stringify(folder)} });
+  if (found.kind !== "workspace" || found.workspace.workspace_id !== joined.workspace_id || !found.joined || !sameFolder(found.workspace.folder_path, ${JSON.stringify(folder)})) {
+    throw new Error("the joined folder was not looked up as its workspace: " + JSON.stringify(found));
+  }
+  const elsewhere = ${JSON.stringify(join(surfaceDir, "not-a-workspace"))};
+  const none = await identity.workspaceForFolder({ locator: elsewhere });
+  const recheck = await identity.workspaceForFolder({ locator: elsewhere });
+  if (none.kind !== "none" || recheck.kind !== "none") throw new Error("an unregistered folder was not looked up as none, or the lookup registered it: " + JSON.stringify(recheck));
+  step("folder lookup: the joined folder is its workspace; an unregistered folder is none and stays unregistered");
+  const sessionsBeforeList = (await identity.sessions()).sessions.length;
+  const plainList = await identity.listWorkspaces();
+  if (!plainList.some((w) => w.workspace_id === joined.workspace_id && sameFolder(w.folder_path, ${JSON.stringify(folder)}))) {
+    throw new Error("listWorkspaces did not list the joined folder: " + JSON.stringify(plainList));
+  }
+  if ((await identity.sessions()).sessions.length !== sessionsBeforeList) throw new Error("listing workspaces opened a session");
+  step("listed " + plainList.length + " workspace(s) with no session opened");
+}
 
 // The CLI is a front door to the substrate: the installed floe binary invokes
 // one real operation in the joined folder and sees it complete, and malformed
@@ -697,6 +756,13 @@ const ready = await new Promise((resolve, reject) => {
     else if (event.status !== "selection_required") { clearTimeout(timer); reject(new Error("session: " + JSON.stringify(event))); }
   });
 });
+{
+  const listed = ready.workspaces.find((w) => w.workspace_id === joined.workspace_id);
+  if (!listed?.folder_path || !listed.last_used_at || Number.isNaN(Date.parse(listed.last_used_at))) {
+    throw new Error("the workspace list lacks folder path or last-used time: " + JSON.stringify(ready.workspaces));
+  }
+  step("workspace list carries folder " + listed.folder_path + " and last used " + listed.last_used_at);
+}
 const response = await fetch("http://127.0.0.1:${port}/v1/pending-responses?workspace_id=" + encodeURIComponent(joined.workspace_id), {
   headers: { authorization: "Bearer " + ready.bearer_token },
 });

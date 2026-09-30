@@ -122,6 +122,15 @@ describe("surfaces registry", () => {
     void config;
   });
 
+  it("tells the surface it was launched by Floe", async () => {
+    const code = await launchSurface({
+      name: "probe",
+      label: "Probe",
+      launch: { command: process.execPath, args: ["-e", "process.exit(process.env.FLOE_LAUNCHED_BY === 'floe' ? 3 : 4)"] },
+    });
+    expect(code).toBe(3);
+  });
+
   it("rejects when the launch command does not exist", async () => {
     await expect(
       launchSurface({
