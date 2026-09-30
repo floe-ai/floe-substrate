@@ -1128,7 +1128,8 @@ const handOnRoute = async (key, outputs, request) => {
   return { settled: settled.payload, reminders: reminders.length, outputs: inspected.output_publications ?? [] };
 };
 const [single, reminded, stubborn] = await Promise.all([
-  handOnRoute("reply-output", ["result"], "Reply with the single word: done"),
+  handOnRoute("reply-output", ["result"],
+    "Reply with the single word: done. Do not hand on or publish any output through any operation; your reply is enough."),
   handOnRoute("reminded-output", ["first", "second"],
     "Do not hand on any output in this turn; only reply with the word: ready. If Floe later reminds you about missing output, "
     + "follow the reminder exactly: hand on output first with text one and output second with text two."),
