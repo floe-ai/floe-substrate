@@ -161,6 +161,7 @@ const EXPECTED_AUTHORITY: Record<string, TransportRequirement["kind"]> = {
   ["GET /v1/identity/challenge"]: "public",
   ["POST /v1/identity/authenticate"]: "public",
   ["POST /v1/identity/register-workspace"]: "public",
+  ["POST /v1/identity/workspace-for-folder"]: "public",
   ["GET /v1/events/stream"]: "websocket",
   ["DELETE /v1/endpoints/:endpoint_id"]: "workspace_operation",
   ["DELETE /v1/workspaces/:workspace_id/scopes/:scope_id"]: "workspace_operation",

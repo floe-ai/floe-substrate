@@ -77,9 +77,17 @@ export class FakeBus {
     if (url.pathname === "/v1/identity/register-workspace") {
       const pubkey = signer();
       if (!pubkey) return json(401, { error: "invalid_auth_event" });
-      const workspace = { workspace_id: `workspace:${body.locator}`, name: String(body.locator).split(/[\\/]/).pop()! };
+      const workspace = { workspace_id: `workspace:${body.locator}`, name: String(body.locator).split(/[\\/]/).pop()!, folder_path: String(body.locator) };
       this.admit(pubkey, body.display_name, workspace);
       return json(201, { workspace_id: workspace.workspace_id });
+    }
+    if (url.pathname === "/v1/identity/workspace-for-folder") {
+      const pubkey = signer();
+      if (!pubkey) return json(401, { error: "invalid_auth_event" });
+      const found = [...this.identities.values()].flatMap((entry) => entry.workspaces).find((w) => w.workspace_id === `workspace:${body.locator}`);
+      if (!found) return json(200, { workspace: null, joined: false });
+      const joined = [...this.identities.values()].some((entry) => entry.pubkey_hex === pubkey && !entry.revoked_at && entry.workspaces.includes(found));
+      return json(200, { workspace: found, joined });
     }
     if (!host()) return json(401, { error: "unauthorized" });
     if (url.pathname === "/v1/clients" && method === "GET") return json(200, { clients: [...this.identities.values()] });

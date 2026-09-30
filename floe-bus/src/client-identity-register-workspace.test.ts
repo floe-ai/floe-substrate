@@ -117,6 +117,47 @@ describe("Register-and-join first run (ADR-0015)", () => {
     });
   }
 
+  it("looks a folder up without registering it, and lists workspaces with folder and last use", async () => {
+    const secretKey = privateKeyFromSeedWords(generateSeedWords());
+    const lookup = async (locator: string, key = secretKey) => handle.app.inject({
+      method: "POST",
+      url: "/v1/identity/workspace-for-folder",
+      payload: { auth_event: await proveKey(key), locator },
+    });
+    const unregistered = mkdtempSync(join(tmpdir(), "floe-ws-lookup-none-"));
+    const before = handle.store.listWorkspaces().length;
+    const none = await lookup(unregistered);
+    expect(none.statusCode).toBe(200);
+    expect(none.json()).toEqual({ workspace: null, joined: false });
+    expect(handle.store.listWorkspaces().length).toBe(before);
+
+    const folder = mkdtempSync(join(tmpdir(), "floe-ws-lookup-"));
+    const registered = await registerAndJoin(secretKey, { locator: folder, display_name: "Lee", name: "lookup" });
+    const workspaceId = registered.json().workspace_id as string;
+    const found = await lookup(`${folder}${process.platform === "win32" ? "\\" : "/"}`);
+    expect(found.statusCode).toBe(200);
+    expect(found.json()).toEqual({
+      workspace: { workspace_id: workspaceId, name: "lookup", folder_path: folder },
+      joined: true,
+    });
+
+    const stranger = await lookup(folder, privateKeyFromSeedWords(generateSeedWords()));
+    expect(stranger.json().joined).toBe(false);
+    expect((await lookup("relative/path")).statusCode).toBe(400);
+    const forged = await handle.app.inject({
+      method: "POST",
+      url: "/v1/identity/workspace-for-folder",
+      payload: { auth_event: signAuthEvent(secretKey, "ws://nowhere", "not-a-challenge"), locator: folder },
+    });
+    expect(forged.statusCode).toBe(401);
+
+    const auth = (await authenticate(secretKey)).json();
+    const entry = auth.workspaces.find((w: { workspace_id: string }) => w.workspace_id === workspaceId);
+    expect(entry.folder_path).toBe(folder);
+    expect(entry.last_used_at).toBe(handle.store.clientIdentityStore
+      .listSessionsForIdentity(auth.identity.identity_id)[0].issued_at);
+  });
+
   it("a fresh key registers a folder, is admitted, and can immediately act (materialisation pending)", async () => {
     const secretKey = privateKeyFromSeedWords(generateSeedWords());
     const locator = mkdtempSync(join(tmpdir(), "floe-ws-fresh-"));

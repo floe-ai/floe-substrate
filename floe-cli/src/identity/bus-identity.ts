@@ -5,7 +5,13 @@
  */
 import type { Event as NostrEvent } from "nostr-tools/pure";
 
-export type Workspace = { workspace_id: string; name: string };
+export type Workspace = { workspace_id: string; name: string; folder_path: string | null; last_used_at: string | null };
+
+export type FolderLookup =
+  | { kind: "workspace"; workspace: { workspace_id: string; name: string; folder_path: string | null }; joined: boolean }
+  | { kind: "none" }
+  | { kind: "invalid"; error: string; message: string }
+  | { kind: "refused"; message: string };
 
 export type AuthenticateReply =
   | { kind: "bearer"; bearer_token: string; authority_session_id: string | null; identity_id: string; workspace: Workspace; expires_at: string; workspaces: Workspace[] }
@@ -64,7 +70,8 @@ export class BusIdentityClient {
       bearer_token: body.bearer_token,
       authority_session_id: body.authority_session_id ?? null,
       identity_id: body.identity?.identity_id,
-      workspace: workspaces.find((w) => w.workspace_id === body.workspace_id) ?? { workspace_id: body.workspace_id, name: body.workspace_id },
+      workspace: workspaces.find((w) => w.workspace_id === body.workspace_id)
+        ?? { workspace_id: body.workspace_id, name: body.workspace_id, folder_path: null, last_used_at: null },
       expires_at: body.expires_at,
       workspaces,
     };
@@ -101,6 +108,20 @@ export class BusIdentityClient {
     if (response.status === 201) return { kind: "ready", workspace_id: body.workspace_id };
     if (response.status === 202) return { kind: "pending", workspace_id: body.workspace_id };
     if (response.status === 422) return { kind: "failed", workspace_id: body.workspace_id, reason: body.materialization?.reason ?? "unknown" };
+    if (response.status === 401) return { kind: "refused", message: "The bus rejected the identity's proof." };
+    const error = typeof body.error === "string" ? body.error : `http_${response.status}`;
+    return { kind: "invalid", error, message: joinInvalidMessage(error, body.message) };
+  }
+
+  /** Which workspace a folder already is, if any. Read-only: never registers or joins. */
+  async workspaceForFolder(event: NostrEvent, locator: string): Promise<FolderLookup> {
+    const response = await this.call("/v1/identity/workspace-for-folder", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ auth_event: event, locator }),
+    });
+    const body = await response.json().catch(() => ({})) as Record<string, any>;
+    if (response.ok) return body.workspace ? { kind: "workspace", workspace: body.workspace, joined: body.joined === true } : { kind: "none" };
     if (response.status === 401) return { kind: "refused", message: "The bus rejected the identity's proof." };
     const error = typeof body.error === "string" ? body.error : `http_${response.status}`;
     return { kind: "invalid", error, message: joinInvalidMessage(error, body.message) };

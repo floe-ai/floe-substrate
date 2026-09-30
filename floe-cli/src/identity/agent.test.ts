@@ -110,6 +110,21 @@ describe("identity agent", () => {
     await expect(agent.handle(conn, "restore", { phrase: other, passphrase: "x", display_name: "B" })).rejects.toMatchObject({ code: "identity_exists" });
   });
 
+  it("looks up a folder's workspace without registering it", async () => {
+    const { agent, conn, bus } = setup();
+    await agent.handle(conn, "create", { display_name: "Ada", passphrase: "p" });
+    expect(await agent.handle(conn, "workspace_for_folder", { locator: "C:/work/alpha" })).toEqual({ kind: "none" });
+    expect(bus.identities.size).toBe(0);
+    await agent.handle(conn, "join_folder", { locator: "C:/work/alpha" });
+    expect(await agent.handle(conn, "workspace_for_folder", { locator: "C:/work/alpha" })).toMatchObject({
+      kind: "workspace",
+      workspace: { workspace_id: "workspace:C:/work/alpha", folder_path: "C:/work/alpha" },
+      joined: true,
+    });
+    await agent.handle(conn, "lock", {});
+    await expect(agent.handle(conn, "workspace_for_folder", { locator: "C:/work/alpha" })).rejects.toMatchObject({ code: "locked" });
+  });
+
   it("replaces a forgotten identity with a new one admitted to the same workspaces, revoking the old", async () => {
     const { agent, conn, bus, home } = setup();
     const old = await agent.handle(conn, "create", { display_name: "Ada", passphrase: "forgotten" }) as { npub: string };

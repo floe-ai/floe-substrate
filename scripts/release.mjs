@@ -701,9 +701,23 @@ step("wrong passphrase refused as wrong_passphrase");
 await identity.unlock("guard passphrase");
 if (identity.state.kind !== "unlocked") throw new Error("unlock did not unlock");
 step("unlocked");
+const unregisteredBefore = await identity.workspaceForFolder({ locator: ${JSON.stringify(folder)} });
+if (unregisteredBefore.kind !== "none") throw new Error("an unregistered folder was looked up as " + JSON.stringify(unregisteredBefore));
 const joined = await identity.joinFolder({ locator: ${JSON.stringify(folder)}, create_directory: true });
 if (joined.kind !== "ready" && joined.kind !== "pending") throw new Error("joining a folder failed: " + JSON.stringify(joined));
 step("joined " + joined.workspace_id);
+{
+  const sameFolder = (a, b) => typeof a === "string" && a.replace(/[\\\\/]+$/, "").toLowerCase() === b.replace(/[\\\\/]+$/, "").toLowerCase();
+  const found = await identity.workspaceForFolder({ locator: ${JSON.stringify(folder)} });
+  if (found.kind !== "workspace" || found.workspace.workspace_id !== joined.workspace_id || !found.joined || !sameFolder(found.workspace.folder_path, ${JSON.stringify(folder)})) {
+    throw new Error("the joined folder was not looked up as its workspace: " + JSON.stringify(found));
+  }
+  const elsewhere = ${JSON.stringify(join(surfaceDir, "not-a-workspace"))};
+  const none = await identity.workspaceForFolder({ locator: elsewhere });
+  const recheck = await identity.workspaceForFolder({ locator: elsewhere });
+  if (none.kind !== "none" || recheck.kind !== "none") throw new Error("an unregistered folder was not looked up as none, or the lookup registered it: " + JSON.stringify(recheck));
+  step("folder lookup: the joined folder is its workspace; an unregistered folder is none and stays unregistered");
+}
 
 // The CLI is a front door to the substrate: the installed floe binary invokes
 // one real operation in the joined folder and sees it complete, and malformed
@@ -735,6 +749,13 @@ const ready = await new Promise((resolve, reject) => {
     else if (event.status !== "selection_required") { clearTimeout(timer); reject(new Error("session: " + JSON.stringify(event))); }
   });
 });
+{
+  const listed = ready.workspaces.find((w) => w.workspace_id === joined.workspace_id);
+  if (!listed?.folder_path || !listed.last_used_at || Number.isNaN(Date.parse(listed.last_used_at))) {
+    throw new Error("the workspace list lacks folder path or last-used time: " + JSON.stringify(ready.workspaces));
+  }
+  step("workspace list carries folder " + listed.folder_path + " and last used " + listed.last_used_at);
+}
 const response = await fetch("http://127.0.0.1:${port}/v1/pending-responses?workspace_id=" + encodeURIComponent(joined.workspace_id), {
   headers: { authorization: "Bearer " + ready.bearer_token },
 });

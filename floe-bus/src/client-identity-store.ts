@@ -289,6 +289,15 @@ export class SqliteClientIdentityStore {
     return rows.map(rowToSession);
   }
 
+  /** When this identity last opened each workspace: its latest minted session there. */
+  lastSessionIssuedByWorkspace(identityId: string): Map<string, string> {
+    const rows = this.db.prepare(`
+      SELECT workspace_id, MAX(issued_at) AS last_issued_at
+      FROM client_identity_sessions WHERE identity_id = ? GROUP BY workspace_id
+    `).all(identityId) as Array<{ workspace_id: string; last_issued_at: string }>;
+    return new Map(rows.map((row) => [row.workspace_id, row.last_issued_at]));
+  }
+
   /** Delete expired, unconsumed challenges. Housekeeping only; never security-load-bearing. */
   pruneExpiredChallenges(): void {
     this.db.prepare("DELETE FROM client_identity_challenges WHERE expires_at <= ?").run(this.now());

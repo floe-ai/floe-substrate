@@ -23,6 +23,7 @@ render(identity.state);                        // { kind: "none" | "locked" | "u
 identity.onState((state) => render(state));    // pushed on every change
 
 await identity.unlock(passphrase);             // or create / restore / replace / importLegacy
+const here = await identity.workspaceForFolder({ locator: launchFolder }); // read-only
 const session = await identity.session({}, (event) => {
   if (event.status === "ready") useBearer(event.bearer_token);  // again before each expiry
   if (event.status === "selection_required") session.select(pick(event.workspaces));
@@ -208,7 +209,7 @@ Session events:
 
 | `status` | Fields | Meaning |
 |---|---|---|
-| `ready` | `bearer_token`, `workspace {workspace_id, name}`, `workspaces`, `expires_at` | Use this bearer on the bus. Another `ready` arrives about a minute before `expires_at`, with a fresh bearer. |
+| `ready` | `bearer_token`, `workspace`, `workspaces`, `expires_at` | Use this bearer on the bus. Another `ready` arrives about a minute before `expires_at`, with a fresh bearer. Each workspace is `{workspace_id, name, folder_path, last_used_at}`; lists come most recently used first, and `last_used_at` is null if this identity never opened it. |
 | `selection_required` | `workspaces`, `message?` | The identity is in several workspaces (or not in the one you named). Answer with `select_workspace`. |
 | `needs_workspace` | `message` | The identity is in no workspace. After a successful `join_folder`, a `ready` follows by itself. |
 | `error` | `code`, `message` | For example `locked` (unlock first, then open a new session) or `bus_unreachable`. |
@@ -231,6 +232,7 @@ with `floe identity sessions --revoke`.
 | `replace` | `passphrase`, `display_name?` | `{npub, phrase, previous_npub, previous_revoked, workspaces, set_aside_as}` | `no_identity`, `bus_unreachable` (nothing changed) |
 | `import_legacy` | `file`, `passphrase`, `display_name?`, `replace_existing?` | `{npub, secret_kind, protection, set_aside_as}` or `{npub, secret_kind, already_present: true}` | `legacy_file_unrecognised`, `legacy_file_inconsistent`, `wrong_passphrase`, `identity_exists` (+`npub`, `importing_npub`), `display_name_required` |
 | `join_folder` | `locator` (absolute path), `create_directory?`, `name?` | `{kind: "ready"|"pending", workspace_id}`, `{kind: "failed", workspace_id, reason}`, `{kind: "invalid", error, message}` or `{kind: "refused", message}` | `no_identity`, `locked`, `bus_unreachable` |
+| `workspace_for_folder` | `locator` (absolute path) | `{kind: "workspace", workspace: {workspace_id, name, folder_path}, joined}`, `{kind: "none"}`, `{kind: "invalid", error, message}` or `{kind: "refused", message}`. Read-only: never registers or joins. `joined` says whether this identity is in it; if not, `join_folder` joins it | `no_identity`, `locked`, `bus_unreachable` |
 | `session` | `workspace_id?` | `{session_id}`; events follow as `session` pushes | `no_identity` |
 | `select_workspace` | `session_id`, `workspace_id` | `{session_id}` | `session_not_found` |
 | `end_session` | `session_id` | `{ended: true}` | `session_not_found` |
