@@ -184,6 +184,7 @@ export class IdentityAgent {
       case "delete_identity": return this.serial(() => this.deleteIdentity(args));
       case "join_folder": return this.joinFolder(args);
       case "workspace_for_folder": return this.workspaceForFolder(args);
+      case "list_workspaces": return this.listWorkspaces();
       case "session": return this.startSession(conn, args);
       case "select_workspace": return this.selectWorkspace(conn, args);
       case "end_session": return this.endOwnSession(conn, args);
@@ -469,6 +470,21 @@ export class IdentityAgent {
         }
       }
       return outcome;
+    } catch (error) {
+      throw asAgentError(error);
+    } finally {
+      key.fill(0);
+    }
+  }
+
+  private async listWorkspaces(): Promise<unknown> {
+    this.requireFile();
+    const key = await this.ensureUnlocked();
+    try {
+      const { challenge, relay } = await this.bus.challenge();
+      const workspaces = await this.bus.listWorkspaces(signAuthEvent(key, relay, challenge));
+      if (!workspaces) throw new AgentError("refused", "The bus rejected the identity's proof.");
+      return { workspaces };
     } catch (error) {
       throw asAgentError(error);
     } finally {

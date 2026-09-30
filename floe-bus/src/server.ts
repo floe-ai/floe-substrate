@@ -3443,6 +3443,27 @@ export async function createBusServer(
     return reply.code(202).send(responseBody);
   });
 
+  // Listing: the identity's workspaces, without a session. A surface choosing a
+  // workspace needs the list before any bearer exists, and must not open one
+  // just to read it. Nothing is minted; a key admitted nowhere gets an empty list.
+  app.post("/v1/identity/workspaces", async (request, reply) => {
+    const body = z.object({ auth_event: z.record(z.unknown()) }).strict().safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: "identity_workspaces_request_invalid" });
+    const challenge = challengeTagOf(body.data.auth_event);
+    const consumed = challenge ? store.clientIdentityStore.consumeChallenge(challenge) : null;
+    if (!consumed) return sendIdentityAuthFailed(reply);
+    const verification = verifyAuthEvent(body.data.auth_event, {
+      relay: consumed.relay,
+      challenge,
+      now_ms: Date.now(),
+    });
+    if (!verification.ok) return sendIdentityAuthFailed(reply);
+    const identity = store.clientIdentityStore.getIdentityByPubkey(verification.pubkey_hex);
+    reply.header("cache-control", "no-store");
+    if (!identity || identity.revoked_at !== null) return { workspaces: [] };
+    return { workspaces: identityWorkspaces(store, identity.identity_id) };
+  });
+
   // Folder lookup: which Workspace, if any, a folder already is — so a surface
   // launched from a folder can open it rather than guess. Read-only: it never
   // registers or admits. Like register-workspace it needs only a signed proof
@@ -4661,6 +4682,7 @@ export function resolveTransportRequirement(request: any, store: BusStore): Tran
     || route === "/v1/identity/authenticate"
     || route === "/v1/identity/register-workspace"
     || route === "/v1/identity/workspace-for-folder"
+    || route === "/v1/identity/workspaces"
   ) {
     return { kind: "public" };
   }

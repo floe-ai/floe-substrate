@@ -113,6 +113,18 @@ export class BusIdentityClient {
     return { kind: "invalid", error, message: joinInvalidMessage(error, body.message) };
   }
 
+  /** The identity's workspaces, most recently used first. Mints nothing. */
+  async listWorkspaces(event: NostrEvent): Promise<Workspace[] | null> {
+    const response = await this.call("/v1/identity/workspaces", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ auth_event: event }),
+    });
+    if (response.status === 401) return null;
+    if (!response.ok) throw new Error(`The bus refused to list workspaces (${response.status}).`);
+    return ((await response.json()) as { workspaces: Workspace[] }).workspaces;
+  }
+
   /** Which workspace a folder already is, if any. Read-only: never registers or joins. */
   async workspaceForFolder(event: NostrEvent, locator: string): Promise<FolderLookup> {
     const response = await this.call("/v1/identity/workspace-for-folder", {

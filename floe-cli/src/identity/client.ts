@@ -183,6 +183,11 @@ export class IdentityClient extends ChannelClient {
     return this.request("join_folder", input);
   }
 
+  /** The identity's workspaces, most recently used first. Opens no session and mints nothing. */
+  async listWorkspaces(): Promise<Workspace[]> {
+    return (await this.request<{ workspaces: Workspace[] }>("list_workspaces", {})).workspaces;
+  }
+
   /**
    * Which workspace a folder already is: `workspace` (with `joined` saying whether
    * this identity is in it) or `none`. Read-only: it never registers or joins.

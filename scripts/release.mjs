@@ -717,6 +717,13 @@ step("joined " + joined.workspace_id);
   const recheck = await identity.workspaceForFolder({ locator: elsewhere });
   if (none.kind !== "none" || recheck.kind !== "none") throw new Error("an unregistered folder was not looked up as none, or the lookup registered it: " + JSON.stringify(recheck));
   step("folder lookup: the joined folder is its workspace; an unregistered folder is none and stays unregistered");
+  const sessionsBeforeList = (await identity.sessions()).sessions.length;
+  const plainList = await identity.listWorkspaces();
+  if (!plainList.some((w) => w.workspace_id === joined.workspace_id && sameFolder(w.folder_path, ${JSON.stringify(folder)}))) {
+    throw new Error("listWorkspaces did not list the joined folder: " + JSON.stringify(plainList));
+  }
+  if ((await identity.sessions()).sessions.length !== sessionsBeforeList) throw new Error("listing workspaces opened a session");
+  step("listed " + plainList.length + " workspace(s) with no session opened");
 }
 
 // The CLI is a front door to the substrate: the installed floe binary invokes

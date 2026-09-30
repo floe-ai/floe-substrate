@@ -81,6 +81,12 @@ export class FakeBus {
       this.admit(pubkey, body.display_name, workspace);
       return json(201, { workspace_id: workspace.workspace_id });
     }
+    if (url.pathname === "/v1/identity/workspaces") {
+      const pubkey = signer();
+      if (!pubkey) return json(401, { error: "invalid_auth_event" });
+      const identity = [...this.identities.values()].find((entry) => entry.pubkey_hex === pubkey && !entry.revoked_at);
+      return json(200, { workspaces: identity?.workspaces ?? [] });
+    }
     if (url.pathname === "/v1/identity/workspace-for-folder") {
       const pubkey = signer();
       if (!pubkey) return json(401, { error: "invalid_auth_event" });

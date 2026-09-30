@@ -156,6 +156,20 @@ describe("Register-and-join first run (ADR-0015)", () => {
     expect(entry.folder_path).toBe(folder);
     expect(entry.last_used_at).toBe(handle.store.clientIdentityStore
       .listSessionsForIdentity(auth.identity.identity_id)[0].issued_at);
+
+    const sessionsBefore = handle.store.clientIdentityStore.listSessionsForIdentity(auth.identity.identity_id).length;
+    const listed = await handle.app.inject({
+      method: "POST", url: "/v1/identity/workspaces", payload: { auth_event: await proveKey(secretKey) },
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().bearer_token).toBeUndefined();
+    expect(listed.json().workspaces).toEqual(auth.workspaces);
+    expect(handle.store.clientIdentityStore.listSessionsForIdentity(auth.identity.identity_id)).toHaveLength(sessionsBefore);
+    const nobody = await handle.app.inject({
+      method: "POST", url: "/v1/identity/workspaces",
+      payload: { auth_event: await proveKey(privateKeyFromSeedWords(generateSeedWords())) },
+    });
+    expect(nobody.json()).toEqual({ workspaces: [] });
   });
 
   it("a fresh key registers a folder, is admitted, and can immediately act (materialisation pending)", async () => {

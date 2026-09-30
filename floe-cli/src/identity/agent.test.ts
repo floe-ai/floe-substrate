@@ -125,6 +125,17 @@ describe("identity agent", () => {
     await expect(agent.handle(conn, "workspace_for_folder", { locator: "C:/work/alpha" })).rejects.toMatchObject({ code: "locked" });
   });
 
+  it("lists the identity's workspaces without a session or a bearer", async () => {
+    const { agent, conn, bus } = setup();
+    await agent.handle(conn, "create", { display_name: "Ada", passphrase: "p" });
+    expect(await agent.handle(conn, "list_workspaces", {})).toEqual({ workspaces: [] });
+    await agent.handle(conn, "join_folder", { locator: "C:/work/alpha" });
+    const listed = await agent.handle(conn, "list_workspaces", {}) as { workspaces: Array<{ workspace_id: string }> };
+    expect(listed.workspaces.map((w) => w.workspace_id)).toEqual(["workspace:C:/work/alpha"]);
+    expect(bus.authentications).toBe(0);
+    expect(await agent.handle(conn, "sessions", {})).toEqual({ sessions: [] });
+  });
+
   it("replaces a forgotten identity with a new one admitted to the same workspaces, revoking the old", async () => {
     const { agent, conn, bus, home } = setup();
     const old = await agent.handle(conn, "create", { display_name: "Ada", passphrase: "forgotten" }) as { npub: string };
