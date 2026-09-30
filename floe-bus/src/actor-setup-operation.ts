@@ -54,6 +54,7 @@ type SetupActorInput = Readonly<{
   definition: ActorDefinitionContent;
   engine_tool_operation_ids?: string[];
   runtime_profile_revision_id: string;
+  model?: string | null;
   grants?: readonly DelegationRequest[];
 }>;
 
@@ -80,6 +81,8 @@ const setupInputSchema: JsonSchema = {
     ...(createActorInputSchema as { properties: Record<string, JsonSchema> }).properties,
     runtime_profile_revision_id: { type: "string", minLength: 1,
       description: "The exact published Runtime Profile revision the Actor runs on. To run it the way you run, use the one from your own binding (actor.runtime-binding.inspect on yourself)." },
+    model: { oneOf: [{ type: "string", minLength: 1 }, { type: "null" }],
+      description: "Optional: this Actor's own model, overriding the profile's model; an id from the engine's model list. Omit it to run the profile's model." },
     grants: {
       type: "array",
       items: delegationRequestSchema as unknown as JsonSchema,
@@ -142,6 +145,7 @@ function setUp(deps: Dependencies, context: OperationExecutionContext, input: Se
   const binding = step("bind_runtime", runtimeOperationRefusal,
     () => bindUnboundActor(deps.runtimes, context, actorId, NO_ACTOR_DEFINITION_REVISION, {
       runtime_profile_revision_id: input.runtime_profile_revision_id,
+      model: input.model ?? null,
       status: "resolved",
     }));
   const delegated = (input.grants ?? []).map(request => step("delegate_access", actorOperationRefusal,

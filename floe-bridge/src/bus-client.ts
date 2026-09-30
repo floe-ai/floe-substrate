@@ -148,6 +148,8 @@ type RuntimeProfileContract = {
     workspace_id: string;
     runtime_profile_revision_id: string;
     endpoint_id: string | null;
+    /** The Actor's own model, overriding the profile's; null runs the profile's model. */
+    model?: string | null;
     [key: string]: unknown;
   };
   profile: {

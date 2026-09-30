@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FloeRuntimeAdapter } from "../adapters/floe-runtime-adapter.js";
-import { copilotEnvironment, copilotHome, packagedCopilotCliPath } from "./copilot.js";
+import { copilotEnvironment, copilotHome, copilotModel, packagedCopilotCliPath } from "./copilot.js";
 import { defaultConfig } from "../config.js";
 
 const TOKENS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
@@ -65,6 +65,32 @@ describe("turns, readiness and sign-in share Floe's own Copilot folder", () => {
       expect(account.clientOptions.baseDirectory).toBe(home);
       expect(account.environment.COPILOT_HOME).toBe(home);
       expect(existsSync(home)).toBe(true);
+    } finally {
+      rmSync(floeHome, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the engine's model list reaches surfaces in Floe's own shape", () => {
+  it("keeps the vendor's id, name, policy, cost and limits, and nothing it did not say", () => {
+    expect(copilotModel({
+      id: "claude-sonnet-4.5", modelId: "claude-sonnet-4.5", name: "Claude Sonnet 4.5",
+      capabilities: { supports: { vision: true, reasoningEffort: true }, limits: { max_context_window_tokens: 200000 } },
+      policy: { state: "enabled", terms: "" }, billing: { multiplier: 1 },
+      supportedReasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium",
+    })).toEqual({
+      id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5", enabled: true, cost_multiplier: 1,
+      context_window_tokens: 200000, vision: true, reasoning_efforts: ["low", "medium", "high"], default_reasoning_effort: "medium",
+    });
+    expect(copilotModel({ id: "gpt-5", modelId: "gpt-5", policy: { state: "disabled" } })).toEqual({ id: "gpt-5", name: "gpt-5", enabled: false });
+    expect(copilotModel({ id: "o3", modelId: "o3" })).toEqual({ id: "o3", name: "o3", enabled: null });
+  });
+
+  it("is offered by the production engine account", () => {
+    const floeHome = mkdtempSync(join(tmpdir(), "floe-home-"));
+    try {
+      const adapter = new FloeRuntimeAdapter({ copilotHome: join(floeHome, "copilot") }) as any;
+      expect(typeof adapter.createEngineAccount().models).toBe("function");
     } finally {
       rmSync(floeHome, { recursive: true, force: true });
     }

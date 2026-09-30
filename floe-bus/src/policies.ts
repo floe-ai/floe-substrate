@@ -903,6 +903,23 @@ export class PolicyStore {
     `).all(workspaceId, bounded) as PolicyEvaluationRow[]).map(mapEvaluation);
   }
 
+  /** The tool call decisions made for one runtime turn, oldest first. */
+  listToolEvaluationsForTurn(input: Readonly<{
+    workspace_id: string; cause_event_id: string; delivery_ids: readonly string[];
+  }>): PolicyEvaluationRecord[] {
+    if (input.delivery_ids.length === 0) return [];
+    return (this.db.prepare(`
+      SELECT * FROM policy_evaluations
+      WHERE workspace_id = ?
+        AND json_extract(facts_json, '$.tool') IS NOT NULL
+        AND json_extract(facts_json, '$.provenance.cause_event_id') = ?
+        AND EXISTS (SELECT 1 FROM json_each(facts_json, '$.provenance.delivery_ids')
+          WHERE value IN (SELECT value FROM json_each(?)))
+      ORDER BY evaluated_at, evaluation_id LIMIT 500
+    `).all(input.workspace_id, input.cause_event_id, JSON.stringify(input.delivery_ids)) as PolicyEvaluationRow[])
+      .map(mapEvaluation);
+  }
+
   private listApplicableBindings(facts: PolicyEvaluationFacts): PolicyBindingRecord[] {
     if (facts.authority_boundary.kind !== "workspace" || facts.workspace_id === null) return [];
     const subjects = policySubjectsForFacts(facts);

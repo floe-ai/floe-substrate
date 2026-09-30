@@ -522,7 +522,7 @@ async function guard(version) {
     guardReusedBridgePid({ floeBin, configPath, neutralCwd, home });
     log("guard", "PASS — with the Bridge's recorded pid reused by an unrelated live program, `floe start` brought the Bridge back and left that program untouched");
     guardSurface({ workRoot, tarball: join(workRoot, tarball), configPath, port, neutralCwd, home, account, floeBin });
-    log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label} and left git status clean, an Actor recalled its Context after a Bridge restart, an Actor created at runtime completed its own real turn, a failing step was pushed as failed with a safe reason, a step's reply was handed on as its one required output, a step missing output got one reminder then completed or failed, a real turn paused mid-command and resumed, and a version switch saw the running turn`);
+    log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label} and left git status clean, an Actor recalled its Context after a Bridge restart, an Actor created at runtime completed its own real turn and its next stop ran on its own model, a person read each Actor's tools and access, a failing step was pushed as failed with a safe reason, a step's reply was handed on as its one required output, a step missing output got one reminder then completed or failed, a judge's reply matched its Port's schema, routes with a misspelt schema or a judge that is its builder were refused, a route start waited for a person's approval, a real turn paused mid-command and resumed with its tool call pushed live and its model and tools readable afterwards, and a version switch saw the running turn`);
     guardUpgradeWhileRunning({ tarball: join(workRoot, tarball), prefix, port, neutralCwd, home });
     requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after npm removed and reinstalled the package" });
     log("guard", "PASS — npm removed and reinstalled the package while Floe kept serving from its stage");
@@ -800,10 +800,16 @@ const copilot = settled(engines.state.copilot) ? engines.state.copilot : await n
   });
 });
 step("engine copilot: " + copilot.phase + " (" + copilot.message + ")");
-engines.close();
 if (copilot.phase !== "ready" || copilot.account?.label?.toLowerCase() !== ${JSON.stringify(account.label.toLowerCase())}) {
+  engines.close();
   throw new Error("the installed Bridge's engine is not ready as ${account.label}: " + JSON.stringify(copilot));
 }
+// A surface offers the person a choice of model from the engine's own list.
+const modelList = await engines.models("copilot");
+engines.close();
+const usableModels = modelList.models.filter((model) => model.enabled !== false);
+if (usableModels.length === 0) throw new Error("the engine listed no model an Actor can run on: " + JSON.stringify(modelList));
+step("the engine listed " + usableModels.length + " model(s) an Actor can run on, e.g. " + usableModels.slice(0, 3).map((model) => model.id).join(", "));
 
 // One real turn through the installed Bridge: the default Floe Actor answers a
 // message. The engine refuses any session not signed in as the readiness
@@ -954,6 +960,19 @@ if (!guardActor.revision.published_at || guardActor.binding.runtime_profile_revi
   throw new Error("actor.setup did not leave a published Actor bound to the Floe Actor's runtime: " + JSON.stringify(guardActor));
 }
 step("set up " + guardActor.actor.actor_id + " in one operation: created, bound and published");
+// A person can read an Actor's tools and access: the created Actor holds none,
+// the Floe Actor holds the engine tools.
+const accessOf = async (actorId, key) => (await invoke({ operation_id: "actor.inspect", operation_version: "1", input_schema_version: "1",
+  idempotency_key: key, target: { kind: "actor", id: actorId }, input: {} })).access;
+const greeterAccess = await accessOf(guardActor.actor.actor_id, "guard-greeter-access");
+if (!greeterAccess || greeterAccess.engine_tool_operation_ids.length !== 0 || greeterAccess.active_grants.length !== 0) {
+  throw new Error("actor.inspect did not show the created Actor holding no tools: " + JSON.stringify(greeterAccess));
+}
+const floeAccess = await accessOf(floe, "guard-floe-access");
+if (!floeAccess?.engine_tool_operation_ids.includes("engine.tool.process.execute") || floeAccess.active_grants.length === 0) {
+  throw new Error("actor.inspect did not show the Floe Actor's engine tools: " + JSON.stringify(floeAccess));
+}
+step("actor.inspect shows the created Actor with no tools and the Floe Actor with " + floeAccess.engine_tool_operation_ids.join(", "));
 // The Bridge hosts the new Actor in response to the binding; its endpoint is pushed when it is addressable.
 await until((push) => push.type === "endpoint_registered" && push.payload?.endpoint?.endpoint_id === guardActor.actor.actor_id,
   "the Bridge hosting the created Actor", 30000);
@@ -975,6 +994,47 @@ const guardResult = await until((push) => push.type === "event_submitted"
 const guardTurn = guardResult.payload.event.content;
 if (guardTurn.data.outcome !== "completed") throw new Error("the created Actor's turn did not complete: " + JSON.stringify(guardTurn));
 step("the created Actor, holding no permissions, completed its own real turn: " + JSON.stringify(guardTurn.text.slice(0, 80)));
+
+// An Actor can run on its own model, chosen from the engine's list. A change
+// takes effect from the Actor's next stop: the stop already taken keeps the
+// model it ran on. The engine's own usage record names the model each turn ran on.
+const modelRanOn = async (triggerEventId, label) => {
+  const usage = await until((push) => push.type === "runtime_telemetry" && push.payload?.telemetry?.kind === "usage"
+    && push.payload.telemetry.payload?.trigger_event_id === triggerEventId, label, 60000);
+  const model = usage.payload.telemetry.payload.usage?.model;
+  if (typeof model !== "string" || model === "") throw new Error(label + " named no model: " + JSON.stringify(usage.payload.telemetry.payload));
+  return model;
+};
+const firstModel = await modelRanOn(guardSent.event_ref.id, "the created Actor's first usage record");
+const preferred = ["gpt-5-mini", "gpt-4.1", "claude-haiku-4.5", "gpt-5.4-mini"];
+const ownModel = usableModels.find((model) => preferred.includes(model.id) && model.id !== firstModel)
+  ?? usableModels.find((model) => model.id !== firstModel);
+if (!ownModel) throw new Error("the engine listed no model other than " + firstModel + " to give the created Actor");
+const greeterBinding = (await invoke({ operation_id: "actor.runtime-binding.inspect", operation_version: "1", input_schema_version: "1",
+  idempotency_key: "guard-greeter-binding", target: { kind: "actor", id: guardActor.actor.actor_id }, input: {} })).current_binding;
+const rebound = (await invoke({ operation_id: "actor.runtime-binding.replace", operation_version: "1", input_schema_version: "1",
+  idempotency_key: "guard-greeter-model", target: { kind: "actor_runtime_binding", id: greeterBinding.actor_runtime_binding_id },
+  expected_resource_revision: greeterBinding.actor_runtime_binding_id,
+  input: { runtime_profile_revision_id: greeterBinding.runtime_profile_revision_id, status: greeterBinding.status, model: ownModel.id } })).binding;
+if (rebound.model !== ownModel.id) throw new Error("the created Actor's binding did not take its own model: " + JSON.stringify(rebound));
+const guardContextNow = (await invoke({ operation_id: "context.get", operation_version: "1", input_schema_version: "1",
+  idempotency_key: "guard-actor-context-get", target: { kind: "context", id: guardContext.context_id }, input: {} })).context;
+const ownModelSent = await invoke({
+  operation_id: "context.communication.emit", operation_version: "1", input_schema_version: "2",
+  target: { kind: "context", id: guardContext.context_id }, expected_resource_revision: String(guardContextNow.state_revision),
+  idempotency_key: "guard-actor-own-model-turn",
+  input: { event_type: "message", recipient_participant_id: guardActor.actor.actor_id,
+    content: { text: "Reply with the single word: again" }, response_expected: true },
+});
+const ownModelResult = await until((push) => push.type === "event_submitted"
+  && push.payload?.event?.content?.data?.origin === "runtime_turn_result"
+  && push.payload.event.content.data.cause_event_id === ownModelSent.event_ref.id, "the created Actor's turn on its own model", 180000);
+if (ownModelResult.payload.event.content.data.outcome !== "completed") {
+  throw new Error("the created Actor's turn on its own model did not complete: " + JSON.stringify(ownModelResult.payload.event.content));
+}
+const secondModel = await modelRanOn(ownModelSent.event_ref.id, "the created Actor's usage on its own model");
+if (secondModel !== ownModel.id) throw new Error("the created Actor was given " + ownModel.id + " but its next stop ran on " + secondModel);
+step("the created Actor's first stop ran on " + firstModel + "; given its own model " + ownModel.id + ", its next stop ran on " + secondModel);
 
 
 // Pause 20 real turns mid-flight, then resume each one. Every interrupted shell
@@ -1091,7 +1151,7 @@ step("a step whose attempt failed without handing anything on was pushed as fail
 // Required output is never waited on silently. A step with one required output
 // hands on its reply; otherwise Floe sends one visible reminder, then the step
 // either completes or fails with "required output not handed on".
-const handOnRoute = async (key, outputs, request) => {
+const handOnRoute = async (key, outputs, request, schema) => {
   const routeScope = (await invokeAs("completed", { operation_id: "scope.create", idempotency_key: "guard-" + key + "-scope", input: { title: "Release guard " + key } })).scope;
   const routeIngress = (await invokeAs("completed", { operation_id: "context.create", idempotency_key: "guard-" + key + "-ingress",
     input: { scope_id: routeScope.scope_id, title: "Release guard " + key + " input", participants: [] } })).context;
@@ -1105,7 +1165,8 @@ const handOnRoute = async (key, outputs, request) => {
       ports: [
         { port_id: "ingress:out", node_id: "ingress", name: "work", direction: "output", event_types: ["work.requested"] },
         { port_id: "worker:in", node_id: "worker", name: "work", direction: "input", event_types: ["work.requested"], min_count: 1 },
-        ...outputs.map((name) => ({ port_id: "worker:" + name, node_id: "worker", name, direction: "output", event_types: ["work.completed"], min_count: 1 })),
+        ...outputs.map((name) => ({ port_id: "worker:" + name, node_id: "worker", name, direction: "output", event_types: ["work.completed"], min_count: 1,
+          ...(schema ? { schema } : {}) })),
       ],
       edges: [{ edge_id: "ingress-to-worker", source_port_id: "ingress:out", target_port_id: "worker:in" }],
     } } })).revision;
@@ -1128,7 +1189,9 @@ const handOnRoute = async (key, outputs, request) => {
     target: { kind: "scope_execution", id: run.execution_id }, input: { include_outputs: true } });
   return { settled: settled.payload, reminders: reminders.length, outputs: inspected.output_publications ?? [] };
 };
-const [single, reminded, stubborn] = await Promise.all([
+const verdictSchema = { type: "object", required: ["text"],
+  properties: { text: { type: "string", pattern: "^(PASS|FAIL|UNSURE)([^A-Za-z]|$)" } } };
+const [single, reminded, stubborn, judged] = await Promise.all([
   handOnRoute("reply-output", ["result"],
     "Reply with the single word: done. Do not hand on or publish any output through any operation; your reply is enough."),
   handOnRoute("reminded-output", ["first", "second"],
@@ -1136,6 +1199,9 @@ const [single, reminded, stubborn] = await Promise.all([
     + "follow the reminder exactly: hand on output first with text one and output second with text two."),
   handOnRoute("stubborn-output", ["first", "second"],
     "Reply with the single word: no. Never hand on or publish any output through any operation, even if Floe reminds you."),
+  handOnRoute("judged-output", ["verdict"],
+    "Judge whether 2 + 2 equals 4. Reply with PASS, FAIL or UNSURE as the first word of your first line, then one short reason. "
+    + "Do not hand on or publish any output through any operation; your reply is enough.", verdictSchema),
 ]);
 const replyOutput = single.outputs.find((output) => output.port_id === "worker:result");
 if (single.settled.to_status !== "completed" || replyOutput?.event?.metadata?.output_source !== "turn_reply" || !String(replyOutput.event.content?.text ?? "").trim()) {
@@ -1153,6 +1219,105 @@ if (stubborn.settled.to_status !== "failed" || stubborn.reminders !== 1 || stubb
   throw new Error("a step that ignored its reminder did not fail with its reason: " + JSON.stringify({ settled: stubborn.settled, reminders: stubborn.reminders }));
 }
 step("a step that ignored its one reminder failed, never looped: " + JSON.stringify(stubborn.settled.failure.message));
+const verdict = judged.outputs.find((output) => output.port_id === "worker:verdict");
+if (judged.settled.to_status !== "completed" || !/^PASS([^A-Za-z]|$)/.test(String(verdict?.event?.content?.text ?? ""))) {
+  throw new Error("a judge's PASS reply was not accepted by its Port's schema: " + JSON.stringify({ settled: judged.settled, outputs: judged.outputs }));
+}
+step("a judge's reply matched its Port's schema and was handed on as its verdict: " + JSON.stringify(String(verdict.event.content.text).slice(0, 40)));
+
+// A route that breaks its own rules is refused before anything runs.
+const invokeRaw = async (body) => {
+  const response = await fetch(bus + "/v1/workspaces/" + encodeURIComponent(joined.workspace_id) + "/operations/invoke", {
+    method: "POST", headers: auth, body: JSON.stringify({ operation_version: "1", input_schema_version: "1", ...body }),
+  });
+  return { status: response.status, json: await response.json() };
+};
+const refusedWith = async (body, expected, label) => {
+  const { status, json } = await invokeRaw(body);
+  const text = JSON.stringify(json);
+  if (json.receipt?.state === "completed" || !text.includes(expected)) {
+    throw new Error(label + " was not refused with '" + expected + "': " + status + " " + text);
+  }
+};
+const rulesScope = (await invokeAs("completed", { operation_id: "scope.create", idempotency_key: "guard-rules-scope", input: { title: "Release guard rules" } })).scope;
+const rulesIngress = (await invokeAs("completed", { operation_id: "context.create", idempotency_key: "guard-rules-ingress",
+  input: { scope_id: rulesScope.scope_id, title: "Release guard rules input", participants: [] } })).context;
+const ingressNode = { node_id: "ingress", kind: "event", config: { event_type: "work.requested" }, context_policy: { mode: "fixed", context_id: rulesIngress.context_id } };
+const ingressPort = { port_id: "ingress:out", node_id: "ingress", name: "work", direction: "output", event_types: ["work.requested"] };
+await refusedWith({ operation_id: "scope.composition.draft.create", idempotency_key: "guard-bad-schema-draft",
+  target: { kind: "scope", id: rulesScope.scope_id }, expected_resource_revision: "none",
+  input: { content: {
+    nodes: [ingressNode, { node_id: "worker", kind: "actor", resource_id: floe, activation: { mode: "per_delivery" }, context_policy: { mode: "new_per_execution" } }],
+    ports: [ingressPort,
+      { port_id: "worker:in", node_id: "worker", name: "work", direction: "input", event_types: ["work.requested"], min_count: 1 },
+      { port_id: "worker:out", node_id: "worker", name: "result", direction: "output", event_types: ["work.completed"], schema: { type: "object", requird: ["text"] } }],
+    edges: [{ edge_id: "ingress-to-worker", source_port_id: "ingress:out", target_port_id: "worker:in" }],
+  } } }, "schema is not usable", "a route whose output schema is misspelt");
+step("a route whose output schema is misspelt was refused, naming the Port");
+await refusedWith({ operation_id: "scope.composition.draft.create", idempotency_key: "guard-same-judge-draft",
+  target: { kind: "scope", id: rulesScope.scope_id }, expected_resource_revision: "none",
+  input: { content: {
+    nodes: [ingressNode,
+      { node_id: "builder", kind: "actor", resource_id: floe, activation: { mode: "per_delivery" }, context_policy: { mode: "new_per_execution" } },
+      { node_id: "judge", kind: "actor", resource_id: floe, activation: { mode: "per_delivery" }, context_policy: { mode: "new_per_execution" }, distinct_actor_from: ["builder"] }],
+    ports: [ingressPort,
+      { port_id: "builder:in", node_id: "builder", name: "work", direction: "input", event_types: ["work.requested"], min_count: 1 },
+      { port_id: "judge:in", node_id: "judge", name: "work", direction: "input", event_types: ["work.requested"], min_count: 1 }],
+    edges: [
+      { edge_id: "ingress-to-builder", source_port_id: "ingress:out", target_port_id: "builder:in" },
+      { edge_id: "ingress-to-judge", source_port_id: "ingress:out", target_port_id: "judge:in" }],
+  } } }, "must have different Actors", "a route whose judge is its builder");
+step("a route whose judge is the same Actor as its builder was refused");
+
+// A person can hold a route's start for their approval with an ordinary Policy.
+// Nothing starts until they approve; the request and the decision are pushed.
+const policyDraft = (await invokeAs("completed", { operation_id: "policy.create", idempotency_key: "guard-approval-policy",
+  input: { category: "operation", content: { label: "Release guard approval", description: "The person approves the route before it starts.",
+    rules: [{ rule_id: "approve-start", priority: 50, match: { operation_ids: ["scope.execution.start"], scope_ids: [rulesScope.scope_id] },
+      effect: { kind: "require_approval", reason: "The person approves the checks first.", approvers: { mode: "any", principal_ids: ["identity:guard-unset"], roles: [] } } }] } } })).draft;
+const person = policyDraft.created_by_principal_id;
+const namedDraft = await invokeAs("completed", { operation_id: "policy.draft.replace", idempotency_key: "guard-approval-policy-name",
+  target: { kind: "policy_revision", id: policyDraft.policy_revision_id }, expected_resource_revision: policyDraft.semantic_digest,
+  input: { content: { ...policyDraft.content, rules: policyDraft.content.rules.map((rule) => ({ ...rule,
+    effect: { ...rule.effect, approvers: { mode: "any", principal_ids: [person], roles: [] } } })) } } });
+const publishedPolicy = (await invokeAs("completed", { operation_id: "policy.publish", idempotency_key: "guard-approval-policy-publish",
+  target: { kind: "policy_revision", id: namedDraft.policy_revision_id }, expected_resource_revision: namedDraft.semantic_digest,
+  input: { expected_current_revision_id: null } })).revision;
+await invokeAs("completed", { operation_id: "policy.bind", idempotency_key: "guard-approval-policy-bind",
+  target: { kind: "policy_revision", id: publishedPolicy.policy_revision_id }, expected_resource_revision: publishedPolicy.semantic_digest,
+  input: { subject: { kind: "workspace", id: joined.workspace_id } } });
+const approvalDraft = (await invokeAs("completed", { operation_id: "scope.composition.draft.create", idempotency_key: "guard-approval-draft",
+  target: { kind: "scope", id: rulesScope.scope_id }, expected_resource_revision: "none",
+  input: { content: {
+    nodes: [ingressNode, { node_id: "worker", kind: "actor", resource_id: floe, activation: { mode: "per_delivery" }, context_policy: { mode: "new_per_execution" } }],
+    ports: [ingressPort,
+      { port_id: "worker:in", node_id: "worker", name: "work", direction: "input", event_types: ["work.requested"], min_count: 1 },
+      { port_id: "worker:out", node_id: "worker", name: "result", direction: "output", event_types: ["work.completed"], min_count: 1 }],
+    edges: [{ edge_id: "ingress-to-worker", source_port_id: "ingress:out", target_port_id: "worker:in" }],
+  } } })).revision;
+const approvalTarget = { kind: "scope_composition_revision", id: approvalDraft.revision_id };
+const approvalImpact = await invokeAs("completed", { operation_id: "scope.composition.impact.inspect", idempotency_key: "guard-approval-impact",
+  target: approvalTarget, expected_resource_revision: approvalDraft.semantic_digest, input: {} });
+await invokeAs("completed", { operation_id: "scope.composition.publish", idempotency_key: "guard-approval-publish",
+  target: approvalTarget, expected_resource_revision: approvalDraft.semantic_digest,
+  input: { expected_current_published_revision_id: null, expected_impact_digest: approvalImpact.impact_digest } });
+const approvalStart = { operation_id: "scope.execution.start", idempotency_key: "guard-approval-run",
+  target: { kind: "scope", id: rulesScope.scope_id }, expected_resource_revision: approvalDraft.revision_id,
+  input: { ingress_node_id: "ingress", output_port_id: "ingress:out", content: { request: "Reply with the single word: approved" } } };
+const held = await invokeRaw(approvalStart);
+const approvalId = held.json.receipt?.governance?.approval_request_ids?.[0];
+if (held.json.receipt?.state !== "awaiting_approval" || !approvalId) {
+  throw new Error("a route start under an approval Policy was not held for approval: " + held.status + " " + JSON.stringify(held.json));
+}
+await until((push) => push.type === "approval_requested" && push.payload?.request?.approval_request_id === approvalId, "the approval request push", 15000);
+step("a route start under an approval Policy was held, and the approval request was pushed");
+await invokeAs("completed", { operation_id: "approval.decide", idempotency_key: "guard-approve",
+  target: { kind: "approval_request", id: approvalId }, input: { decision: "approved", reason: "Checks look right." } });
+await until((push) => push.type === "approval_decided" && JSON.stringify(push.payload).includes(approvalId), "the approval decision push", 15000);
+const approvedRun = (await invokeAs("accepted", approvalStart)).execution;
+await until((push) => push.type === "node_execution_state_changed" && push.payload.scope_execution_id === approvedRun.execution_id
+  && push.payload.node_id === "worker" && ["completed", "failed"].includes(push.payload.to_status), "the approved route's step settling", 180000);
+step("once the person approved, the decision was pushed and the same start set the route out (" + approvedRun.execution_id + ")");
 
 const readinessPushes = [];
 let readinessArrived = () => {};
@@ -1187,7 +1352,13 @@ for (let pauseRun = 1; pauseRun <= PAUSE_RUNS; pauseRun += 1) {
     } } })).execution;
   await markerSeen;
   const commandStarted = Date.now();
+  let toolPush = null;
   if (pauseRun === 1) {
+    toolPush = await until((push) => push.type === "runtime_telemetry" && push.payload?.telemetry?.kind === "tool_activity"
+      && push.payload.telemetry.payload?.scope_execution_id === run.execution_id && push.payload.telemetry.payload.status === "started",
+      "a live push of the running tool call", 15000);
+    if ("arguments" in toolPush.payload.telemetry.payload) throw new Error("a live tool push carried the tool's arguments");
+    step("mid-command, the running tool call was pushed live: " + toolPush.payload.telemetry.payload.name + " started");
     const turns = await identity.runningTurns();
     if (!turns.some((turn) => turn.workspace_id === joined.workspace_id)) {
       throw new Error("a turn was mid-command but runningTurns() did not name it, so a version switch could interrupt it silently: " + JSON.stringify(turns));
@@ -1226,6 +1397,23 @@ for (let pauseRun = 1; pauseRun <= PAUSE_RUNS; pauseRun += 1) {
     "pause run " + pauseRun + " resumed node settling", 180000);
   if (resumed.payload.to_status !== "completed") {
     throw new Error("pause run " + pauseRun + " resumed turn failed: " + JSON.stringify(resumed.payload));
+  }
+  if (pauseRun === 1) {
+    // A person can read afterwards which model the resumed turn ran on and which
+    // tools it used, with Floe's decision on each, and never the arguments.
+    const pausedDelivery = toolPush.payload.telemetry.delivery_id;
+    const resumedDelivery = pushes.find((push) => push.type === "runtime_telemetry" && push.payload?.telemetry?.kind === "tool_activity"
+      && push.payload.telemetry.payload?.scope_execution_id === run.execution_id && push.payload.telemetry.delivery_id !== pausedDelivery)
+      ?.payload.telemetry.delivery_id;
+    if (!resumedDelivery) throw new Error("the resumed turn pushed no tool call, so its tools cannot be read back");
+    const turn = await invoke({ operation_id: "runtime.delivery.inspect", operation_version: "1", input_schema_version: "1",
+      idempotency_key: "guard-turn-inspect", target: { kind: "runtime_delivery", id: resumedDelivery }, input: {} });
+    const decided = turn.tools.find((tool) => tool.name && tool.decision === "allow" && tool.status === "completed");
+    if (typeof turn.model !== "string" || turn.model === "" || !decided) {
+      throw new Error("runtime.delivery.inspect did not show the resumed turn's model and a decided tool call: " + JSON.stringify(turn));
+    }
+    if (JSON.stringify(turn).includes("guard-pause-started")) throw new Error("runtime.delivery.inspect showed a tool's arguments");
+    step("runtime.delivery.inspect read the resumed turn: ran on " + turn.model + ", used " + decided.name + " (" + decided.operation_id + ", " + decided.decision + ")");
   }
   await new Promise((resolve) => setTimeout(resolve, Math.max(0, commandStarted + (HOLD_SECONDS + 5) * 1000 - Date.now())));
   if (existsSync(finished)) {

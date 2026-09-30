@@ -32,6 +32,34 @@ Workspace or host defaults may participate in runtime resolution, but every
 ExecutionAttempt records the exact ActorDefinitionRevision,
 RuntimeProfileRevision, and binding it actually used.
 
+## An Actor's own model
+
+A binding may carry its own `model`, overriding the profile revision's model,
+so each Actor can run its own model on one shared RuntimeProfile. Set it with
+`actor.runtime-binding.create`, `actor.runtime-binding.replace` or
+`actor.setup`. On replace, omitting `model` keeps the current one and `null`
+returns the Actor to the profile's model. Choose from the engine's own list:
+`models(engine)` on the engines channel (see the
+[engine control protocol](../../reference/engine-control-protocol.md)).
+A model the engine does not offer is refused before any model call, naming
+the requested and the available models.
+
+Every change creates a new binding and retains the one it replaced, so history
+shows which model each turn ran.
+
+## When a model change takes effect
+
+**From the Actor's next stop, never mid-stop.** A stop (a NodeExecution in a
+Scope run) pins the Actor's current binding when it begins, and every retry of
+that stop reuses the same pins. A direct message pins the binding current when
+it is delivered. So changing an Actor's model mid-journey leaves the stop in
+progress, and any retry of it, on the old model; the Actor's next stop or
+message runs the new one.
+
+This is deliberate: a stop's result must be explainable by exactly one
+configuration. Publishing a new RuntimeProfile revision does not move an
+Actor either, because a binding names an exact revision; rebinding does.
+
 A NodePlacement may add revision-specific runtime policy for one Scope design.
 Publishing the ScopeCompositionRevision freezes that semantic configuration.
 Changing a current Actor or Workspace default cannot rewrite an existing

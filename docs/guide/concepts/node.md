@@ -31,6 +31,28 @@ Branching is one output Port connected to several input Ports. Convergence is
 several Edges satisfying one placement's activation contract. These are
 topology, not special node kinds.
 
+## Output shape
+
+An output Port may declare a `schema`: a JSON Schema every publication's
+content must satisfy. A publication that does not match is refused, naming the
+fields, for example `output does not match Port 'verdict' schema: /text must
+match pattern "^(PASS|FAIL|UNSURE)\b"`. A schema that cannot be compiled is
+refused when the route is saved or published.
+
+A turn's reply handed on as a step's only required output arrives as
+`{"text": "..."}` and is checked the same way. If it does not match, the Actor's
+one reminder says why; if the output is still missing after it, the step fails
+with that reason.
+
+`schema_ref` is only a name for the contract, matched against a Command's
+`$ref`. It is not enforced on its own.
+
+## Separation of duties
+
+An Actor node may declare `distinct_actor_from`: other Actor nodes whose Actor
+must differ from its own, for example a judge that must never be a builder.
+A route that breaks it is refused when saved, when published, and when started.
+
 ## Context policy
 
 Every NodeExecution references an inspectable writable Context. The placement's

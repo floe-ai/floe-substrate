@@ -20,6 +20,16 @@ export class AjvOperationSchemaValidator implements OperationSchemaValidator {
     };
   }
 
+  /** The reason a schema cannot be used, or null when it compiles. */
+  compileError(schema: JsonSchema): string | null {
+    try {
+      this.compiled.get(schema) ?? this.compile(schema);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
   private compile(schema: JsonSchema): ValidateFunction {
     const validator = this.ajv.compile(schema);
     this.compiled.set(schema, validator);

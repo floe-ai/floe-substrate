@@ -31,6 +31,25 @@ export type EngineState = {
   revision: number;
 };
 
+/** One model the engine itself says it offers this account. */
+export type EngineModel = {
+  /** What an Actor's runtime binding or profile names as its `model`. */
+  id: string;
+  /** The engine's display name; the id when the engine gives none. */
+  name: string;
+  /** false when the account's policy disables it; null when the engine does not say. */
+  enabled: boolean | null;
+  /** Cost relative to the engine's base rate, when the engine says. */
+  cost_multiplier?: number;
+  context_window_tokens?: number;
+  vision?: boolean;
+  reasoning_efforts?: string[];
+  default_reasoning_effort?: string;
+};
+
+/** The `models` operation's result. */
+export type EngineModels = { engine: string; models: EngineModel[] };
+
 /** Welcome state and the `state` operation's result. */
 export type EnginesSnapshot = { engines: Record<string, EngineState> };
 

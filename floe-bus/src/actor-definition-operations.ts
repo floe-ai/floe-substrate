@@ -31,10 +31,13 @@ import {
   type SemanticOperationRegistry,
 } from "./operations.js";
 import type { SqliteCapabilityGrantStore } from "./capability-grants.js";
+import { capabilityGrantSchema, unavailableGrantSchema } from "./capability-grant-schema.js";
 import {
   ALL_ENGINE_TOOL_OPERATION_IDS,
+  actorAccess,
   passOnEngineToolAccess,
   ToolAccessWideningError,
+  type ActorAccess,
   type NewActorToolAccess,
 } from "./actor-tool-access.js";
 
@@ -73,6 +76,7 @@ export type ActorInspection = Readonly<{
   history_complete: boolean;
   revisions: readonly ActorDefinitionRevision[];
   head_changes: readonly ActorDefinitionHeadChange[];
+  access: ActorAccess;
 }>;
 
 const nonEmptyString: JsonSchema = { type: "string", minLength: 1 };
@@ -225,13 +229,25 @@ const actorListResultSchema: JsonSchema = {
 const actorInspectionSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["actor", "current_definition", "history_complete", "revisions", "head_changes"],
+  required: ["actor", "current_definition", "history_complete", "revisions", "head_changes", "access"],
   properties: {
     actor: actorSchema,
     current_definition: { oneOf: [actorDefinitionRevisionSchema, { type: "null" }] },
     history_complete: { type: "boolean" },
     revisions: { type: "array", items: actorDefinitionRevisionSchema },
     head_changes: { type: "array", items: actorHeadChangeSchema },
+    access: {
+      type: "object",
+      additionalProperties: false,
+      description: "What this Actor may do right now, checked the same way as its own turns. Grants carry the operations and their target limits; engine_tool_operation_ids is its file, command and network access.",
+      required: ["active_grants", "delegable_grants", "unavailable_grants", "engine_tool_operation_ids"],
+      properties: {
+        active_grants: { type: "array", items: capabilityGrantSchema },
+        delegable_grants: { type: "array", items: capabilityGrantSchema, description: "Access it may only pass on, never use itself." },
+        unavailable_grants: { type: "array", items: unavailableGrantSchema, description: "Grants its definition names that no longer count, with why." },
+        engine_tool_operation_ids: { type: "array", items: { enum: [...ALL_ENGINE_TOOL_OPERATION_IDS] } },
+      },
+    },
   },
 };
 const actorAndDraftSchema: JsonSchema = {
@@ -518,6 +534,7 @@ export function listActorsOperation(
 
 export function inspectActorOperation(
   store: ActorDefinitionStore,
+  grants: SqliteCapabilityGrantStore,
 ): SemanticOperationDefinition<{ include_history?: boolean }, ActorInspection> {
   return {
     operation_id: INSPECT_ACTOR_OPERATION_ID,
@@ -538,11 +555,12 @@ export function inspectActorOperation(
       if (!actor) throw new ActorNotFoundError(context.target!.ref.id);
       const all = store.listRevisions(actor.actor_id);
       const includeHistory = input.include_history === true;
+      const currentDefinition = store.getCurrentDefinition(actor.actor_id);
       return {
         state: "completed" as const,
         result: {
           actor,
-          current_definition: store.getCurrentDefinition(actor.actor_id),
+          current_definition: currentDefinition,
           history_complete: includeHistory,
           revisions: includeHistory
             ? all
@@ -550,6 +568,7 @@ export function inspectActorOperation(
                 revision.actor_definition_revision_id === actor.current_definition_revision_id
                 || (!revision.published_at && !revision.withdrawn_at)),
           head_changes: includeHistory ? store.listHeadChanges(actor.actor_id) : [],
+          access: actorAccess(grants, actor.workspace_id, actor.actor_id, currentDefinition),
         },
         audit_ref: auditRef(context),
       };
@@ -909,7 +928,7 @@ export function actorDefinitionOperationDefinitions(
 ): SemanticOperationDefinition<any, any>[] {
   return [
     listActorsOperation(store),
-    inspectActorOperation(store),
+    inspectActorOperation(store, grants),
     getActorDefinitionOperation(store),
     createActorOperation(store, grants),
     createActorDefinitionDraftOperation(store),

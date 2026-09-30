@@ -65,6 +65,8 @@ import {
 import {
   ScopeCompositionStore,
   ScopeCompositionInvalidError,
+  assertDistinctActors,
+  portSchemaValidator,
   inspectScopeCompositionValidation as inspectScopeStructure,
   applyScopeCompositionSchema,
   type ScopeCompositionContent,
@@ -330,6 +332,7 @@ import {
   type RuntimeDeliveryState,
   type RuntimeDeliveryCancellation,
 } from "./runtime-delivery-operations.js";
+import { inspectRuntimeDeliveryOperation, inspectRuntimeTurn, type RuntimeTurnInspection } from "./runtime-turn-inspection.js";
 import {
   registerContextOperations,
   resolveContextOperationResource,
@@ -1125,6 +1128,9 @@ export class BusStore {
     operationRegistry = registerContextOperations(operationRegistry, this.contextOperationBackend);
     operationRegistry.register(cancelRuntimeDeliveryOperation({
       cancel: input => this.cancelRuntimeDelivery(input, (type, payload = {}) => this.broadcastFn?.(type, payload)),
+    }));
+    operationRegistry.register(inspectRuntimeDeliveryOperation({
+      inspect: (workspaceId, deliveryId) => this.inspectRuntimeTurn(workspaceId, deliveryId),
     }));
     operationRegistry = registerRuntimeProfileOperations(operationRegistry, this.runtimeProfileStore);
     operationRegistry.register(setupActorOperation({ actors: this.actorDefinitionStore, runtimes: this.runtimeProfileStore,
@@ -2486,6 +2492,12 @@ export class BusStore {
     if (revision.routing_mode !== "edge") {
       throw new ScopeExecutionInvalidError(`revision '${revision.revision_id}' uses legacy routing and cannot start through the Edge execution API`);
     }
+    try {
+      assertDistinctActors(revision.nodes);
+    } catch (error) {
+      if (error instanceof ScopeCompositionInvalidError) throw new ScopeExecutionInvalidError(error.reason);
+      throw error;
+    }
     const ingressNode = revision.nodes.find((node) => node.node_id === input.ingress_node_id);
     if (!ingressNode || ingressNode.kind !== "event") {
       throw new ScopeExecutionInvalidError(`ingress node '${input.ingress_node_id}' is not an Event placement in the published revision`);
@@ -2751,6 +2763,16 @@ export class BusStore {
     const eventType = input.event_type ?? port.event_types?.find((value) => value !== "*") ?? "scope.output";
     if (port.event_types?.length && !port.event_types.includes("*") && !port.event_types.includes(eventType)) {
       throw new ScopeExecutionInvalidError(`Event type '${eventType}' is not accepted by output Port '${port.port_id}'`);
+    }
+    if (port.schema) {
+      const validation = portSchemaValidator.validate(port.schema, input.content);
+      if (!validation.valid) {
+        const fields = validation.issues.map((issue) =>
+          `${issue.instance_path || "(content)"} ${issue.message}`).join("; ");
+        throw new ScopeExecutionInvalidError(
+          `output does not match Port '${port.name || port.port_id}' schema: ${fields}`,
+        );
+      }
     }
     const artefactVersionIds = this.requireArtefactVersionsForPort(
       execution.workspace_id,
@@ -3300,8 +3322,17 @@ export class BusStore {
   /**
    * Retains an ApprovalRequest only after an optional Scope continuation is
    * proven to name the exact waiting NodeExecution and its pinned output Ports.
+   * Every request is pushed, so a person's surface learns it waits without asking.
    */
   createApprovalRequest(
+    input: Parameters<ApprovalOperationBackend["createRequest"]>[0],
+  ): ApprovalRequestRecord {
+    const request = this.createApprovalRequestRecord(input);
+    this.broadcastFn?.("approval_requested", { request });
+    return request;
+  }
+
+  private createApprovalRequestRecord(
     input: Parameters<ApprovalOperationBackend["createRequest"]>[0],
   ): ApprovalRequestRecord {
     return this.transaction(() => {
@@ -7404,6 +7435,36 @@ export class BusStore {
     `).all(filters.workspace_id, ...deliveryIds, ...excludedKinds, limit) as unknown[]).reverse();
   }
 
+  /** One turn's model(s) and tool calls, read from its telemetry and tool decisions. */
+  inspectRuntimeTurn(workspaceId: string, deliveryId: string): RuntimeTurnInspection {
+    const row = this.db.prepare(`
+      SELECT d.delivery_id, d.workspace_id, d.endpoint_id, d.state, d.trigger_event_id, d.stable_delivery_ids_json,
+        e.context_id
+      FROM delivery_bundles d LEFT JOIN events e ON e.event_id = d.trigger_event_id
+      WHERE d.delivery_id = ?
+    `).get(deliveryId) as Record<string, string | null> | undefined;
+    if (!row || row.workspace_id !== workspaceId) throw new Error("Runtime response is unavailable in this Workspace.");
+    const telemetry = (this.db.prepare(`
+      SELECT kind, payload_json, created_at FROM runtime_telemetry
+      WHERE workspace_id = ? AND delivery_id = ? AND kind IN ('usage', 'tool_activity')
+      ORDER BY created_at, telemetry_id
+    `).all(workspaceId, deliveryId) as Array<{ kind: string; payload_json: string; created_at: string }>)
+      .map((record) => ({ kind: record.kind, payload: parseJson<Record<string, unknown>>(record.payload_json) ?? {}, created_at: record.created_at }));
+    const evaluations = this.policyStore.listToolEvaluationsForTurn({
+      workspace_id: workspaceId,
+      cause_event_id: String(row.trigger_event_id),
+      delivery_ids: parseJson<string[]>(row.stable_delivery_ids_json ?? "[]") ?? [],
+    });
+    return inspectRuntimeTurn({
+      delivery: {
+        delivery_id: String(row.delivery_id), state: String(row.state), endpoint_id: String(row.endpoint_id),
+        context_id: row.context_id ?? null, trigger_event_id: String(row.trigger_event_id),
+      },
+      telemetry,
+      evaluations,
+    });
+  }
+
   getEvent(eventId: string): EventEnvelope | null {
     const row = this.db.prepare("SELECT * FROM events WHERE event_id = ?").get(eventId) as any;
     return row ? this.rowToEvent(row) : null;
@@ -9803,8 +9864,9 @@ export class BusStore {
     const required = revision.ports.filter((port) =>
       port.node_id === current.node_id && port.direction === "output" && (port.min_count ?? 0) > 0);
     let missing = this.missingRequiredOutputPorts(revision, current);
+    let replyRefusal: string | null = null;
     if (missing.length === 1 && required.length === 1 && placement?.kind === "actor" && placement.resource_id) {
-      this.handOnTurnReply(current, placement.resource_id, missing[0]!, attemptId);
+      replyRefusal = this.handOnTurnReply(current, placement.resource_id, missing[0]!, attemptId);
       missing = this.missingRequiredOutputPorts(revision, current);
     }
     const settled = this.scopeExecutionStore.getNodeExecution(current.node_execution_id) as NodeExecutionRecord;
@@ -9818,7 +9880,7 @@ export class BusStore {
     if (placement?.kind !== "actor" || !placement.resource_id || reminded) {
       this.scopeExecutionStore.setNodeExecutionStatus(current.node_execution_id, "failed", {
         code: "required_output_not_handed_on",
-        message: `required output not handed on: ${names}`,
+        message: `required output not handed on: ${names}${replyRefusal ? ` (${replyRefusal})` : ""}`,
         required_port_ids: missing.map((port) => port.port_id),
         safe_to_retry_automatically: false,
       });
@@ -9837,6 +9899,7 @@ export class BusStore {
         text: [
           `Reminder from Floe: your turn ended without handing on this step's required output: ${missing
             .map((port) => `${port.name || port.port_id} (port_id ${port.port_id})`).join(", ")}.`,
+          ...(replyRefusal ? [`Your reply could not be handed on as that output: ${replyRefusal}.`] : []),
           `Hand it on now with the ${PUBLISH_SCOPE_OUTPUT_OPERATION_ID} operation for node execution ${current.node_execution_id}, `
             + `once per port, with lifecycle_outcome "completed"${needsFiles ? " and the exact ArtefactVersion references the port accepts" : ""}.`,
           "This is the only reminder. If the output is still missing when this turn ends, the step fails with \"required output not handed on\".",
@@ -9880,20 +9943,22 @@ export class BusStore {
 
   /**
    * Hands on a turn's reply through the step's only required output, exactly
-   * as an explicit publication would. An explicit publication already made
-   * wins; a Port that needs a schema or saved files cannot be satisfied by text.
+   * as an explicit publication would, as `{text}`. An explicit publication
+   * already made wins; a Port that needs saved files cannot be satisfied by
+   * text, nor can a named contract without an enforceable schema. Returns why
+   * the reply was refused as output, if it was.
    */
-  private handOnTurnReply(node: NodeExecutionRecord, actorId: string, port: ScopePort, attemptId: string): void {
-    if (port.schema_ref || ((port.artefact_types?.length ?? 0) > 0)) return;
+  private handOnTurnReply(node: NodeExecutionRecord, actorId: string, port: ScopePort, attemptId: string): string | null {
+    if ((port.schema_ref && !port.schema) || ((port.artefact_types?.length ?? 0) > 0)) return null;
     const resultRow = this.db.prepare("SELECT * FROM events WHERE idempotency_key = ?")
       .get(`runtime-turn-result:attempt:${attemptId}`) as any;
-    if (!resultRow) return;
+    if (!resultRow) return null;
     const result = this.rowToEvent(resultRow);
     const text = typeof result.content?.text === "string" ? result.content.text.trim() : "";
-    if (result.metadata?.outcome !== "completed" || !text) return;
+    if (result.metadata?.outcome !== "completed" || !text) return null;
     const execution = this.scopeExecutionStore.getExecution(node.execution_id) as ScopeExecutionRecord;
     const idempotencyKey = `turn-reply-output:${attemptId}`;
-    if (this.replayedScopeNodeOutput(idempotencyKey)) return;
+    if (this.replayedScopeNodeOutput(idempotencyKey)) return null;
     let recorded: ScopeNodeOutputRecorded;
     try {
       recorded = this.writeScopeNodeOutput({
@@ -9907,12 +9972,13 @@ export class BusStore {
         output_source: "turn_reply",
       });
     } catch (error) {
-      // Refused as output (for example an Event type the Port does not accept):
-      // the step is still missing its output and settles as such.
-      if (error instanceof ScopeExecutionInvalidError) return;
+      // Refused as output (for example an Event type or schema the Port does
+      // not accept): the step is still missing its output and settles as such.
+      if (error instanceof ScopeExecutionInvalidError) return error.reason;
       throw error;
     }
     this.announceAfterCommit(() => this.announceScopeNodeOutput(recorded, this.broadcastFn!), recorded.event.event_id);
+    return null;
   }
 
   /**

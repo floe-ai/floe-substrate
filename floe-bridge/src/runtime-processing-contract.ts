@@ -28,7 +28,9 @@ export function selectPinnedRuntime(
   assertContractPins(contract);
   const configuration = contract.runtime.profile.content.configuration;
   const provider = optionalString(configuration.provider, "configuration.provider");
-  const model = optionalString(configuration.model, "configuration.model");
+  const profileModel = optionalString(configuration.model, "configuration.model");
+  const actorModel = optionalString(contract.runtime.binding.model, "binding.model");
+  const model = actorModel ?? profileModel;
   const authProfile = optionalString(
     configuration.auth_profile ?? configuration.auth_profile_id,
     "configuration.auth_profile",
@@ -45,7 +47,7 @@ export function selectPinnedRuntime(
     adapter_id: requiredString(contract.runtime.profile.content.adapter_id, "adapter_id"),
     config: Object.freeze({
       ...(provider ? { provider } : {}),
-      ...(model ? { model, model_source: "runtime_profile_revision" } : {}),
+      ...(model ? { model, model_source: actorModel ? "actor_runtime_binding" : "runtime_profile_revision" } : {}),
       ...(authProfile ? {
         auth_profile: authProfile,
         auth_profile_source: "runtime_profile_revision",

@@ -231,4 +231,59 @@ describe("handing on a step's required output", () => {
     expect(node(fileRun.executionId).status).toBe("retrying");
     expect(outputs(fileRun.nodeExecutionId)).toEqual([]);
   });
+
+  describe("a Port that declares an output schema", () => {
+    const verdict = {
+      type: "object",
+      required: ["text"],
+      properties: { text: { type: "string", pattern: "^(PASS|FAIL|UNSURE)\\b" } },
+    };
+
+    it("refuses a publication that does not match, naming the field, and accepts one that does", () => {
+      const run = start([{ port_id: "worker:verdict", schema: verdict }]);
+      const [delivery] = handle.store.claimDeliveries(BRIDGE, 1, handle.broadcast);
+      handle.store.prepareRuntimeDelivery({ bridge_id: BRIDGE, delivery_id: delivery!.delivery_id }, handle.broadcast);
+      handle.store.reportDeliveryStatus({ bridge_id: BRIDGE, delivery_id: delivery!.delivery_id, state: "injected_to_runtime" }, handle.broadcast);
+      const publish = (content: Record<string, unknown>, key: string) => handle.store.publishScopeNodeOutput({
+        workspace_id: workspaceId,
+        node_execution_id: run.nodeExecutionId,
+        port_id: "worker:verdict",
+        publisher_endpoint_id: actorId,
+        content,
+        idempotency_key: key,
+        lifecycle_outcome: "completed",
+      }, handle.broadcast);
+      expect(() => publish({ text: "looks fine to me" }, "bad-shape"))
+        .toThrow(/output does not match Port 'verdict' schema: \/text must match pattern/);
+      expect(() => publish({ reason: "no text" }, "missing-field"))
+        .toThrow(/must have required property 'text'/);
+      expect(outputs(run.nodeExecutionId)).toEqual([]);
+      publish({ text: "PASS the error shows" }, "good-shape");
+      expect(outputs(run.nodeExecutionId)).toEqual([
+        { port_id: "worker:verdict", text: "PASS the error shows", output_source: null },
+      ]);
+    });
+
+    it("hands on a reply that matches, and reminds with the reason when it does not", () => {
+      const good = start([{ port_id: "worker:verdict", schema: verdict }]);
+      turn(good.nodeExecutionId, { reply: "FAIL\nthe page shows no error" });
+      expect(node(good.executionId).status).toBe("completed");
+      expect(outputs(good.nodeExecutionId)[0]).toMatchObject({ output_source: "turn_reply" });
+
+      const bad = start([{ port_id: "worker:verdict", schema: verdict }]);
+      turn(bad.nodeExecutionId, { reply: "I think it works" });
+      expect(node(bad.executionId).status).toBe("retrying");
+      const [reminder] = reminders(bad.nodeExecutionId);
+      expect(JSON.parse(reminder!.content_json).text)
+        .toMatch(/Your reply could not be handed on as that output: output does not match Port 'verdict' schema: \/text must match pattern/);
+      turn(bad.nodeExecutionId, { reply: "still unsure" });
+      expect(node(bad.executionId).status).toBe("failed");
+      expect(node(bad.executionId).failure?.message).toMatch(/^required output not handed on: verdict \(output does not match/);
+    });
+
+    it("refuses a route whose Port schema cannot be used", () => {
+      expect(() => start([{ port_id: "worker:verdict", schema: { type: "object", requird: ["text"] } }]))
+        .toThrow(/port 'worker:verdict' schema is not usable: strict mode: unknown keyword: "requird"/);
+    });
+  });
 });

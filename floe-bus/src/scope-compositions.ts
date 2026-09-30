@@ -5,6 +5,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { Binding } from "./bindings.js";
+import { AjvOperationSchemaValidator } from "./operation-schema-validator-ajv.js";
+import { addColumnIfMissing } from "./sqlite-columns.js";
+
+/** One validator for Port schemas: compiled once when a route is checked, reused at every publish. */
+export const portSchemaValidator = new AjvOperationSchemaValidator();
 
 export type ScopeCompositionRoutingMode = "edge" | "legacy_subscription";
 export type ScopeCompositionNodeKind =
@@ -68,6 +73,11 @@ export type ScopeNodePlacement = {
   capability_grant_ids?: string[];
   activation?: ScopeActivationPolicy;
   context_policy?: ScopeContextPolicy;
+  /**
+   * Separation of duties: other Actor nodes whose Actor must differ from this
+   * node's Actor. A route that breaks it is refused at publish and at start.
+   */
+  distinct_actor_from?: string[];
 };
 
 export type ScopePort = {
@@ -77,7 +87,13 @@ export type ScopePort = {
   direction: "input" | "output";
   event_types?: string[];
   artefact_types?: string[];
+  /** A name for the Port's contract; matched against a Command contract's `$ref`. */
   schema_ref?: string | null;
+  /**
+   * JSON Schema every publication's content must satisfy. Enforced when output
+   * is published; a refusal names the fields that do not match.
+   */
+  schema?: Record<string, unknown> | null;
   min_count?: number;
   max_count?: number | null;
 };
@@ -260,6 +276,7 @@ function normalizeCompositionContent(content: ScopeCompositionContent): ScopeCom
       capability_grant_ids: [...(node.capability_grant_ids ?? [])].sort(),
       ...(node.activation ? { activation: node.activation } : {}),
       ...(node.context_policy ? { context_policy: node.context_policy } : {}),
+      ...(node.distinct_actor_from?.length ? { distinct_actor_from: [...node.distinct_actor_from].sort() } : {}),
     })),
     ports: content.ports.map((port) => ({
       port_id: port.port_id,
@@ -269,6 +286,7 @@ function normalizeCompositionContent(content: ScopeCompositionContent): ScopeCom
       event_types: port.event_types ?? [],
       artefact_types: port.artefact_types ?? [],
       schema_ref: port.schema_ref ?? null,
+      ...(port.schema ? { schema: port.schema } : {}),
       min_count: port.min_count ?? 0,
       max_count: port.max_count === undefined ? 1 : port.max_count,
     })),
@@ -333,6 +351,16 @@ export function validateScopeComposition(
     if (max !== null && (!Number.isInteger(max) || max < min)) {
       throw new ScopeCompositionInvalidError(`port '${port.port_id}' has invalid max_count`);
     }
+    if (port.schema !== undefined && port.schema !== null) {
+      if (port.direction !== "output") {
+        throw new ScopeCompositionInvalidError(`port '${port.port_id}' is an input; only output Ports carry a schema`);
+      }
+      if (typeof port.schema !== "object" || Array.isArray(port.schema)) {
+        throw new ScopeCompositionInvalidError(`port '${port.port_id}' schema must be a JSON Schema object`);
+      }
+      const problem = portSchemaValidator.compileError(port.schema);
+      if (problem) throw new ScopeCompositionInvalidError(`port '${port.port_id}' schema is not usable: ${problem}`);
+    }
   }
 
   for (const edge of content.edges) {
@@ -357,6 +385,35 @@ export function validateScopeComposition(
   for (const node of content.nodes) {
     requireUnique(node.capability_grant_ids ?? [], `CapabilityGrant id on node '${node.node_id}'`);
     validateNodePolicies(node, content.ports, routingMode);
+  }
+  assertDistinctActors(content.nodes);
+}
+
+/**
+ * Refuses a route in which a node shares its Actor with a node it must differ
+ * from, for example a judge that is also a builder.
+ */
+export function assertDistinctActors(nodes: ScopeNodePlacement[]): void {
+  const byId = new Map(nodes.map((node) => [node.node_id, node]));
+  for (const node of nodes) {
+    for (const otherId of node.distinct_actor_from ?? []) {
+      const other = byId.get(otherId);
+      if (!other) {
+        throw new ScopeCompositionInvalidError(
+          `node '${node.node_id}' must differ from node '${otherId}', which does not exist`,
+        );
+      }
+      if (node.kind !== "actor" || other.kind !== "actor" || !node.resource_id || !other.resource_id) {
+        throw new ScopeCompositionInvalidError(
+          `node '${node.node_id}' and node '${otherId}' must both be Actor nodes naming their Actor to be kept distinct`,
+        );
+      }
+      if (node.resource_id === other.resource_id) {
+        throw new ScopeCompositionInvalidError(
+          `node '${node.node_id}' and node '${otherId}' must have different Actors, but both are '${node.resource_id}'`,
+        );
+      }
+    }
   }
 }
 
@@ -735,6 +792,8 @@ export function applyScopeCompositionSchema(db: DatabaseSync): void {
   if (!placementColumns.some((column) => column.name === "capability_grant_ids_json")) {
     db.exec("ALTER TABLE scope_node_placements ADD COLUMN capability_grant_ids_json TEXT NOT NULL DEFAULT '[]'");
   }
+  addColumnIfMissing(db, "scope_node_placements", "distinct_actor_from_json", "TEXT");
+  addColumnIfMissing(db, "scope_ports", "schema_json", "TEXT");
 
   // Early revisions hashed caller shorthand while storage materialised default
   // Port and Edge values. Correct retained digests once so an exported or
@@ -1063,6 +1122,7 @@ export class ScopeCompositionStore {
         capability_grant_ids: parseJson(node.capability_grant_ids_json, []),
         ...(Object.keys(activation).length > 0 ? { activation: activation as ScopeActivationPolicy } : {}),
         ...(Object.keys(contextPolicy).length > 0 ? { context_policy: contextPolicy as ScopeContextPolicy } : {}),
+        ...(node.distinct_actor_from_json ? { distinct_actor_from: parseJson<string[]>(node.distinct_actor_from_json, []) } : {}),
       };
     });
     const ports = (this.db.prepare(`
@@ -1075,6 +1135,7 @@ export class ScopeCompositionStore {
       event_types: parseJson(port.event_types_json, []),
       artefact_types: parseJson(port.artefact_types_json, []),
       schema_ref: port.schema_ref ?? null,
+      ...(port.schema_json ? { schema: parseJson<Record<string, unknown>>(port.schema_json, {}) } : {}),
       min_count: Number(port.min_count),
       max_count: port.max_count === null ? null : Number(port.max_count),
     }));
@@ -1110,8 +1171,9 @@ export class ScopeCompositionStore {
     const insertNode = this.db.prepare(`
       INSERT INTO scope_node_placements (
         revision_id, node_id, kind, label, resource_id, config_json,
-        bindings_json, capability_grant_ids_json, activation_json, context_policy_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        bindings_json, capability_grant_ids_json, activation_json, context_policy_json,
+        distinct_actor_from_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const node of content.nodes) {
       insertNode.run(
@@ -1125,13 +1187,14 @@ export class ScopeCompositionStore {
         json(node.capability_grant_ids ?? []),
         json(node.activation),
         json(node.context_policy),
+        node.distinct_actor_from?.length ? JSON.stringify(node.distinct_actor_from) : null,
       );
     }
     const insertPort = this.db.prepare(`
       INSERT INTO scope_ports (
         revision_id, port_id, node_id, name, direction, event_types_json,
-        artefact_types_json, schema_ref, min_count, max_count
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        artefact_types_json, schema_ref, min_count, max_count, schema_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const port of content.ports) {
       insertPort.run(
@@ -1145,6 +1208,7 @@ export class ScopeCompositionStore {
         port.schema_ref ?? null,
         port.min_count ?? 0,
         port.max_count === undefined ? 1 : port.max_count,
+        port.schema ? JSON.stringify(port.schema) : null,
       );
     }
     const insertEdge = this.db.prepare(`

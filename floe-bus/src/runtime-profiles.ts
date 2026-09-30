@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { addColumnIfMissing } from "./sqlite-columns.js";
 
 /**
  * The runtime adapter for an Actor whose turns are executed by an attached
@@ -69,6 +70,11 @@ export type ActorRuntimeBindingRecord = Readonly<{
   runtime_profile_id: string;
   runtime_profile_revision_id: string;
   endpoint_id: string | null;
+  /**
+   * This Actor's own model, overriding the profile revision's `model`. null
+   * runs the profile's model. Like the profile, it is pinned when a stop begins.
+   */
+  model: string | null;
   status: "resolved" | "unresolved" | "disabled";
   unresolved_reasons: readonly string[];
   created_by_principal_id: string;
@@ -228,6 +234,7 @@ export function applyRuntimeProfileSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_actor_runtime_bindings_workspace
       ON actor_runtime_bindings(workspace_id, actor_id, created_at DESC);
   `);
+  addColumnIfMissing(db, "actor_runtime_bindings", "model", "TEXT");
 }
 
 export class RuntimeProfileStore {
@@ -425,6 +432,7 @@ export class RuntimeProfileStore {
     actor_id: string;
     runtime_profile_revision_id: string;
     endpoint_id?: string | null;
+    model?: string | null;
     status: "resolved" | "unresolved" | "disabled";
     unresolved_reasons?: readonly string[];
     expected_current_binding_id: string | null;
@@ -432,6 +440,8 @@ export class RuntimeProfileStore {
   }>): ActorRuntimeBindingRecord {
     nonEmpty("actor_id", input.actor_id);
     nonEmpty("created_by_principal_id", input.created_by_principal_id);
+    const model = input.model == null ? null : input.model.trim();
+    if (model === "") throw new RuntimeProfileValidationError("an Actor's model must name a model, or be null to run the profile's model");
     const actor = this.db.prepare(`SELECT actor_id, workspace_id, status FROM actors WHERE actor_id = ?`)
       .get(input.actor_id) as { actor_id: string; workspace_id: string; status: string } | undefined;
     if (!actor) throw new RuntimeProfileValidationError(`Actor '${input.actor_id}' does not exist`);
@@ -473,9 +483,9 @@ export class RuntimeProfileStore {
       this.db.prepare(`
         INSERT INTO actor_runtime_bindings (
           actor_runtime_binding_id, actor_id, workspace_id, runtime_profile_id,
-          runtime_profile_revision_id, endpoint_id, status,
+          runtime_profile_revision_id, endpoint_id, model, status,
           unresolved_reasons_json, created_by_principal_id, created_at, superseded_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
       `).run(
         bindingId,
         actor.actor_id,
@@ -483,6 +493,7 @@ export class RuntimeProfileStore {
         profile.runtime_profile_id,
         revision.runtime_profile_revision_id,
         input.endpoint_id ?? null,
+        model,
         input.status,
         JSON.stringify(reasons),
         input.created_by_principal_id,
@@ -664,6 +675,7 @@ function rowToBinding(row: any): ActorRuntimeBindingRecord {
     runtime_profile_id: String(row.runtime_profile_id),
     runtime_profile_revision_id: String(row.runtime_profile_revision_id),
     endpoint_id: row.endpoint_id == null ? null : String(row.endpoint_id),
+    model: row.model == null ? null : String(row.model),
     status: String(row.status) as ActorRuntimeBindingRecord["status"],
     unresolved_reasons: JSON.parse(String(row.unresolved_reasons_json)) as string[],
     created_by_principal_id: String(row.created_by_principal_id),

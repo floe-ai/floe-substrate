@@ -476,6 +476,10 @@ const nodeSchema: JsonSchema = {
     capability_grant_ids: stringArray,
     activation: activationPolicySchema,
     context_policy: contextPolicySchema,
+    distinct_actor_from: {
+      ...stringArray,
+      description: "Separation of duties: node ids of other Actor nodes whose Actor must differ from this node's Actor, for example a judge that must not be a builder. A route that breaks it is refused at publish and at start.",
+    },
   },
 };
 
@@ -490,7 +494,11 @@ const portSchema: JsonSchema = {
     direction: { enum: ["input", "output"] },
     event_types: stringArray,
     artefact_types: stringArray,
-    schema_ref: nullableString,
+    schema_ref: { ...nullableString, description: "A name for this Port's contract. It is not enforced on its own; put the enforced shape in schema." },
+    schema: {
+      oneOf: [{ ...recordSchema }, { type: "null" }],
+      description: "Output Ports only. A JSON Schema every publication's content must satisfy; a publication that does not match is refused, naming the fields. A turn's reply handed on as output arrives as {\"text\": \"...\"}.",
+    },
     min_count: { type: "integer", minimum: 0 },
     max_count: { oneOf: [{ type: "integer", minimum: 0 }, { type: "null" }] },
   },

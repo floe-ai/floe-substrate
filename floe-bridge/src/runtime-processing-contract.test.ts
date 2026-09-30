@@ -112,6 +112,17 @@ describe("selectPinnedRuntime", () => {
     });
   });
 
+  it("runs the Actor's own model from its pinned binding over the profile's model", () => {
+    const pinned = contract();
+    pinned.runtime.binding.model = "claude-sonnet-4.5";
+    expect(selectPinnedRuntime(pinned).config).toMatchObject({
+      model: "claude-sonnet-4.5",
+      model_source: "actor_runtime_binding",
+    });
+    pinned.runtime.binding.model = null;
+    expect(selectPinnedRuntime(pinned).config).toMatchObject({ model: "gpt-5.6", model_source: "runtime_profile_revision" });
+  });
+
   it("refuses mismatched pins before selecting a provider or model", () => {
     const invalid = contract();
     invalid.execution_attempt.runtime_profile_revision_id = "runtime-profile-revision:current";

@@ -2011,6 +2011,7 @@ export async function createBusServer(
     })).optional(),
     activation: z.record(z.unknown()).optional(),
     context_policy: z.record(z.unknown()).optional(),
+    distinct_actor_from: z.array(z.string().min(1)).optional(),
   });
   const ScopePortSchema = z.object({
     port_id: z.string().min(1),
@@ -2020,6 +2021,7 @@ export async function createBusServer(
     event_types: z.array(z.string().min(1)).optional(),
     artefact_types: z.array(z.string().min(1)).optional(),
     schema_ref: z.string().min(1).nullable().optional(),
+    schema: z.record(z.unknown()).nullable().optional(),
     min_count: z.number().int().min(0).optional(),
     max_count: z.number().int().min(0).nullable().optional(),
   });
