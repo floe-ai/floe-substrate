@@ -748,6 +748,25 @@ step("joined " + joined.workspace_id);
     throw new Error("malformed CLI input was not refused plainly: exit " + malformed.status + "\\n" + malformed.stderr);
   }
   step("the installed CLI refused malformed input plainly: " + malformed.stderr.split(/\\r?\\n/, 1)[0]);
+
+  // A surface Floe launches receives exactly one extra, final argument naming
+  // the launch; Floe passes nothing through the environment.
+  const probeScript = ${JSON.stringify(join(surfaceDir, "launch-probe.cjs"))};
+  const probeOut = ${JSON.stringify(join(surfaceDir, "launch-probe.json"))};
+  writeInput(probeScript, "require('node:fs').writeFileSync(" + JSON.stringify(probeOut) + ", JSON.stringify({ argv: process.argv.slice(2), env: Object.keys(process.env).filter((k) => /LAUNCH/i.test(k)) }))", "utf8");
+  const floeCmd = (...args) => runCli(${JSON.stringify(floeBin)}, ["--config", ${JSON.stringify(configPath)}, ...args],
+    { cwd: ${JSON.stringify(folder)}, encoding: "utf8", shell: process.platform === "win32" });
+  const registered = floeCmd("surface", "register", "--name", "launch-probe", "--label", "Launch probe", "--command", "node", "--arg", probeScript, "--arg", "own-arg");
+  if (registered.status !== 0) throw new Error("could not register the launch probe surface: " + registered.stdout + registered.stderr);
+  const launched = floeCmd("launch-probe");
+  floeCmd("surface", "remove", "launch-probe");
+  const { readFileSync: readProbe } = await import("node:fs");
+  let seen = null;
+  try { seen = JSON.parse(readProbe(probeOut, "utf8")); } catch {}
+  if (launched.status !== 0 || JSON.stringify(seen?.argv) !== JSON.stringify(["own-arg", "--launched-by=floe"]) || seen.env.length !== 0) {
+    throw new Error("a surface launched by Floe did not receive exactly its own args then --launched-by=floe: exit " + launched.status + " " + JSON.stringify(seen) + "\\n" + launched.stdout + launched.stderr);
+  }
+  step("a surface launched through the installed floe received its own args, then --launched-by=floe, and no launch environment variable");
 }
 const ready = await new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error("no bearer was pushed within 15s")), 15000);

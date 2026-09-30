@@ -116,7 +116,7 @@ describe("surfaces registry", () => {
     const code = await launchSurface({
       name: "probe",
       label: "Probe",
-      launch: { command: process.execPath, args: ["-e", "process.exit(7)"] },
+      launch: { command: process.execPath, args: ["-e", "process.exit(7)", "positional"] },
     });
     expect(code).toBe(7);
     void config;
@@ -126,7 +126,7 @@ describe("surfaces registry", () => {
     const code = await launchSurface({
       name: "probe",
       label: "Probe",
-      launch: { command: process.execPath, args: ["-e", "process.exit(process.env.FLOE_LAUNCHED_BY === 'floe' ? 3 : 4)"] },
+      launch: { command: process.execPath, args: ["-e", "const a = process.argv.slice(1); process.exit(a.at(-1) === '--launched-by=floe' && a.at(-2) === 'mine' ? 3 : 4)", "mine"] },
     });
     expect(code).toBe(3);
   });
