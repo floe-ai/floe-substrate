@@ -65,7 +65,6 @@ import {
 import {
   ScopeCompositionStore,
   ScopeCompositionInvalidError,
-  assertDistinctActors,
   portSchemaValidator,
   inspectScopeCompositionValidation as inspectScopeStructure,
   applyScopeCompositionSchema,
@@ -2491,12 +2490,6 @@ export class BusStore {
     }
     if (revision.routing_mode !== "edge") {
       throw new ScopeExecutionInvalidError(`revision '${revision.revision_id}' uses legacy routing and cannot start through the Edge execution API`);
-    }
-    try {
-      assertDistinctActors(revision.nodes);
-    } catch (error) {
-      if (error instanceof ScopeCompositionInvalidError) throw new ScopeExecutionInvalidError(error.reason);
-      throw error;
     }
     const ingressNode = revision.nodes.find((node) => node.node_id === input.ingress_node_id);
     if (!ingressNode || ingressNode.kind !== "event") {

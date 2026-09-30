@@ -81,47 +81,6 @@ describe("canonical Scope composition storage", () => {
 
   afterEach(() => db.close());
 
-  describe("separation of duties between nodes", () => {
-    function withJudge(judgeActor: string, distinct: string[] = ["builder"]): ScopeCompositionContent {
-      const base = content();
-      return {
-        nodes: [...base.nodes, {
-          node_id: "judge",
-          kind: "actor",
-          label: "Judge",
-          resource_id: judgeActor,
-          activation: { mode: "per_delivery" },
-          context_policy: { mode: "new_per_execution" },
-          distinct_actor_from: distinct,
-        }],
-        ports: [...base.ports, {
-          port_id: "judge:in", node_id: "judge", name: "work", direction: "input", event_types: ["work.completed"], min_count: 1,
-        }],
-        edges: [...base.edges, { edge_id: "builder-to-judge", source_port_id: "builder:completed", target_port_id: "judge:in" }],
-      };
-    }
-
-    it("keeps the rule with the revision and refuses a route whose judge is the builder", () => {
-      const draft = store.createDraft({
-        workspace_id: "workspace:test",
-        scope_id: "delivery",
-        content: withJudge("actor:workspace:test:judge"),
-      });
-      expect(draft.nodes.find((node) => node.node_id === "judge")?.distinct_actor_from).toEqual(["builder"]);
-      expect(() => store.createDraft({
-        workspace_id: "workspace:test",
-        scope_id: "delivery",
-        content: withJudge("actor:workspace:test:builder"),
-      })).toThrow("node 'judge' and node 'builder' must have different Actors, but both are 'actor:workspace:test:builder'");
-      expect(() => store.replaceDraft(draft.revision_id, withJudge("actor:workspace:test:builder")))
-        .toThrow(ScopeCompositionInvalidError);
-      expect(inspectScopeCompositionValidation(withJudge("actor:workspace:test:judge", ["nobody"])).diagnostics[0]?.message)
-        .toBe("Invalid Scope composition: node 'judge' must differ from node 'nobody', which does not exist");
-      expect(inspectScopeCompositionValidation(withJudge("actor:workspace:test:judge", ["work-arrived"])).diagnostics[0]?.message)
-        .toMatch(/must both be Actor nodes/);
-    });
-  });
-
   it("publishes an immutable revision and atomically makes it current", () => {
     const draft = store.createDraft({
       workspace_id: "workspace:test",

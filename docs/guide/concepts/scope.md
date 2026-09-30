@@ -41,20 +41,6 @@ that followed it without reconstructing either from Event traffic.
 Retiring a Scope makes it inert while preserving evidence. Removal is allowed
 only when no required history or active work would be destroyed.
 
-## Approval before a route starts
-
-A route start can wait for a person's approval with an ordinary operation
-Policy; there is no separate approval mechanism. Bind a Policy with a rule
-matching `operation_ids: ["scope.execution.start"]` (optionally
-`scope_ids`) and the effect `require_approval`, naming the approvers.
-
-1. Starting the route returns `awaiting_approval` with the
-   `approval_request_ids`; no execution exists yet. `approval_requested` is
-   pushed.
-2. The approver decides with `approval.decide`. `approval_decided` is pushed.
-3. Repeating the same start (same idempotency key) then starts the route once.
-   A rejected request refuses it with `operation_approval_not_granted`.
-
 ## Legacy graphs
 
 Legacy mutable Scope graphs and subscription-derived routing are migration

@@ -476,10 +476,6 @@ const nodeSchema: JsonSchema = {
     capability_grant_ids: stringArray,
     activation: activationPolicySchema,
     context_policy: contextPolicySchema,
-    distinct_actor_from: {
-      ...stringArray,
-      description: "Separation of duties: node ids of other Actor nodes whose Actor must differ from this node's Actor, for example a judge that must not be a builder. A route that breaks it is refused at publish and at start.",
-    },
   },
 };
 
