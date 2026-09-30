@@ -99,10 +99,6 @@ An output Port's optional `schema` (JSON Schema) is enforced on every
 publication, including a reply handed on as output; a mismatch is refused,
 naming the fields. `schema_ref` is only a contract name.
 
-An Actor NodePlacement's `distinct_actor_from` names Actor nodes that must be
-placed with a different Actor; a route breaking it is never saved, published
-or started.
-
 ### Edge
 
 A stored connection from one output Port to one input Port in one

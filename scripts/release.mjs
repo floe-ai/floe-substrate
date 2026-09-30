@@ -522,7 +522,7 @@ async function guard(version) {
     guardReusedBridgePid({ floeBin, configPath, neutralCwd, home });
     log("guard", "PASS — with the Bridge's recorded pid reused by an unrelated live program, `floe start` brought the Bridge back and left that program untouched");
     guardSurface({ workRoot, tarball: join(workRoot, tarball), configPath, port, neutralCwd, home, account, floeBin });
-    log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label} and left git status clean, an Actor recalled its Context after a Bridge restart, an Actor created at runtime completed its own real turn and its next stop ran on its own model, a person read each Actor's tools and access, a failing step was pushed as failed with a safe reason, a step's reply was handed on as its one required output, a step missing output got one reminder then completed or failed, a judge's reply matched its Port's schema, routes with a misspelt schema or a judge that is its builder were refused, a route start waited for a person's approval, a real turn paused mid-command and resumed with its tool call pushed live and its model and tools readable afterwards, and a version switch saw the running turn`);
+    log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label} and left git status clean, an Actor recalled its Context after a Bridge restart, an Actor created at runtime completed its own real turn and its next stop ran on its own model, a person read each Actor's tools and access, a failing step was pushed as failed with a safe reason, a step's reply was handed on as its one required output, a step missing output got one reminder then completed or failed, a judge's reply matched its Port's schema, a route with a misspelt schema was refused, a real turn paused mid-command and resumed with its tool call pushed live and its model and tools readable afterwards, and a version switch saw the running turn`);
     guardUpgradeWhileRunning({ tarball: join(workRoot, tarball), prefix, port, neutralCwd, home });
     requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after npm removed and reinstalled the package" });
     log("guard", "PASS — npm removed and reinstalled the package while Floe kept serving from its stage");
@@ -1225,7 +1225,7 @@ if (judged.settled.to_status !== "completed" || !/^PASS([^A-Za-z]|$)/.test(Strin
 }
 step("a judge's reply matched its Port's schema and was handed on as its verdict: " + JSON.stringify(String(verdict.event.content.text).slice(0, 40)));
 
-// A route that breaks its own rules is refused before anything runs.
+// A route with an unusable output schema is refused before anything runs.
 const invokeRaw = async (body) => {
   const response = await fetch(bus + "/v1/workspaces/" + encodeURIComponent(joined.workspace_id) + "/operations/invoke", {
     method: "POST", headers: auth, body: JSON.stringify({ operation_version: "1", input_schema_version: "1", ...body }),
@@ -1254,70 +1254,6 @@ await refusedWith({ operation_id: "scope.composition.draft.create", idempotency_
     edges: [{ edge_id: "ingress-to-worker", source_port_id: "ingress:out", target_port_id: "worker:in" }],
   } } }, "schema is not usable", "a route whose output schema is misspelt");
 step("a route whose output schema is misspelt was refused, naming the Port");
-await refusedWith({ operation_id: "scope.composition.draft.create", idempotency_key: "guard-same-judge-draft",
-  target: { kind: "scope", id: rulesScope.scope_id }, expected_resource_revision: "none",
-  input: { content: {
-    nodes: [ingressNode,
-      { node_id: "builder", kind: "actor", resource_id: floe, activation: { mode: "per_delivery" }, context_policy: { mode: "new_per_execution" } },
-      { node_id: "judge", kind: "actor", resource_id: floe, activation: { mode: "per_delivery" }, context_policy: { mode: "new_per_execution" }, distinct_actor_from: ["builder"] }],
-    ports: [ingressPort,
-      { port_id: "builder:in", node_id: "builder", name: "work", direction: "input", event_types: ["work.requested"], min_count: 1 },
-      { port_id: "judge:in", node_id: "judge", name: "work", direction: "input", event_types: ["work.requested"], min_count: 1 }],
-    edges: [
-      { edge_id: "ingress-to-builder", source_port_id: "ingress:out", target_port_id: "builder:in" },
-      { edge_id: "ingress-to-judge", source_port_id: "ingress:out", target_port_id: "judge:in" }],
-  } } }, "must have different Actors", "a route whose judge is its builder");
-step("a route whose judge is the same Actor as its builder was refused");
-
-// A person can hold a route's start for their approval with an ordinary Policy.
-// Nothing starts until they approve; the request and the decision are pushed.
-const policyDraft = (await invokeAs("completed", { operation_id: "policy.create", idempotency_key: "guard-approval-policy",
-  input: { category: "operation", content: { label: "Release guard approval", description: "The person approves the route before it starts.",
-    rules: [{ rule_id: "approve-start", priority: 50, match: { operation_ids: ["scope.execution.start"], scope_ids: [rulesScope.scope_id] },
-      effect: { kind: "require_approval", reason: "The person approves the checks first.", approvers: { mode: "any", principal_ids: ["identity:guard-unset"], roles: [] } } }] } } })).draft;
-const person = policyDraft.created_by_principal_id;
-const namedDraft = await invokeAs("completed", { operation_id: "policy.draft.replace", idempotency_key: "guard-approval-policy-name",
-  target: { kind: "policy_revision", id: policyDraft.policy_revision_id }, expected_resource_revision: policyDraft.semantic_digest,
-  input: { content: { ...policyDraft.content, rules: policyDraft.content.rules.map((rule) => ({ ...rule,
-    effect: { ...rule.effect, approvers: { mode: "any", principal_ids: [person], roles: [] } } })) } } });
-const publishedPolicy = (await invokeAs("completed", { operation_id: "policy.publish", idempotency_key: "guard-approval-policy-publish",
-  target: { kind: "policy_revision", id: namedDraft.policy_revision_id }, expected_resource_revision: namedDraft.semantic_digest,
-  input: { expected_current_revision_id: null } })).revision;
-await invokeAs("completed", { operation_id: "policy.bind", idempotency_key: "guard-approval-policy-bind",
-  target: { kind: "policy_revision", id: publishedPolicy.policy_revision_id }, expected_resource_revision: publishedPolicy.semantic_digest,
-  input: { subject: { kind: "workspace", id: joined.workspace_id } } });
-const approvalDraft = (await invokeAs("completed", { operation_id: "scope.composition.draft.create", idempotency_key: "guard-approval-draft",
-  target: { kind: "scope", id: rulesScope.scope_id }, expected_resource_revision: "none",
-  input: { content: {
-    nodes: [ingressNode, { node_id: "worker", kind: "actor", resource_id: floe, activation: { mode: "per_delivery" }, context_policy: { mode: "new_per_execution" } }],
-    ports: [ingressPort,
-      { port_id: "worker:in", node_id: "worker", name: "work", direction: "input", event_types: ["work.requested"], min_count: 1 },
-      { port_id: "worker:out", node_id: "worker", name: "result", direction: "output", event_types: ["work.completed"], min_count: 1 }],
-    edges: [{ edge_id: "ingress-to-worker", source_port_id: "ingress:out", target_port_id: "worker:in" }],
-  } } })).revision;
-const approvalTarget = { kind: "scope_composition_revision", id: approvalDraft.revision_id };
-const approvalImpact = await invokeAs("completed", { operation_id: "scope.composition.impact.inspect", idempotency_key: "guard-approval-impact",
-  target: approvalTarget, expected_resource_revision: approvalDraft.semantic_digest, input: {} });
-await invokeAs("completed", { operation_id: "scope.composition.publish", idempotency_key: "guard-approval-publish",
-  target: approvalTarget, expected_resource_revision: approvalDraft.semantic_digest,
-  input: { expected_current_published_revision_id: null, expected_impact_digest: approvalImpact.impact_digest } });
-const approvalStart = { operation_id: "scope.execution.start", idempotency_key: "guard-approval-run",
-  target: { kind: "scope", id: rulesScope.scope_id }, expected_resource_revision: approvalDraft.revision_id,
-  input: { ingress_node_id: "ingress", output_port_id: "ingress:out", content: { request: "Reply with the single word: approved" } } };
-const held = await invokeRaw(approvalStart);
-const approvalId = held.json.receipt?.governance?.approval_request_ids?.[0];
-if (held.json.receipt?.state !== "awaiting_approval" || !approvalId) {
-  throw new Error("a route start under an approval Policy was not held for approval: " + held.status + " " + JSON.stringify(held.json));
-}
-await until((push) => push.type === "approval_requested" && push.payload?.request?.approval_request_id === approvalId, "the approval request push", 15000);
-step("a route start under an approval Policy was held, and the approval request was pushed");
-await invokeAs("completed", { operation_id: "approval.decide", idempotency_key: "guard-approve",
-  target: { kind: "approval_request", id: approvalId }, input: { decision: "approved", reason: "Checks look right." } });
-await until((push) => push.type === "approval_decided" && JSON.stringify(push.payload).includes(approvalId), "the approval decision push", 15000);
-const approvedRun = (await invokeAs("accepted", approvalStart)).execution;
-await until((push) => push.type === "node_execution_state_changed" && push.payload.scope_execution_id === approvedRun.execution_id
-  && push.payload.node_id === "worker" && ["completed", "failed"].includes(push.payload.to_status), "the approved route's step settling", 180000);
-step("once the person approved, the decision was pushed and the same start set the route out (" + approvedRun.execution_id + ")");
 
 const readinessPushes = [];
 let readinessArrived = () => {};

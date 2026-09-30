@@ -73,11 +73,6 @@ export type ScopeNodePlacement = {
   capability_grant_ids?: string[];
   activation?: ScopeActivationPolicy;
   context_policy?: ScopeContextPolicy;
-  /**
-   * Separation of duties: other Actor nodes whose Actor must differ from this
-   * node's Actor. A route that breaks it is refused at publish and at start.
-   */
-  distinct_actor_from?: string[];
 };
 
 export type ScopePort = {
@@ -276,7 +271,6 @@ function normalizeCompositionContent(content: ScopeCompositionContent): ScopeCom
       capability_grant_ids: [...(node.capability_grant_ids ?? [])].sort(),
       ...(node.activation ? { activation: node.activation } : {}),
       ...(node.context_policy ? { context_policy: node.context_policy } : {}),
-      ...(node.distinct_actor_from?.length ? { distinct_actor_from: [...node.distinct_actor_from].sort() } : {}),
     })),
     ports: content.ports.map((port) => ({
       port_id: port.port_id,
@@ -385,35 +379,6 @@ export function validateScopeComposition(
   for (const node of content.nodes) {
     requireUnique(node.capability_grant_ids ?? [], `CapabilityGrant id on node '${node.node_id}'`);
     validateNodePolicies(node, content.ports, routingMode);
-  }
-  assertDistinctActors(content.nodes);
-}
-
-/**
- * Refuses a route in which a node shares its Actor with a node it must differ
- * from, for example a judge that is also a builder.
- */
-export function assertDistinctActors(nodes: ScopeNodePlacement[]): void {
-  const byId = new Map(nodes.map((node) => [node.node_id, node]));
-  for (const node of nodes) {
-    for (const otherId of node.distinct_actor_from ?? []) {
-      const other = byId.get(otherId);
-      if (!other) {
-        throw new ScopeCompositionInvalidError(
-          `node '${node.node_id}' must differ from node '${otherId}', which does not exist`,
-        );
-      }
-      if (node.kind !== "actor" || other.kind !== "actor" || !node.resource_id || !other.resource_id) {
-        throw new ScopeCompositionInvalidError(
-          `node '${node.node_id}' and node '${otherId}' must both be Actor nodes naming their Actor to be kept distinct`,
-        );
-      }
-      if (node.resource_id === other.resource_id) {
-        throw new ScopeCompositionInvalidError(
-          `node '${node.node_id}' and node '${otherId}' must have different Actors, but both are '${node.resource_id}'`,
-        );
-      }
-    }
   }
 }
 
@@ -792,7 +757,6 @@ export function applyScopeCompositionSchema(db: DatabaseSync): void {
   if (!placementColumns.some((column) => column.name === "capability_grant_ids_json")) {
     db.exec("ALTER TABLE scope_node_placements ADD COLUMN capability_grant_ids_json TEXT NOT NULL DEFAULT '[]'");
   }
-  addColumnIfMissing(db, "scope_node_placements", "distinct_actor_from_json", "TEXT");
   addColumnIfMissing(db, "scope_ports", "schema_json", "TEXT");
 
   // Early revisions hashed caller shorthand while storage materialised default
@@ -1122,7 +1086,6 @@ export class ScopeCompositionStore {
         capability_grant_ids: parseJson(node.capability_grant_ids_json, []),
         ...(Object.keys(activation).length > 0 ? { activation: activation as ScopeActivationPolicy } : {}),
         ...(Object.keys(contextPolicy).length > 0 ? { context_policy: contextPolicy as ScopeContextPolicy } : {}),
-        ...(node.distinct_actor_from_json ? { distinct_actor_from: parseJson<string[]>(node.distinct_actor_from_json, []) } : {}),
       };
     });
     const ports = (this.db.prepare(`
@@ -1171,9 +1134,8 @@ export class ScopeCompositionStore {
     const insertNode = this.db.prepare(`
       INSERT INTO scope_node_placements (
         revision_id, node_id, kind, label, resource_id, config_json,
-        bindings_json, capability_grant_ids_json, activation_json, context_policy_json,
-        distinct_actor_from_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        bindings_json, capability_grant_ids_json, activation_json, context_policy_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const node of content.nodes) {
       insertNode.run(
@@ -1187,7 +1149,6 @@ export class ScopeCompositionStore {
         json(node.capability_grant_ids ?? []),
         json(node.activation),
         json(node.context_policy),
-        node.distinct_actor_from?.length ? JSON.stringify(node.distinct_actor_from) : null,
       );
     }
     const insertPort = this.db.prepare(`

@@ -503,6 +503,14 @@ describe("Approval canonical Bus integration", () => {
     expect(store.getEvent(decided.decision_event_id!)?.metadata.response_suppressed_reason).toBe("recipient_unavailable");
   });
 
+  it("pushes every approval request it retains, so a person's surface learns it waits without asking", async () => {
+    const pushed: Array<{ type: string; payload: any }> = [];
+    store.setBroadcast((type, payload) => { pushed.push({ type, payload }); });
+    const request = await responseRequest();
+    expect(pushed.filter((push) => push.type === "approval_requested")
+      .map((push) => push.payload.request.approval_request_id)).toEqual([request.approval_request_id]);
+  });
+
   it("stores one decision Event and one exact receipt through the shared operation registry", async () => {
     const requestResult = receipt(await store.operationRegistry.invoke(environment(), operation(
       REQUEST_APPROVAL_OPERATION_ID,

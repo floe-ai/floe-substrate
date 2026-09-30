@@ -2011,7 +2011,6 @@ export async function createBusServer(
     })).optional(),
     activation: z.record(z.unknown()).optional(),
     context_policy: z.record(z.unknown()).optional(),
-    distinct_actor_from: z.array(z.string().min(1)).optional(),
   });
   const ScopePortSchema = z.object({
     port_id: z.string().min(1),

@@ -47,12 +47,6 @@ with that reason.
 `schema_ref` is only a name for the contract, matched against a Command's
 `$ref`. It is not enforced on its own.
 
-## Separation of duties
-
-An Actor node may declare `distinct_actor_from`: other Actor nodes whose Actor
-must differ from its own, for example a judge that must never be a builder.
-A route that breaks it is refused when saved, when published, and when started.
-
 ## Context policy
 
 Every NodeExecution references an inspectable writable Context. The placement's
