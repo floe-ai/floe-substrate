@@ -31,6 +31,9 @@ async function runTool(tool: string, args: Record<string, any>): Promise<string>
   throw new Error(`The fake engine cannot run '${tool}'.`);
 }
 
+/** The models the fake engine lists; the runtime refuses any other before a model call. */
+export const FAKE_ENGINE_MODELS = ["gpt-4.1"];
+
 export function fakeCopilotEngine() {
   const events = new EventEmitter();
   const script: FakeStep[] = [];
@@ -117,7 +120,7 @@ export function fakeCopilotEngine() {
   const client = {
     async start() {},
     async stop() { return []; },
-    async listModels() { return []; },
+    async listModels() { return FAKE_ENGINE_MODELS.map((id) => ({ id })); },
     async listSessions() { return [...sessions.keys()].map((sessionId) => ({ sessionId })); },
     async createSession(config: Record<string, any>) {
       offered = ((config.availableTools ?? []) as string[]).map((name) => name.replace(/^(custom|builtin):/, ""));

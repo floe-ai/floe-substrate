@@ -20,7 +20,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import type { LocalConfig } from "./config.js";
 import { resolveLocalPath } from "./config.js";
-import { readRecords, isPidRunning, startService, serviceLogPath } from "./process-manager.js";
+import { readRecords, isPidRunning, startService, stopService, serviceLogPath, SERVICE_NAMES } from "./process-manager.js";
 import { probeAgent } from "./identity/connection.js";
 import { canonicalHome } from "./identity/protocol.js";
 import { probeChannel } from "./local-channel/connection.js";
@@ -42,7 +42,7 @@ export class ForeignBusError extends Error {
 
 type BusHealth = { ok: boolean; instance_id: string | null; version: string | null };
 
-async function fetchBusHealth(baseUrl: string): Promise<BusHealth | null> {
+export async function fetchBusHealth(baseUrl: string): Promise<BusHealth | null> {
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/health`);
     if (!response.ok) return null;
@@ -87,7 +87,7 @@ export function describeVersionMismatch(url: string, ownVersion: string | null, 
 }
 
 /** Numeric dotted-version comparison; pre-release tags are ignored. */
-function compareVersions(a: string, b: string): number {
+export function compareVersions(a: string, b: string): number {
   const parts = (v: string) => v.split("-")[0]!.split(".").map((n) => Number.parseInt(n, 10) || 0);
   const [x, y] = [parts(a), parts(b)];
   for (let i = 0; i < Math.max(x.length, y.length); i++) {
@@ -105,7 +105,7 @@ function compareVersions(a: string, b: string): number {
  * - "foreign": something healthy is answering, but we cannot prove it is the
  *    process we started (different install, or a stale predecessor). Refuse.
  */
-async function classifyRunningBus(
+export async function classifyRunningBus(
   configPath: string,
   config: LocalConfig,
 ): Promise<{ state: "absent" } | { state: "mine" } | { state: "foreign"; detail: string }> {
@@ -264,6 +264,29 @@ async function waitUntilAnswering(
  */
 export function startAll(configPath: string, config: LocalConfig): Promise<void> {
   return withStartLock(floeHome(configPath, config), () => startAllHeld(configPath, config));
+}
+
+/** Stop in reverse start order: nothing is left running that depends on a stopped service. */
+export function stopAll(configPath: string, config: LocalConfig): void {
+  for (const service of [...SERVICE_NAMES].reverse()) stopService(configPath, config, service);
+}
+
+/**
+ * Stop and start Floe as one start (start-lock.ts), so no other start runs in
+ * between. `beforeStop` runs while the lock is held, immediately before
+ * anything is stopped; returning false leaves everything running.
+ */
+export function restartAll(
+  configPath: string,
+  config: LocalConfig,
+  beforeStop: () => Promise<boolean> = async () => true,
+): Promise<boolean> {
+  return withStartLock(floeHome(configPath, config), async () => {
+    if (!(await beforeStop())) return false;
+    stopAll(configPath, config);
+    await startAllHeld(configPath, config);
+    return true;
+  });
 }
 
 async function startAllHeld(configPath: string, config: LocalConfig): Promise<void> {

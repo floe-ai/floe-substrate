@@ -35,8 +35,13 @@ await engines.refresh("copilot");                           // "Try again"
   `EnginesUnavailableError` (`reason: "not_running"`). If the bus is up but the
   bridge is down, the same setting lets it start the bridge.
 - `engines.agentVersion` and `engines.versionNote` report a version mismatch
-  with the copy of Floe your surface depends on. The running Floe is used as it
-  is and never restarted.
+  with the copy of Floe your surface depends on. Connecting uses the running Floe
+  as it is and never restarts it.
+  `switchToThisVersion({ interrupt_running_work? })` asks Floe to run your
+  copy instead, when it is newer. It resolves to `switched` (with any turns it
+  interrupted), `already_serving`, `work_running` (the turns in progress; nothing
+  was stopped) or `refused` (`not_running`, `would_downgrade`, `not_this_floe`,
+  `unknown_version`). After `switched` this connection has closed; connect again.
 - `engines.onClose(listener)` fires if the Bridge goes away. Reconnect with
   `connectEngines`.
 - A refusal rejects with `EnginesError`, whose `code` is in the table below.

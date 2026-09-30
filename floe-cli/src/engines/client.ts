@@ -13,6 +13,7 @@
  * reach a surface. The wire protocol is in docs/reference/engine-control-protocol.md.
  */
 import { ChannelClient } from "../local-channel/client.js";
+export type { RunningTurn, VersionSwitchOutcome } from "../local-channel/client.js";
 import { connectChannel, type ChannelConnectOptions } from "../local-channel/connect.js";
 import { ChannelUnavailableError, type Channel } from "../local-channel/connection.js";
 import { ENGINES_CHANNEL, type EngineState, type EnginesSnapshot, type SignInEvent, type SignInMode } from "./protocol.js";

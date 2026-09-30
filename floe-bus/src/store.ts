@@ -941,7 +941,7 @@ export class BusStore {
         throw new ActorDefinitionValidationError(inspection.unavailable_grants
           .map(failure => `CapabilityGrant '${failure.grant_id}': ${failure.code}`).join("; "));
       }
-    });
+    }, (actor) => this.reflectActorStatusOnEndpoints(actor.actor_id, (type, payload) => this.broadcastFn?.(type, payload)));
     this.commandDefinitionStore = new CommandDefinitionStore(this.db);
     this.commandWorkerBindingStore = new CommandWorkerBindingStore(this.db);
     this.commandProcessingContracts = new CommandProcessingContractStore(this.db);
@@ -1215,6 +1215,7 @@ export class BusStore {
         this.workspaceConfigurationImportStore.acceptAuthorityOnlyRevision(actorId, revisionId),
     });
     this.actorAccessMigration = this.transaction(() => this.actorAccessAdoption.migrate());
+    this.listEndpointsOfRetiredActorsAsRetired();
   }
 
   readonly actorAccessAdoption: ActorAccessAdoption;
@@ -5392,8 +5393,48 @@ export class BusStore {
     const binding = this.runtimeProfileStore.getCurrentActorBindingForEndpoint(workspaceId, endpointId);
     if (!binding) return fallback;
     const actor = this.actorDefinitionStore.getActor(binding.actor_id);
+    if (actor?.status === "retired") return "retired";
     if (binding.status !== "resolved" || actor?.status !== "active") return "runtime_unconfigured";
     return fallback === "runtime_unconfigured" ? "idle" : fallback;
+  }
+
+  /** The Actors an Endpoint serves: its current runtime binding, or the Actor sharing its id. */
+  private endpointActorIds(workspaceId: string, endpointId: string): string[] {
+    const binding = this.runtimeProfileStore.getCurrentActorBindingForEndpoint(workspaceId, endpointId);
+    return binding ? [binding.actor_id] : [endpointId];
+  }
+
+  private endpointServesRetiredActor(endpointId: string): boolean {
+    const endpoint = this.getEndpoint(endpointId);
+    if (!endpoint?.workspace_id) return false;
+    return this.endpointActorIds(String(endpoint.workspace_id), endpointId)
+      .some((actorId) => this.actorDefinitionStore.getActor(actorId)?.status === "retired");
+  }
+
+  /**
+   * A retired Actor is listed as retired, never as available; reactivating it
+   * restores its Endpoint's real readiness.
+   */
+  private reflectActorStatusOnEndpoints(actorId: string, broadcast: Broadcast): void {
+    const actor = this.actorDefinitionStore.getActor(actorId);
+    if (!actor) return;
+    const binding = this.runtimeProfileStore.getCurrentActorBinding(actorId);
+    const endpointIds = new Set([binding?.endpoint_id, actorId].filter((id): id is string => !!id));
+    for (const endpointId of endpointIds) {
+      const endpoint = this.getEndpoint(endpointId);
+      if (!endpoint || endpoint.workspace_id !== actor.workspace_id) continue;
+      if (actor.status === "retired") {
+        if (endpoint.status !== "retired") this.updateEndpointStatus(endpointId, "retired", broadcast);
+      } else if (endpoint.status === "retired") {
+        this.updateEndpointStatus(endpointId, this.runtimeConfigurationStatus(actor.workspace_id, endpointId, "idle"), broadcast);
+      }
+    }
+  }
+
+  /** Endpoints left listed as available after their Actor retired are corrected when the Bus opens. */
+  private listEndpointsOfRetiredActorsAsRetired(): void {
+    const retired = this.db.prepare("SELECT actor_id FROM actors WHERE status = 'retired'").all() as Array<{ actor_id: string }>;
+    for (const { actor_id } of retired) this.reflectActorStatusOnEndpoints(actor_id, () => {});
   }
 
   listEndpoints(workspaceId?: string): unknown[] {
@@ -5515,6 +5556,10 @@ export class BusStore {
   }
 
   updateEndpointStatus(endpointId: string, status: string, broadcast: Broadcast): unknown {
+    // No report of availability may list a retired Actor's Endpoint as available.
+    if (["idle", "waiting", "queued", "runtime_unconfigured"].includes(status) && this.endpointServesRetiredActor(endpointId)) {
+      status = "retired";
+    }
     this.db.prepare("UPDATE endpoints SET status = ?, updated_at = ? WHERE endpoint_id = ?").run(status, now(), endpointId);
     const endpoint = this.getEndpoint(endpointId);
     broadcast("status_changed", { endpoint });
@@ -7115,14 +7160,20 @@ export class BusStore {
       const attempts = Number(delivery.attempt_count ?? 1);
       const queueState = attempts >= 3 ? "dead_lettered" : "queued";
       const bundleState = attempts >= 3 ? "dead_lettered" : "failed";
-      this.db.prepare("UPDATE delivery_bundles SET state = ?, lease_expires_at = NULL, last_error = ? WHERE delivery_id = ?")
-        .run(bundleState, input.error ?? null, input.delivery_id);
-      this.db.prepare(`
-        UPDATE event_queue
-        SET state = ?, delivery_id = CASE WHEN ? = 'queued' THEN NULL ELSE delivery_id END,
-            lease_expires_at = NULL, last_error = ?
-        WHERE delivery_id = ?
-      `).run(queueState, queueState, input.error ?? null, input.delivery_id);
+      this.transaction(() => {
+        this.db.prepare("UPDATE delivery_bundles SET state = ?, lease_expires_at = NULL, last_error = ? WHERE delivery_id = ?")
+          .run(bundleState, input.error ?? null, input.delivery_id);
+        this.db.prepare(`
+          UPDATE event_queue
+          SET state = ?, delivery_id = CASE WHEN ? = 'queued' THEN NULL ELSE delivery_id END,
+              lease_expires_at = NULL, last_error = ?
+          WHERE delivery_id = ?
+        `).run(queueState, queueState, input.error ?? null, input.delivery_id);
+        // Out of retries: the step this delivery served has failed, and says so.
+        if (bundleState === "dead_lettered") {
+          this.finishCanonicalAttempt(delivery, "failed", input.error ?? "delivery failed before its turn started");
+        }
+      });
       broadcast(bundleState === "dead_lettered" ? "delivery_dead_lettered" : "delivery_failed", {
         bridge_id: input.bridge_id,
         delivery_id: input.delivery_id,
@@ -9605,9 +9656,14 @@ export class BusStore {
     const attemptId = delivery.execution_attempt_id
       ?? this.scopeExecutionStore.getAttemptForBundle(String(delivery.delivery_id))?.attempt_id
       ?? null;
-    if (!attemptId) return;
-    const attempt = this.scopeExecutionStore.getAttempt(String(attemptId));
-    if (!attempt || !["pending", "running"].includes(attempt.status)) return;
+    const attempt = attemptId ? this.scopeExecutionStore.getAttempt(String(attemptId)) : null;
+    if (!attempt) {
+      // Work refused before its turn could start has no attempt, but its step
+      // has still failed and must say so.
+      if (status === "failed" || status === "outcome_unknown") this.failStepWithoutAttempt(delivery, reason);
+      return;
+    }
+    if (!["pending", "running"].includes(attempt.status)) return;
     this.scopeExecutionStore.finishAttempt({
       attempt_id: attempt.attempt_id,
       status,
@@ -9634,6 +9690,18 @@ export class BusStore {
       return;
     }
     this.settleCanonicalNodeAfterAttempt(node);
+    this.reconcileScopeExecutionStatus(node.execution_id);
+  }
+
+  private failStepWithoutAttempt(delivery: any, reason: string | null): void {
+    const nodeExecutionId = this.rowToDelivery(delivery).node_execution_id;
+    const node = nodeExecutionId ? this.scopeExecutionStore.getNodeExecution(nodeExecutionId) : null;
+    if (!node || ["completed", "failed", "cancelled", "superseded", "paused"].includes(node.status)) return;
+    this.scopeExecutionStore.setNodeExecutionStatus(node.node_execution_id, "failed", {
+      code: "runtime_failed_before_turn",
+      message: reason,
+      safe_to_retry_automatically: false,
+    });
     this.reconcileScopeExecutionStatus(node.execution_id);
   }
 

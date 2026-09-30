@@ -210,6 +210,7 @@ export class ActorDefinitionStore {
     readonly db: DatabaseSync,
     private readonly now: () => string = () => new Date().toISOString(),
     private readonly validateHead?: (actorId: string, workspaceId: string, content: ActorDefinitionContent) => void,
+    private readonly statusChanged?: (actor: ActorRecord) => void,
   ) {
     applyActorDefinitionSchema(db);
   }
@@ -405,7 +406,9 @@ export class ActorDefinitionStore {
       }
     });
     if (input.status === "retired") this.notifyLifecyclePushReady();
-    return this.requireActor(actor.actor_id);
+    const changed = this.requireActor(actor.actor_id);
+    if (actor.status !== changed.status) this.statusChanged?.(changed);
+    return changed;
   }
 
   getActor(actorId: string): ActorRecord | null {

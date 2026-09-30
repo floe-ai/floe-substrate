@@ -78,6 +78,7 @@ describe("FloeRuntimeAdapter SDK route", () => {
     };
     const client = {
       async start() {},
+      async listModels() { return [{ id: "creation-model" }]; },
       async createSession(config: Record<string, unknown>) {
         createdConfig = config;
         return session;

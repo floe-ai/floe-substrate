@@ -22,6 +22,21 @@ type PushRow = Readonly<{
   created_at: string;
 }>;
 
+const SAFE_FAILURE_MESSAGE_LENGTH = 300;
+
+/**
+ * A pushed step failure carries a reason a surface can show: its first line,
+ * bounded, so stack frames and long provider output stay in the attempt record.
+ */
+export function safeFailure(failure: Record<string, unknown>): Record<string, unknown> {
+  if (typeof failure.message !== "string") return failure;
+  const firstLine = failure.message.split(/\r?\n/, 1)[0]!.trim();
+  const message = firstLine.length > SAFE_FAILURE_MESSAGE_LENGTH
+    ? firstLine.slice(0, SAFE_FAILURE_MESSAGE_LENGTH - 1) + "…"
+    : firstLine;
+  return { ...failure, message };
+}
+
 /**
  * Durable delivery cursor for transport projections. Canonical domain records
  * remain authoritative; this ledger only lets a disconnected client catch up
@@ -103,7 +118,7 @@ export class TransportPushStreamStore {
           to_status: row.to_status,
           attempt_id: row.attempt_id,
           delivery_id: row.delivery_id,
-          failure: row.failure_json ? JSON.parse(row.failure_json) : null,
+          failure: row.failure_json ? safeFailure(JSON.parse(row.failure_json)) : null,
           changed_at: row.changed_at,
         }), row.changed_at);
         const sequence = Number(result.lastInsertRowid);

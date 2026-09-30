@@ -26,7 +26,7 @@ export async function connectChannel(spec: ChannelSpec, options: ChannelConnectO
   const { configPath, config } = ensureConfig(options.configPath);
   const home = floeHome(configPath, config);
   try {
-    return await openChannel(spec, home, options.surface);
+    return withConfig(await openChannel(spec, home, options.surface), options.configPath);
   } catch (error) {
     if (!(error instanceof ChannelUnavailableError) || error.reason !== "not_running" || options.start === false) throw error;
   }
@@ -38,7 +38,12 @@ export async function connectChannel(spec: ChannelSpec, options: ChannelConnectO
         + "(services.start_on_demand is false). Start Floe with `floe start`.",
     );
   }
-  return openChannel(spec, home, options.surface);
+  return withConfig(await openChannel(spec, home, options.surface), options.configPath);
+}
+
+function withConfig(channel: Channel, configPath: string | undefined): Channel {
+  if (configPath) channel.configPath = configPath;
+  return channel;
 }
 
 /** Set when the serving process is a different Floe version from this copy. */

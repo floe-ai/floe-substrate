@@ -105,7 +105,8 @@ Create, unlock, restore, reveal, and "I forgot my passphrase".
   joins folders again.
 - **Two copies of Floe** (the v0.2.1 rule). Both copies share the
   home, and so they share the agent's address. Connect-first applies: whichever
-  agent is running serves, and it is never restarted by a different copy. A
+  agent is running serves, and it is never restarted by a different copy
+  (amended 2026-09-30: see below). A
   client that reaches an agent of another version says so. The agent does
   nothing that the machine owns, so the direct-install rule for start at login
   is unchanged.
@@ -177,3 +178,27 @@ different identities are never merged or replaced silently.
 - `scripts/release.mjs` — exports `floe/identity`. The guard installs a real
   surface against the artifact and proves create, lock, a refused wrong
   passphrase, unlock, join and a bearer the bus accepts.
+
+## Amendment, 2026-09-30: a surface may switch Floe to its newer copy
+
+Ruling (operator, relayed for v0.4.8): a surface may ask Floe to switch to the
+newest installed version without the person typing `floe restart`. It has the
+same safety as `floe restart`, it never interrupts running work without saying
+so, and only a directly installed or newer copy may ask.
+
+This narrows D5's "never restarted by a different copy". What changes:
+
+- `switchToThisVersion()` on the `floe/identity` and `floe/engines` clients
+  restarts Floe from the surface's own copy, through `restartAll`, the same
+  path and start lock `floe restart` uses. The running Floe cannot do it: it is
+  the older code, and a 0.4.7 or older Floe has no such request.
+- Only a newer copy switches. The same version answers `already_serving`; an
+  older copy is refused (`would_downgrade`); a Bus this Floe home did not start
+  is refused (`not_this_floe`), as `floe restart` would.
+- Just before anything stops, and while the start lock is held, it lists every
+  Actor that is mid-turn. If there is one, it does not switch and returns
+  `work_running` with the turns, unless the surface passed
+  `interrupt_running_work`; then it names the turns it interrupted. Queued and
+  waiting work is durable and carries over.
+- A copy cannot find another copy on disk, so "directly installed" reduces to
+  "newer": a direct copy at the same version has nothing newer to switch to.

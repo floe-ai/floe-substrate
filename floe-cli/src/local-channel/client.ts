@@ -7,6 +7,9 @@ import type { Channel } from "./connection.js";
 import { ChannelUnavailableError } from "./connection.js";
 import { versionNote } from "./connect.js";
 import type { ChannelSpec } from "./protocol.js";
+import { runningTurns, switchToThisVersion, type RunningTurn, type VersionSwitchOutcome } from "../version-switch.js";
+
+export type { RunningTurn, VersionSwitchOutcome };
 
 type Pending = { resolve: (value: any) => void; reject: (error: Error) => void };
 
@@ -36,6 +39,22 @@ export abstract class ChannelClient {
    */
   get versionNote(): string | null {
     return versionNote(this.spec, this.channel.agentVersion);
+  }
+
+  /**
+   * Ask Floe to run this surface's copy, which must be newer than the one
+   * serving. It uses the same path as `floe restart`, and it never interrupts a
+   * turn in progress unless `interrupt_running_work` is set: otherwise it
+   * returns `work_running` naming the turns. After `switched`, this connection
+   * has closed; connect again to reach the new version.
+   */
+  switchToThisVersion(options: { interrupt_running_work?: boolean } = {}): Promise<VersionSwitchOutcome> {
+    return switchToThisVersion({ ...options, configPath: this.channel.configPath });
+  }
+
+  /** The Actors mid-turn right now, in every workspace: what a switch would interrupt. */
+  runningTurns(): Promise<RunningTurn[]> {
+    return runningTurns({ configPath: this.channel.configPath });
   }
 
   onClose(listener: () => void): () => void {
