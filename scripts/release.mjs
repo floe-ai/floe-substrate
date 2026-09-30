@@ -519,7 +519,7 @@ async function guard(version) {
     requireCopilotCli(home);
     log("guard", "PASS — the official Copilot CLI shipped with the artifact and runs from the install");
     guardSurface({ workRoot, tarball: join(workRoot, tarball), configPath, port, neutralCwd, home, account, floeBin });
-    log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label} and left git status clean, an Actor recalled its Context after a Bridge restart, an Actor created at runtime completed its own real turn, a failing step was pushed as failed with a safe reason, a real turn paused mid-command and resumed, and a version switch saw the running turn`);
+    log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label} and left git status clean, an Actor recalled its Context after a Bridge restart, an Actor created at runtime completed its own real turn, a failing step was pushed as failed with a safe reason, a step's reply was handed on as its one required output, a step missing output got one reminder then completed or failed, a real turn paused mid-command and resumed, and a version switch saw the running turn`);
     guardUpgradeWhileRunning({ tarball: join(workRoot, tarball), prefix, port, neutralCwd, home });
     requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after npm removed and reinstalled the package" });
     log("guard", "PASS — npm removed and reinstalled the package while Floe kept serving from its stage");
@@ -745,14 +745,16 @@ socket.addEventListener("message", (message) => { pushes.push(JSON.parse(String(
 socket.addEventListener("close", (event) => { closed = "the event stream closed (" + event.code + " " + event.reason + ")"; arrived(); });
 await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", reject, { once: true }); });
 socket.send(JSON.stringify({ type: "authenticate", bearer_token: ready.bearer_token, workspace_id: joined.workspace_id }));
+const waiters = new Set();
+arrived = () => { for (const look of [...waiters]) look(); };
 const until = (match, label, ms) => new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error("no " + label + " within " + ms / 1000 + "s")), ms);
+  const timer = setTimeout(() => { waiters.delete(look); reject(new Error("no " + label + " within " + ms / 1000 + "s")); }, ms);
   const look = () => {
     const found = pushes.find(match);
-    if (found) { clearTimeout(timer); arrived = () => {}; resolve(found); }
-    else if (closed) { clearTimeout(timer); reject(new Error(closed + " before " + label + "; received " + JSON.stringify(pushes.map((push) => push.type)))); }
+    if (found) { clearTimeout(timer); waiters.delete(look); resolve(found); }
+    else if (closed) { clearTimeout(timer); waiters.delete(look); reject(new Error(closed + " before " + label + "; received " + JSON.stringify(pushes.map((push) => push.type)))); }
   };
-  arrived = look;
+  waiters.add(look);
   look();
 });
 await until((push) => push.type === "caught_up", "stream catch-up", 15000);
@@ -999,6 +1001,71 @@ if (/[\\r\\n]/.test(failure.message) || /\\bat .+:\\d+:\\d+/.test(failure.messag
 const failedExecution = await current({ executionId: failRun.execution_id, idempotencyKey: "guard-fail-inspect" });
 if (failedExecution.status !== "failed") throw new Error("the route with a failed step is " + failedExecution.status + ", not failed");
 step("a step whose attempt failed without handing anything on was pushed as failed (" + failure.code + "): " + JSON.stringify(failure.message));
+
+// Required output is never waited on silently. A step with one required output
+// hands on its reply; otherwise Floe sends one visible reminder, then the step
+// either completes or fails with "required output not handed on".
+const handOnRoute = async (key, outputs, request) => {
+  const routeScope = (await invokeAs("completed", { operation_id: "scope.create", idempotency_key: "guard-" + key + "-scope", input: { title: "Release guard " + key } })).scope;
+  const routeIngress = (await invokeAs("completed", { operation_id: "context.create", idempotency_key: "guard-" + key + "-ingress",
+    input: { scope_id: routeScope.scope_id, title: "Release guard " + key + " input", participants: [] } })).context;
+  const routeDraft = (await invokeAs("completed", { operation_id: "scope.composition.draft.create", idempotency_key: "guard-" + key + "-draft",
+    target: { kind: "scope", id: routeScope.scope_id }, expected_resource_revision: "none",
+    input: { content: {
+      nodes: [
+        { node_id: "ingress", kind: "event", config: { event_type: "work.requested" }, context_policy: { mode: "fixed", context_id: routeIngress.context_id } },
+        { node_id: "worker", kind: "actor", resource_id: floe, activation: { mode: "per_delivery" }, context_policy: { mode: "new_per_execution" } },
+      ],
+      ports: [
+        { port_id: "ingress:out", node_id: "ingress", name: "work", direction: "output", event_types: ["work.requested"] },
+        { port_id: "worker:in", node_id: "worker", name: "work", direction: "input", event_types: ["work.requested"], min_count: 1 },
+        ...outputs.map((name) => ({ port_id: "worker:" + name, node_id: "worker", name, direction: "output", event_types: ["work.completed"], min_count: 1 })),
+      ],
+      edges: [{ edge_id: "ingress-to-worker", source_port_id: "ingress:out", target_port_id: "worker:in" }],
+    } } })).revision;
+  const routeTarget = { kind: "scope_composition_revision", id: routeDraft.revision_id };
+  const routeImpact = await invokeAs("completed", { operation_id: "scope.composition.impact.inspect", idempotency_key: "guard-" + key + "-impact",
+    target: routeTarget, expected_resource_revision: routeDraft.semantic_digest, input: {} });
+  await invokeAs("completed", { operation_id: "scope.composition.publish", idempotency_key: "guard-" + key + "-publish",
+    target: routeTarget, expected_resource_revision: routeDraft.semantic_digest,
+    input: { expected_current_published_revision_id: null, expected_impact_digest: routeImpact.impact_digest } });
+  const run = (await invokeAs("accepted", { operation_id: "scope.execution.start", idempotency_key: "guard-" + key + "-run",
+    target: { kind: "scope", id: routeScope.scope_id }, expected_resource_revision: routeDraft.revision_id,
+    input: { ingress_node_id: "ingress", output_port_id: "ingress:out", content: { request } } })).execution;
+  const settled = await until((push) => push.type === "node_execution_state_changed"
+    && push.payload.scope_execution_id === run.execution_id && push.payload.node_id === "worker"
+    && ["failed", "completed", "waiting_external", "blocked", "cancelled"].includes(push.payload.to_status), "the " + key + " step settling", 420000);
+  const reminders = pushes.filter((push) => push.type === "event_submitted"
+    && push.payload?.event?.content?.data?.origin === "scope_output_reminder"
+    && push.payload.event.content.data.scope_execution_id === run.execution_id);
+  const inspected = await invokeAs("completed", { operation_id: "scope.execution.inspect", idempotency_key: "guard-" + key + "-inspect",
+    target: { kind: "scope_execution", id: run.execution_id }, input: { include_outputs: true } });
+  return { settled: settled.payload, reminders: reminders.length, outputs: inspected.output_publications ?? [] };
+};
+const [single, reminded, stubborn] = await Promise.all([
+  handOnRoute("reply-output", ["result"], "Reply with the single word: done"),
+  handOnRoute("reminded-output", ["first", "second"],
+    "Do not hand on any output in this turn; only reply with the word: ready. If Floe later reminds you about missing output, "
+    + "follow the reminder exactly: hand on output first with text one and output second with text two."),
+  handOnRoute("stubborn-output", ["first", "second"],
+    "Reply with the single word: no. Never hand on or publish any output through any operation, even if Floe reminds you."),
+]);
+const replyOutput = single.outputs.find((output) => output.port_id === "worker:result");
+if (single.settled.to_status !== "completed" || replyOutput?.event?.metadata?.output_source !== "turn_reply" || !String(replyOutput.event.content?.text ?? "").trim()) {
+  throw new Error("a step with one required output did not hand on its reply: " + JSON.stringify({ settled: single.settled, outputs: single.outputs }));
+}
+if (single.reminders !== 0) throw new Error("a step whose reply was its output was still reminded");
+step("a step with one required output handed on its reply as that output: " + JSON.stringify(String(replyOutput.event.content.text).slice(0, 40)));
+if (reminded.settled.to_status !== "completed" || reminded.reminders !== 1
+  || !["worker:first", "worker:second"].every((port) => reminded.outputs.some((output) => output.port_id === port))) {
+  throw new Error("a reminded step did not complete after exactly one reminder: " + JSON.stringify({ settled: reminded.settled, reminders: reminded.reminders, outputs: reminded.outputs.map((output) => output.port_id) }));
+}
+step("a step missing required output got exactly one visible reminder, then handed both outputs on and completed");
+if (stubborn.settled.to_status !== "failed" || stubborn.reminders !== 1 || stubborn.settled.failure?.code !== "required_output_not_handed_on"
+  || !String(stubborn.settled.failure?.message ?? "").includes("required output not handed on")) {
+  throw new Error("a step that ignored its reminder did not fail with its reason: " + JSON.stringify({ settled: stubborn.settled, reminders: stubborn.reminders }));
+}
+step("a step that ignored its one reminder failed, never looped: " + JSON.stringify(stubborn.settled.failure.message));
 
 const readinessPushes = [];
 let readinessArrived = () => {};

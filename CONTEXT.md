@@ -90,6 +90,11 @@ control Event, exact ArtefactVersion references, or both. Required cardinality,
 schema compatibility, collection role, and output identity policy belong to the
 Port contract.
 
+An output Port with `min_count` above zero is required: its step completes only
+once it has been handed on. The count bounds saved ArtefactVersion references
+only when the Port declares `artefact_types`; otherwise a text or data
+publication satisfies it.
+
 ### Edge
 
 A stored connection from one output Port to one input Port in one
@@ -208,6 +213,14 @@ An Endpoint processing cycle for one Delivery built from one origin Context. A
 non-empty natural completion is stored in the target NodeExecution Context, or
 the direct Delivery Context when no NodeExecution exists. It does not advance a
 ScopeExecution. Only publication to a named output Port does that.
+
+When an Actor step's turn ends, its required outputs settle without a silent
+wait. A step with exactly one required output Port, and no schema or saved-file
+type on it, hands on the non-empty completion through that Port by the same
+publication path; an explicit publication wins. Otherwise a step still missing
+required output gets exactly one recorded reminder turn in the same Context,
+naming what is missing, and fails with `required_output_not_handed_on` if it is
+still missing after that turn.
 
 When an Actor directly requests another Actor during a NodeExecution, the
 request remains non-graph delegation. Its exact result resumes the same
