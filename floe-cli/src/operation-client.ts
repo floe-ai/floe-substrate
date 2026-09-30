@@ -4,6 +4,8 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+import { CliRequestError } from "./cli-error.js";
+
 export type OperationTarget = Readonly<{ kind: string; id: string }>;
 
 export type CliOperationBoundary =
@@ -219,7 +221,10 @@ export class CliOperationClient {
   ): Promise<CliOperationDescriptor> {
     const descriptors = await this.discover({ boundary, query: operationId, target });
     const descriptor = descriptors.find((candidate) => candidate.operation_id === operationId);
-    if (!descriptor) throw new Error(`Semantic operation '${operationId}' is not available in this authority boundary.`);
+    if (!descriptor) throw new CliRequestError(
+      `Semantic operation '${operationId}' is not available in this authority boundary.`,
+      "Run 'floe operations list' to see the exact operation ids available here.",
+    );
     return descriptor;
   }
 
@@ -323,7 +328,9 @@ async function runNativeAuthorityCommand(
           const message = isRecord(parsed.error) && typeof parsed.error.message === "string"
             ? parsed.error.message
             : "Floe's native authority broker refused the request.";
-          reject(new Error(message));
+          // The broker's messages are written for the person, so they are
+          // shown verbatim rather than filtered as an internal failure.
+          reject(new CliRequestError(message, "Act on the reason above, then try again."));
           return;
         }
         resolveResult(parsed.result);
@@ -435,7 +442,7 @@ export function selectLocalWorkspace(
 ): LocalWorkspaceProjection {
   if (explicitWorkspaceId) {
     const exact = workspaces.find((workspace) => workspace.workspace_id === explicitWorkspaceId);
-    if (!exact) throw new Error(`Workspace '${explicitWorkspaceId}' is not attached to this Floe host.`);
+    if (!exact) throw new CliRequestError(`Workspace '${explicitWorkspaceId}' is not attached to this Floe host.`);
     return exact;
   }
 
@@ -448,7 +455,7 @@ export function selectLocalWorkspace(
   }).sort((left, right) =>
     resolve(right.binding!.locator).length - resolve(left.binding!.locator).length);
   if (matches.length > 0) return matches[0]!;
-  throw new Error("No attached Workspace contains the current directory. Use --workspace <workspace-id>.");
+  throw new CliRequestError("No attached Workspace contains the current directory. Use --workspace <workspace-id>.");
 }
 
 function parseLocalWorkspace(value: unknown): LocalWorkspaceProjection {
@@ -520,8 +527,8 @@ function requireText(value: string, label: string): string {
  * Idempotency is a write concept: a stable key lets a retried write replay
  * safely instead of applying twice. A read cannot apply twice, so a caller
  * should never have to invent a key for one. When the caller omits a key we
- * require it only for a write (stating that at the point of need) and mint an
- * ephemeral key for a read, so the wire contract stays satisfied.
+ * require it only for a write (stating that at the point of need) and send a
+ * read without one; the Bus gives each keyless read its own invocation.
  */
 function optionalIdempotencyKey(
   descriptor: CliOperationDescriptor,
@@ -531,7 +538,7 @@ function optionalIdempotencyKey(
     return { idempotency_key: requireText(provided, "idempotency key") };
   }
   if (descriptor.effects.mode === "write") {
-    throw new Error(
+    throw new CliRequestError(
       `Operation '${descriptor.operation_id}' writes, so it needs --idempotency-key `
       + "<stable key> — a stable key lets a retry replay safely instead of applying twice.",
     );

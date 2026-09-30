@@ -901,14 +901,16 @@ fn validate_invocation(value: &Value) -> Result<(), String> {
     let object = value
         .as_object()
         .ok_or_else(|| "The semantic operation request is invalid.".to_string())?;
-    for field in [
-        "operation_id",
-        "operation_version",
-        "input_schema_version",
-        "idempotency_key",
-    ] {
+    for field in ["operation_id", "operation_version", "input_schema_version"] {
         let value = object.get(field).and_then(Value::as_str).unwrap_or("");
         validate_identifier("semantic operation", value)?;
+    }
+    // A read may omit its idempotency key: the Bus gives each keyless read its
+    // own, and refuses a keyless write with its own plain refusal.
+    match object.get("idempotency_key") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(key)) => validate_identifier("idempotency key", key)?,
+        Some(_) => return Err("The idempotency key must be text.".into()),
     }
     if !object.contains_key("input") {
         return Err("The semantic operation request is invalid.".into());
@@ -1071,12 +1073,35 @@ fn is_sha256(value: &str) -> bool {
 async fn response_to_json(response: reqwest::Response) -> Result<Value, String> {
     let status = response.status();
     if !status.is_success() {
+        if status == StatusCode::BAD_REQUEST {
+            let body = response.text().await.unwrap_or_default();
+            return Err(bad_request_message(&body));
+        }
         return Err(operator_http_error(status));
     }
     response
         .json::<Value>()
         .await
         .map_err(|_| "Floe returned an invalid semantic operation response.".into())
+}
+
+/// A 400 is the caller's own mistake, so the Bus's reason is passed on
+/// verbatim, bounded, rather than hidden behind a bare status code.
+fn bad_request_message(body: &str) -> String {
+    let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    let reason = parsed
+        .pointer("/refusal/message")
+        .or_else(|| parsed.get("message"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty());
+    match reason {
+        Some(reason) => {
+            let bounded: String = reason.chars().filter(|c| !c.is_control()).take(400).collect();
+            format!("Floe refused the request: {bounded}")
+        }
+        None => "Floe refused the request as malformed.".into(),
+    }
 }
 
 async fn response_to_http(response: reqwest::Response) -> Result<AuthorityHttpResponse, String> {
@@ -1141,6 +1166,45 @@ mod tests {
         // never inherit the operator's.
         assert!(!legacy_migration_eligible("http://127.0.0.1:5999"));
         assert!(!legacy_migration_eligible("http://127.0.0.1:6000"));
+    }
+
+    #[test]
+    fn a_bad_request_passes_on_the_bus_reason() {
+        assert_eq!(
+            bad_request_message(r#"{"error":"request_invalid","message":"input: Required"}"#),
+            "Floe refused the request: input: Required",
+        );
+        assert_eq!(
+            bad_request_message(r#"{"kind":"rejected","refusal":{"code":"idempotency_key_required","message":"A write needs a key."}}"#),
+            "Floe refused the request: A write needs a key.",
+        );
+        assert_eq!(bad_request_message("not json"), "Floe refused the request as malformed.");
+    }
+
+    #[test]
+    fn a_read_may_omit_its_idempotency_key_but_a_given_key_is_checked() {
+        let base = json!({
+            "operation_id": "context.list",
+            "operation_version": "1",
+            "input_schema_version": "1",
+            "input": {},
+        });
+        assert!(validate_invocation(&base).is_ok());
+        let mut with_null = base.clone();
+        with_null["idempotency_key"] = Value::Null;
+        assert!(validate_invocation(&with_null).is_ok());
+        let mut with_key = base.clone();
+        with_key["idempotency_key"] = json!("guard-1");
+        assert!(validate_invocation(&with_key).is_ok());
+        let mut blank = base.clone();
+        blank["idempotency_key"] = json!("  ");
+        assert!(validate_invocation(&blank).is_err());
+        let mut not_text = base.clone();
+        not_text["idempotency_key"] = json!(7);
+        assert!(validate_invocation(&not_text).is_err());
+        let mut no_id = base;
+        no_id["operation_id"] = json!("");
+        assert!(validate_invocation(&no_id).is_err());
     }
 
     #[test]

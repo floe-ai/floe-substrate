@@ -25,6 +25,17 @@ export type CliFailureReport = Readonly<{
   debugDetail: string | null;
 }>;
 
+/**
+ * The caller's own mistake (bad input, conflicting flags, an unknown name).
+ * Its message is written for the person and is always shown verbatim.
+ */
+export class CliRequestError extends Error {
+  constructor(message: string, readonly nextAction = "Correct the command, then run it again.") {
+    super(message);
+    this.name = "CliRequestError";
+  }
+}
+
 export function reportCliFailure(error: unknown, options: CliFailureOptions): CliFailureReport {
   const configPath = configPathFromArgv(options.argv);
   const detail = fullErrorDetail(error);
@@ -87,6 +98,9 @@ function explainFailure(error: unknown, configPath: string): { summary: string; 
   const record = asRecord(error);
   const detail = fullErrorDetail(error);
 
+  if (error instanceof CliRequestError) {
+    return { summary: error.message, nextAction: error.nextAction };
+  }
   if (record.code === "E_FOREIGN_BUS") {
     return {
       summary: "Floe could not start because another Floe bus is already using its configured address.",
