@@ -35,6 +35,12 @@ A non-empty natural completion is recorded in the target NodeExecution Context,
 or direct Delivery Context. This does not advance a ScopeExecution. Only
 publication to a named output Port does that.
 
+A step never waits silently for its required output. When a step has exactly
+one required output Port with no schema or saved-file type, the Actor's reply
+is handed on through it, unless the Actor handed it on explicitly. Otherwise a
+step missing required output gets one visible reminder turn, then fails with
+"required output not handed on".
+
 Direct `request(actor, work)` remains non-graph delegation. Floe owns the exact
 return path and resumes the same NodeExecution, Context, and pinned revision
 with the result or terminal failure.

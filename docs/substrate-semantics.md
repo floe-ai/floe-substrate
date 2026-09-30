@@ -90,7 +90,10 @@ Context into the Turn.
 
 A non-empty natural completion is stored in the target NodeExecution Context,
 or the direct Delivery Context when no NodeExecution exists. It does not advance
-a ScopeExecution. Only publication to a named output Port does that.
+a ScopeExecution. Only publication to a named output Port does that. A step with
+exactly one required output Port (no schema or saved-file type) publishes its
+reply through that Port; any other missing required output gets one recorded
+reminder turn, then the step fails. No step waits silently for output.
 
 A direct Actor request remains non-graph delegation. Its exact result resumes
 the same NodeExecution, Context, and pinned revision. Floe, not the model, owns

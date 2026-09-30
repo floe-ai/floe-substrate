@@ -133,7 +133,7 @@ describe("canonical Delivery and ExecutionAttempt lifecycle", () => {
     };
   }
 
-  it.each(["claim", "push"] as const)("records one joined attempt and waits for required output through %s", deliveryPath => {
+  it.each(["claim", "push"] as const)("records one joined attempt and reminds about missing required output through %s", deliveryPath => {
     const started = start(handle.broadcast, deliveryPath);
     const prepared = handle.store.prepareRuntimeDelivery({
       bridge_id: BRIDGE,
@@ -315,12 +315,13 @@ describe("canonical Delivery and ExecutionAttempt lifecycle", () => {
 
     const settled = handle.store.getScopeExecutionProjection(started.executionId)!;
     const settledWorker = settled.node_executions.find((node) => node.node_execution_id === started.nodeExecutionId)!;
-    expect(settledWorker.status).toBe("waiting_external");
-    expect(settledWorker.failure).toEqual({
-      code: "required_output_not_published",
+    // The turn ended with no reply and nothing handed on: one reminder turn is queued.
+    expect(settledWorker.status).toBe("retrying");
+    expect(settledWorker.failure).toMatchObject({
+      code: "required_output_reminder_sent",
       required_port_ids: ["worker:result"],
     });
-    expect(settled.execution.status).toBe("waiting_external");
+    expect(settled.execution.status).toBe("active");
     expect((settledWorker.attempts[0] as { status: string }).status).toBe("completed");
   });
 
