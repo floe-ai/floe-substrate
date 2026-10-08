@@ -38,7 +38,9 @@ const REGISTERED: Record<string, string> = {
 const FREE_FORM_DOC_DIRS = new Set([
   "reference", // non-markdown reference assets
   "architecture", // living architecture graph (operator-approved, standing — docs/architecture/overview.md)
-  "guide" // user documentation (operator-approved, standing — docs/guide/README.md)
+  "guide", // user documentation (operator-approved, standing — docs/guide/README.md)
+  "contributing", // working on Floe itself (operator-approved 2026-10-08)
+  "surfaces" // building products on Floe (operator-approved 2026-10-08)
 ]);
 
 const ADR_NAME = /^\d{4}-[a-z0-9-]+\.md$/;

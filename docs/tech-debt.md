@@ -1,6 +1,6 @@
 # Tech Debt — removal queue
 
-Per AGENTS.md "Project state: pre-release": zero tech-debt accumulation, no
+Per the pre-release stance in `docs/contributing/working-rules.md`: zero tech-debt accumulation, no
 migration paths. This file is a **removal queue**, not a parking lot. Entries are
 scheduled deletions, not deferred maybe-laters — burn them down; do not let this
 list grow.
