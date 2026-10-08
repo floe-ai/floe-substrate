@@ -87,12 +87,15 @@ offers nothing else.
 ### No environment-variable switches
 
 _Resolution: settled_
-_Built: yes_
-_Authority: operator-confirmed (no-globals ruling)_
+_Built: partly_
+_Authority: operator-confirmed (no-globals ruling; test switches, 8 Oct ruling)_
 _Authored by: operator_
 
 Behaviour is configured in Floe's configuration file, never by environment
-variables.
+variables. This includes test switches.
+
+Still in code: the live test tier is switched off with `FLOE_LIVE_RUNTIME_TIER`
+(`floe-bridge/src/test-support/machine-copilot-login.ts`).
 
 ### Local-first
 
@@ -195,8 +198,3 @@ _Authored by: operator (thought log, June)_
   own pulses, and keep the mission in sight, efficiently. Current gaps: memory
   and retrieval quality, and long-horizon planning.
 
-## Open
-
-- The live test tier is switched off with the `FLOE_LIVE_RUNTIME_TIER`
-  environment variable (`floe-bridge/src/test-support/machine-copilot-login.ts`).
-  Does the no-environment-variables law cover test switches?
