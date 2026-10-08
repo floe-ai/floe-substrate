@@ -46,11 +46,7 @@ const RULES: VocabularyRule[] = [
         "user guide's Retired terms table — names the term to keep it from creeping back",
       "PRODUCT.md": "states the ban (no inventing a Default Scope)",
       "docs/adr/0004-scope-as-substrate-organising-boundary.md":
-        "the decision record that defines the correction",
-      "docs/ROADMAP.md":
-        "section 2 proof points and propagation bullets predate the correction; annotated, ADR-0004 governs",
-      "docs/plans/slice-2-scope-field-remainder.md":
-        "unexecuted 2026-06 plan pending operator review; retained as live analysis"
+        "the decision record that defines the correction"
     }
   },
   {
@@ -58,10 +54,7 @@ const RULES: VocabularyRule[] = [
     pattern: /pulse ["“]?scope/i,
     roots: ["docs", "CONTEXT.md", "PRODUCT.md", "AGENTS.md"],
     extensions: [".md"],
-    allowed: {
-      "docs/plans/slice-2-scope-field-remainder.md":
-        "unexecuted 2026-06 plan pending operator review; retained as live analysis"
-    }
+    allowed: {}
   },
   {
     name: "Field as separate renderer vocabulary (a Scope is rendered as itself)",
@@ -73,9 +66,7 @@ const RULES: VocabularyRule[] = [
         "user guide's Retired terms table — names the term to keep it from creeping back",
       "docs/adr/0003-field-substrate-primitive.md": "superseded decision record",
       "docs/adr/0004-scope-as-substrate-organising-boundary.md": "superseded decision record",
-      "docs/adr/0007-renderer-identifier-and-field-retirement.md": "decision record that retires the term",
-      "docs/plans/slice-2-scope-field-remainder.md":
-        "unexecuted 2026-06 plan pending operator review; retained as live analysis"
+      "docs/adr/0007-renderer-identifier-and-field-retirement.md": "decision record that retires the term"
     }
   },
   {
@@ -101,11 +92,8 @@ const RULES: VocabularyRule[] = [
     roots: ["floe-bus/src", "docs", "CONTEXT.md", "PRODUCT.md", "AGENTS.md"],
     extensions: [".ts", ".tsx", ".md"],
     allowed: {
-      "docs/ROADMAP.md": "proof point 9 states the ban",
       "docs/adr/0003-field-substrate-primitive.md": "decision record that rejected it",
-      "floe-bus/src/scope-projection.test.ts": "asserts the substrate stays absent",
-      "docs/plans/slice-2-scope-field-remainder.md":
-        "unexecuted 2026-06 plan pending operator review; retained as live analysis"
+      "floe-bus/src/scope-projection.test.ts": "asserts the substrate stays absent"
     }
   }
 ];

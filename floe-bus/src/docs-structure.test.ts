@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 // New knowledge routes into living documents, not new files:
 //   - terminology/invariants -> edit CONTEXT.md in place
 //   - lasting decisions      -> new ADR in docs/adr/ (append-only, NNNN-slug.md)
-//   - slice plans            -> docs/plans/ (disposable; delete once executed)
 // A new top-level doc fails this test until the operator approves a new standing
 // document and it is registered here with its tier. A registered doc that no
 // longer exists fails too — delete its entry when the doc is deleted.
@@ -23,7 +22,6 @@ const REGISTERED: Record<string, string> = {
   "PRODUCT.md": "canonical",
   "README.md": "operational",
   "THIRD_PARTY_NOTICES.md": "operational (dependency licence notices)",
-  "docs/ROADMAP.md": "working",
   "docs/tech-debt.md": "working (removal queue)",
   "docs/floe_thought_log.md": "working (owner's direction log)",
   "docs/contracts.md": "working",
@@ -35,14 +33,9 @@ const REGISTERED: Record<string, string> = {
   "docs/floe-substrate-extension-pulse-prd.md": "working"
 };
 
-// Point-in-time directories under docs/ are free-form; their READMEs declare them
-// historical. New subdirectories of docs/ are NOT free-form — register them here
-// only with operator approval.
+// New subdirectories of docs/ are NOT free-form — register them here only with
+// operator approval. History lives in git, not in docs/.
 const FREE_FORM_DOC_DIRS = new Set([
-  "plans",
-  "implementation-reviews",
-  "evidence",
-  "qa",
   "reference", // non-markdown reference assets
   "architecture", // living architecture graph (operator-approved, standing — docs/architecture/overview.md)
   "guide", // user documentation (operator-approved, standing — docs/guide/README.md)
@@ -64,7 +57,7 @@ describe("docs structure lint", () => {
     const unregistered = found.filter((path) => !(path in REGISTERED));
     expect(
       unregistered,
-      "new standing doc — does this belong in CONTEXT.md, a new ADR, or docs/plans/? " +
+      "new standing doc — does this belong in CONTEXT.md or a new ADR? " +
         "Register it here only if the operator approved a new standing document"
     ).toEqual([]);
     const missing = Object.keys(REGISTERED).filter(

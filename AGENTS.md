@@ -190,7 +190,6 @@ Within documentation:
 - `PRODUCT.md` — operator experience contract.
 - `CONTEXT.md` — current terminology and substrate invariants.
 - accepted ADRs — lasting decisions that have been earned.
-- `docs/plans/` — disposable slice plans.
 - worklogs, evidence, implementation reviews, closed plans, issue/PR/map prose — historical evidence.
 
 A ticket saying a decision was accepted does not make it canonical. The committed canonical document must exist.

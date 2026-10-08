@@ -42,8 +42,6 @@ bodies from this page into a new client.
 ## Retained evidence
 
 - `scripts/prove-docs-pipeline.mjs` — legacy runnable reproduction
-- `docs/plans/documentation-pipeline-e2e-reproduction.md` — point-in-time plan
-  and observations
 - `floe-bus/src/scope-graphs.ts` — isolated legacy compatibility
 - `floe-bus/src/scope-compositions.ts` — canonical Scope designs
 - `floe-bus/src/scope-executions.ts` — canonical execution evidence
