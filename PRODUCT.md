@@ -143,7 +143,8 @@ No universal visualisation architecture is assumed.
 ### Approved pipeline presentation
 
 The existing pipeline and Work presentation must visually match the
-[approved pipeline focus prototype](docs/design/approved-pipeline-focus/README.md).
+approved pipeline focus prototype (floe-app repository,
+`docs/design/approved-pipeline-focus/README.md`).
 The operator approved its appearance and progressive navigation on 2026-09-02
 and explicitly reaffirmed visual fidelity for the next revision on 2026-09-06.
 Preserve the image and output cards, actor labels, visible branch connections,
