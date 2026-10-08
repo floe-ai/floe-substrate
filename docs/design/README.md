@@ -63,7 +63,8 @@ four facts.
 ## Map
 
 ```
-pillars/      pillars.md (mission, laws, tests), experience.md (what using Floe must feel like)
+pillars/      pillars.md (mission, laws, tests), experience.md (what using Floe must feel like),
+              primitives.md (the canonical list and the primitive test)
 host/         installation.md, identity.md, engine.md,
               surface/ (surface, projection, presentation-state),
               extension/ (extension, hook)
@@ -82,6 +83,9 @@ capability/   capability, grant, secret, receipt, audit,
 ```
 
 ## Naming
+
+The primitives and the test for adding one are in
+[primitives](pillars/primitives.md).
 
 Use **Workspace**, **Scope**, **Context**, **Actor**, **Event**, **Command** and
 **Artefact** for the building blocks. Use **ScopeCompositionRevision**,
