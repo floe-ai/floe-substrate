@@ -45,6 +45,6 @@ If your problem is genuinely a fixed, linear procedure that never needs a person
 
 ## Implementation
 
-- `MISSION.md` — the source for this page: the bet, the redundancy test, what floe is not
+- `docs/design/pillars/pillars.md` — the source for this page: the bet, the redundancy test, what floe is not
 - `docs/guide/concepts/README.md` — [[Concepts]], the substrate vocabulary and
   its design/execution records

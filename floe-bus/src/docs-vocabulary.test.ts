@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 // Standing regression check (ROADMAP "Standing regression checks": docs and code agree).
 // Retired vocabulary must not reappear as live concepts. Canonical terminology and
-// invariants live in CONTEXT.md; the per-rule `allowed` lists below are the explicit
+// invariants live in docs/design/; the per-rule `allowed` lists below are the explicit
 // legacy-debt registry — every entry says why it is allowed and when to remove it.
 // A rule that stops matching one of its allowed files fails too, so the registry
 // cannot rot silently: when the debt is paid, delete the entry.
@@ -39,12 +39,11 @@ const RULES: VocabularyRule[] = [
   {
     name: "Default Scope as a live concept (ADR-0004 correction: it does not exist)",
     pattern: /default[ -]scope/i,
-    roots: ["docs", "CONTEXT.md", "PRODUCT.md", "AGENTS.md", "README.md"],
+    roots: ["docs", "AGENTS.md", "README.md"],
     extensions: [".md"],
     allowed: {
       "docs/guide/reference/glossary.md":
         "user guide's Retired terms table — names the term to keep it from creeping back",
-      "PRODUCT.md": "states the ban (no inventing a Default Scope)",
       "docs/adr/0004-scope-as-substrate-organising-boundary.md":
         "the decision record that defines the correction"
     }
@@ -52,14 +51,14 @@ const RULES: VocabularyRule[] = [
   {
     name: 'Pulse "scope" storage wording (renamed to Pulse Persistence)',
     pattern: /pulse ["“]?scope/i,
-    roots: ["docs", "CONTEXT.md", "PRODUCT.md", "AGENTS.md"],
+    roots: ["docs", "AGENTS.md"],
     extensions: [".md"],
     allowed: {}
   },
   {
     name: "Field as separate renderer vocabulary (a Scope is rendered as itself)",
     pattern: /\bField\b/,
-    roots: ["docs", "CONTEXT.md", "PRODUCT.md", "AGENTS.md", "README.md", "floe-bus/src"],
+    roots: ["docs", "AGENTS.md", "README.md", "floe-bus/src"],
     extensions: [".md", ".ts", ".tsx"],
     allowed: {
       "docs/guide/reference/glossary.md":
@@ -79,7 +78,7 @@ const RULES: VocabularyRule[] = [
   {
     name: 'chat-shaped "read receipt" framing (use Endpoint Watermark / Event Cursor)',
     pattern: /read[ -]receipt/i,
-    roots: ["docs", "CONTEXT.md", "PRODUCT.md", "AGENTS.md", "floe-bus/src"],
+    roots: ["docs", "AGENTS.md", "floe-bus/src"],
     extensions: [".md", ".ts", ".tsx"],
     allowed: {
       "docs/guide/reference/glossary.md":
@@ -89,7 +88,7 @@ const RULES: VocabularyRule[] = [
   {
     name: ".floe/blocks substrate (rejected; must not be introduced)",
     pattern: /\.floe\/blocks/,
-    roots: ["floe-bus/src", "docs", "CONTEXT.md", "PRODUCT.md", "AGENTS.md"],
+    roots: ["floe-bus/src", "docs", "AGENTS.md"],
     extensions: [".ts", ".tsx", ".md"],
     allowed: {
       "docs/adr/0003-field-substrate-primitive.md": "decision record that rejected it",

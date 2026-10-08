@@ -7,6 +7,8 @@ first, then [working rules](working-rules.md) for how to reason about a change.
 
 1. **Start from a real need.** An operator outcome, an observed failure, or an
    approved [surface gap](surface-gaps.md). Not a guess about what Floe might need.
+   Name the [design document](../design/README.md) the change serves; if none
+   exists, write it first and bring it to the operator.
 2. **Branch.** Never work on `main`.
 3. **Change the smallest layer that solves it** (see the solution hierarchy in
    [working rules](working-rules.md)).
@@ -32,7 +34,7 @@ Never touch the operator's own Floe: port 5377 and `~/.floe`.
 
 | Kind of knowledge | Goes in |
 |---|---|
-| Terms and invariants | `CONTEXT.md`, edited in place |
+| What Floe is: goals, experience, terms, rules | `docs/design/`, following its [README](../design/README.md) |
 | A lasting decision | a new ADR in `docs/adr/` |
 | A contract a surface needs | `docs/reference/` |
 | How to use Floe | `docs/guide/` |

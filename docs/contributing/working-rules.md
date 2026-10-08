@@ -75,6 +75,28 @@ UI-owned behaviour merely because it produces a quicker demonstration.
 
 After every meaningful product change, return to the proving experience.
 
+## Proving it live
+
+Product needs are discovered from real use. Use the actual product as an
+operator: begin with onboarding, express an outcome in conversation, inspect the
+results, make a correction, and check that work continues and stops correctly
+across interruptions. Use an isolated workspace when an attempt could create
+unwanted state or effects. Preserve the operator's credentials and work.
+
+Record the observed behaviour, the views used, result references and remaining
+gaps. A passing component check or a convincing conversation is not enough
+without the expected work and usable controls. Verify which running version you
+exercised.
+
+Measure efficiency over the whole outcome: input, output, cached and reasoning
+tokens where available, elapsed time, repeated attempts and human
+interventions. Keep quality and experience acceptance fixed when comparing
+changes; record unavailable measurements as unavailable.
+
+Read operator observations as symptoms. "I cannot tell what happened" is a
+legibility problem, not a request for a universal visualiser. "I expected this
+to continue" is a continuity failure, not a request for a particular scheduler.
+
 ## Solution hierarchy
 
 When an observed problem appears, prefer solutions in this order:
@@ -163,14 +185,12 @@ Resolve "what currently happens" from:
 3. repository documentation and ADRs;
 4. prior assumptions or memory.
 
-Resolve "what should happen" from `MISSION.md`, `PRODUCT.md`, first principles, and evidence from real operation. Current code is not proof that an existing product decision is correct.
+Resolve "what should happen" from [`docs/design/`](../design/README.md), first principles, and evidence from real operation. Current code is not proof that an existing product decision is correct.
 
 Within documentation:
 
-- `MISSION.md` — permanent purpose and product-development laws.
-- `PRODUCT.md` — operator experience contract.
-- `CONTEXT.md` — current terminology and substrate invariants.
-- accepted ADRs — lasting decisions that have been earned.
+- `docs/design/` — what Floe is and is meant to be: goals and laws (`pillars/`), the operator experience, terminology and rules for every part. Only `operator-confirmed` content is settled authority.
+- accepted ADRs — why a lasting decision was made.
 - `docs/reference/` — the published contracts surfaces build against.
 - git history, issue/PR prose, chat and notes outside the repository — historical evidence, never authority.
 
@@ -190,18 +210,18 @@ Nothing external depends on this repository yet.
 
 Pre-release status licenses correction, not sloppiness.
 
-## Standing substrate invariants
+## Standing invariants
 
-These are prohibitions that are not obvious merely from reading code.
+The substrate's standing rules live in design, each with the thing it governs:
+push-only and no environment variables in [pillars](../design/pillars/pillars.md),
+one origin Context and ephemeral sessions in
+[Turn](../design/event/delivery/turn.md), private tool calls in
+[Context](../design/context/context.md), committed `.floe/floe.yaml` in
+[Workspace](../design/workspace/workspace.md), no person/model distinction in
+[Actor](../design/actor/actor.md), independent repositories in
+[Extension](../design/host/extension/extension.md).
 
-- The substrate is push-only. Do not add recurring polling, reconcile intervals, or liveness loops as normal substrate behaviour.
-- A runtime turn is built from one origin context; do not bleed unrelated context into it.
-- Runtime sessions are ephemeral and isolated per actor/context.
-- Tool calls and scratch reasoning are not automatically public context content.
-- `.floe/floe.yaml` is committed project configuration, not runtime scratch state.
-- The substrate does not encode a human/agent type distinction.
-- Extensions are independent repositories building against the substrate contract.
-- Developer build commands are not product features.
+Developer build commands are not product features.
 
 If real use proves an invariant wrong, surface the evidence and deliberately reconsider it rather than routing around it.
 

@@ -1,7 +1,7 @@
 # Floe Runtime Contracts
 
 This document records runtime transport boundaries for the TypeScript build.
-`CONTEXT.md` and accepted ADRs own domain semantics. Services may use matching
+`docs/design/` and accepted ADRs own domain semantics. Services may use matching
 TypeScript types internally, but they communicate only through authenticated
 HTTP, authenticated WebSocket, and persisted state they own.
 

@@ -55,7 +55,7 @@ lifecycle rules.
 
 ## Implementation
 
-- `CONTEXT.md` — canonical terminology and invariants
+- `docs/design/` — canonical terminology, rules and intent
 - `floe-bus/src/operations.ts` — shared semantic operation contract
 - `floe-bus/src/scope-compositions.ts` — Scope design records
 - `floe-bus/src/scope-executions.ts` — execution records

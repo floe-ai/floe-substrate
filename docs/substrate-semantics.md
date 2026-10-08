@@ -1,7 +1,7 @@
 # Floe Substrate Semantics
 
-**Status:** Current working synthesis of `CONTEXT.md` and accepted ADRs.
-**Authority:** `CONTEXT.md` defines terms; accepted ADRs define lasting
+**Status:** Current working synthesis of `docs/design/` and accepted ADRs.
+**Authority:** `docs/design/` defines terms; accepted ADRs define lasting
 decisions. This document explains their implementation consequences.
 
 ## 1. Actor and Endpoint are different

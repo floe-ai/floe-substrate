@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 // Standing regression check: the set of standing documents is closed.
 // New knowledge routes into living documents, not new files:
-//   - terminology/invariants -> edit CONTEXT.md in place
+//   - what Floe is, terms and rules -> docs/design/ (see docs/design/README.md)
 //   - lasting decisions      -> new ADR in docs/adr/ (append-only, NNNN-slug.md)
 // A new top-level doc fails this test until the operator approves a new standing
 // document and it is registered here with its tier. A registered doc that no
@@ -15,11 +15,8 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 // repo-relative path -> tier (canonical | working | historical | operational)
 const REGISTERED: Record<string, string> = {
-  "MISSION.md": "canonical (why the substrate exists)",
   "CLAUDE.md": "canonical (entry pointer to AGENTS.md)",
   "AGENTS.md": "canonical",
-  "CONTEXT.md": "canonical",
-  "PRODUCT.md": "canonical",
   "README.md": "operational",
   "THIRD_PARTY_NOTICES.md": "operational (dependency licence notices)",
   "docs/tech-debt.md": "working (removal queue)",
@@ -40,7 +37,8 @@ const FREE_FORM_DOC_DIRS = new Set([
   "architecture", // living architecture graph (operator-approved, standing — docs/architecture/overview.md)
   "guide", // user documentation (operator-approved, standing — docs/guide/README.md)
   "contributing", // working on Floe itself (operator-approved 2026-10-08)
-  "surfaces" // building products on Floe (operator-approved 2026-10-08)
+  "surfaces", // building products on Floe (operator-approved 2026-10-08)
+  "design" // what Floe is and is meant to be (operator-approved 2026-10-08)
 ]);
 
 const ADR_NAME = /^\d{4}-[a-z0-9-]+\.md$/;
@@ -58,7 +56,7 @@ describe("docs structure lint", () => {
     const unregistered = found.filter((path) => !(path in REGISTERED));
     expect(
       unregistered,
-      "new standing doc — does this belong in CONTEXT.md or a new ADR? " +
+      "new standing doc — does this belong in docs/design/ or a new ADR? " +
         "Register it here only if the operator approved a new standing document"
     ).toEqual([]);
     const missing = Object.keys(REGISTERED).filter(

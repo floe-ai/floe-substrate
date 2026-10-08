@@ -41,11 +41,10 @@ If you are building a surface, you do not edit this repository. You report gaps.
 
 ## Where truth lives
 
-- [MISSION.md](MISSION.md) — why Floe exists.
-- [PRODUCT.md](PRODUCT.md) — what using Floe must feel like.
-- [CONTEXT.md](CONTEXT.md) — current terms and invariants.
-- [docs/adr/](docs/adr/) — lasting decisions.
+- [docs/design/](docs/design/README.md) — what Floe is and is meant to be:
+  goals, the operator experience, terms and rules. `Built: no` is the roadmap.
+- [docs/adr/](docs/adr/) — why lasting decisions were made.
 - [docs/reference/](docs/reference/) — the published contracts surfaces build against.
 
-Current code says what happens today; these documents say what should happen.
+Current code says what happens today; design says what should happen.
 When they disagree, say so. Do not silently pick one.

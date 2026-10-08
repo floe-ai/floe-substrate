@@ -11,7 +11,7 @@
 > (clusters → cells → modules with write-authority and path globs).  
 > This document is the human-facing companion: it explains *why* things are shaped as
 > they are and where they are going, and renders as diagrams on GitHub.  
-> Canonical terminology lives in [`CONTEXT.md`](../../CONTEXT.md).  
+> Canonical terminology lives in [`docs/design/`](../design/README.md).  
 > Accepted decisions live in [`docs/adr/`](../adr/).
 >
 > **Canonical foundation:** ADR-0010 through ADR-0012 supersede the earlier
@@ -25,7 +25,7 @@
 ## Part 1 — Transitional implementation inventory
 
 Grounded in current code. Legacy adapters are labelled as such; canonical
-semantics come from `CONTEXT.md` and accepted ADRs.
+semantics come from `docs/design/` and accepted ADRs.
 
 ---
 
@@ -363,7 +363,7 @@ graph LR
 | Document | Role |
 |---|---|
 | [`architecture.map.yaml`](../../architecture.map.yaml) | Machine-readable ownership map (clusters, cells, modules, write-authority, path globs). This doc is the human-facing companion. |
-| [`CONTEXT.md`](../../CONTEXT.md) | Canonical terminology and invariants. Definitions here are authoritative for all code and docs. |
+| [`docs/design/`](../design/README.md) | Canonical design: terminology, rules and intent. Authoritative for all code and docs. |
 | [`docs/adr/0001-pulse-scheduled-event-delivery.md`](../adr/0001-pulse-scheduled-event-delivery.md) | Pulse = scheduled event; definitions-in-files / runtime-in-bus split; event-driven scheduler. |
 | [`docs/adr/0002-extension-substrate-design.md`](../adr/0002-extension-substrate-design.md) | Extension manifest format, factory function entry, hook registration model, tool namespacing. |
 | [`docs/adr/0003-field-substrate-primitive.md`](../adr/0003-field-substrate-primitive.md) | Superseded renderer vocabulary decision (superseded by ADR-0004 for ownership questions). |
