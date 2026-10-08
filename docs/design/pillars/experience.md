@@ -50,6 +50,11 @@ contracts. Extensions are one way to add capability, not the default answer. A
 capability Floe cannot create, install, enable or use is a product failure to
 surface clearly, not a design task for the operator.
 
+Before building a capability, strip the request to its generic need. A request
+for stock-market charts needs chart rendering, structured results, data sources
+and refresh, not a "stock market Extension". The result must work without any
+particular surface.
+
 ## Legibility
 
 The operator needs situational awareness, not omniscience: what outcome Floe is
@@ -79,6 +84,45 @@ is a design pressure, not a roadmap item.
 Normal autonomous work is quiet. Detail appears when the operator asks, follows
 a reference, investigates, or needs to build trust. Deep telemetry sits behind
 deliberate inspection.
+
+## Direction: shape before detail
+
+_Resolution: direction_
+_Built: no_
+_Authority: agent-provisional_
+_Authored by: operator (thought log, June)_
+
+Before a meaningful change, Floe proposes its shape in terms of impact: what new
+capability or module, where it attaches, what the system looks like after, and
+the trade-offs and risks. Once the shape is accepted, Actors break it down and
+work through the detail. The operator sees consequences, not line-by-line
+activity.
+
+## Direction: history worth replaying
+
+_Resolution: direction_
+_Built: partly_
+_Authority: agent-provisional_
+_Authored by: operator (thought log, June)_
+
+Records are rich enough for any surface or Actor to follow the chain from
+request to actions, decisions, results and evaluation, and to review it through
+different lenses: security, architecture, code, tools created, product impact.
+The need is legibility over time, not a timeline screen. Actors read the same
+history to avoid repeating mistakes.
+
+## Direction: evaluation everywhere
+
+_Resolution: question_
+_Built: no_
+_Authority: agent-provisional_
+_Authored by: operator (thought log, June)_
+
+Any Actor can give feedback on any result, wherever the work is: free text,
+thumbs up or down, choosing between alternatives, review notes, retrospectives.
+Feedback becomes structured signal for correction and improvement instead of
+disappearing into chat. Reference to revisit: agent development lifecycle (ADLC)
+practice, https://youtu.be/aMBQB_IJ0dQ.
 
 ### Support report
 

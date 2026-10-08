@@ -53,5 +53,28 @@ When an Actor directly requests another Actor during a NodeExecution, it remains
 non-graph delegation. The result resumes the same NodeExecution, Context and
 revision; the model does not manage return identifiers.
 
+## The Floe Actor
+
+The Floe Actor that comes with every Workspace follows the same Actor,
+authority, Delivery, runtime and operation contracts as any other Actor. It
+differs only in its definition and assignment, never by a privileged path. Its
+coordinating behaviour (understand outcomes, discover capabilities, organise
+work, verify results, keep the operator informed) belongs to the Actor, not the
+substrate (`floe-bridge/src/prompts/default-floe-agent.md`).
+
+## Direction: responsibilities route work
+
+_Resolution: question_
+_Built: no_
+_Authority: agent-provisional_
+_Authored by: operator (thought log, June)_
+
+An Actor asked to do something outside its responsibilities does not silently do
+it. It hands the work back, naming the mismatch, so an Actor with the right remit
+can take it. With no suitable Actor, the work becomes a visible unowned
+responsibility rather than disappearing. Something that coordinates the
+Workspace then decides: extend an existing Actor, create one, or redraw
+boundaries.
+
 Decision: [ADR-0009](../../adr/0009-bus-owned-actor-capability-discovery.md)
 (in part superseded by ADR-0011).

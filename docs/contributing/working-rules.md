@@ -75,6 +75,20 @@ UI-owned behaviour merely because it produces a quicker demonstration.
 
 After every meaningful product change, return to the proving experience.
 
+Understand the architecture before changing it. Do not patch whatever is
+nearest to make a symptom go away; a fix that bends the structure is worse than
+the bug.
+
+## Changing Actor instructions
+
+Generic substrate meaning belongs in shared guidance, never repeated in each
+Actor. Coordinating preferences belong in the Floe Actor template
+(`floe-bridge/src/prompts/default-floe-agent.md`). Template changes reach only
+new Workspaces; update an existing Workspace's copy as a separate, deliberate
+step, and never rewrite published revisions or pins. Run the prompt and
+template checks, then confirm on the running version that a real turn received
+the change ([turn input](../design/event/delivery/turn/input.md)).
+
 ## Proving it live
 
 Product needs are discovered from real use. Use the actual product as an
@@ -215,7 +229,7 @@ Pre-release status licenses correction, not sloppiness.
 The substrate's standing rules live in design, each with the thing it governs:
 push-only and no environment variables in [pillars](../design/pillars/pillars.md),
 one origin Context and ephemeral sessions in
-[Turn](../design/event/delivery/turn.md), private tool calls in
+[Turn](../design/event/delivery/turn/turn.md), private tool calls in
 [Context](../design/context/context.md), committed `.floe/floe.yaml` in
 [Workspace](../design/workspace/workspace.md), no person/model distinction in
 [Actor](../design/actor/actor.md), independent repositories in

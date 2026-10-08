@@ -25,6 +25,14 @@ Never touch the operator's own Floe: port 5377 and `~/.floe`.
   throwaway folder and whose ports are in **5480–5489**.
 - Stop the test Floe when finished and leave those ports free.
 
+## Test tiers
+
+- **Fake runtime.** Fast tests use the fake runtime adapter to check Bus and
+  Bridge behaviour. It never defines what the product means.
+- **Live runtime.** The live tier runs a real runtime through the Copilot SDK
+  with the machine's Copilot sign-in. It fails loudly when the runtime is
+  unavailable instead of quietly skipping.
+
 ## Releasing
 
 `scripts/release.mjs` builds, verifies, tags and publishes the
@@ -32,14 +40,4 @@ Never touch the operator's own Floe: port 5377 and `~/.floe`.
 
 ## Where things go
 
-| Kind of knowledge | Goes in |
-|---|---|
-| What Floe is: goals, experience, terms, rules | `docs/design/`, following its [README](../design/README.md) |
-| A lasting decision | a new ADR in `docs/adr/` |
-| A contract a surface needs | `docs/reference/` |
-| How to use Floe | `docs/guide/` |
-| How to build a surface | `docs/surfaces/` |
-| Plans, evidence, worklogs | nowhere in the repository; git keeps history |
-
-A new top-level document or `docs/` folder needs operator approval;
-`floe-bus/src/docs-structure.test.ts` enforces this.
+See [how documentation works](../README.md).

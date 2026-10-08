@@ -19,15 +19,7 @@ const REGISTERED: Record<string, string> = {
   "AGENTS.md": "canonical",
   "README.md": "operational",
   "THIRD_PARTY_NOTICES.md": "operational (dependency licence notices)",
-  "docs/tech-debt.md": "working (removal queue)",
-  "docs/floe_thought_log.md": "working (owner's direction log)",
-  "docs/contracts.md": "working",
-  "docs/substrate-semantics.md": "working",
-  "docs/floe-instruction-layering.md": "working",
-  "docs/self-hosting-continuity.md": "working",
-  "docs/followup-extension-self-install.md": "working",
-  "docs/extension-substrate-slice-prd.md": "working",
-  "docs/floe-substrate-extension-pulse-prd.md": "working"
+  "docs/README.md": "canonical (how documentation works, operator-approved 2026-10-08)"
 };
 
 // New subdirectories of docs/ are NOT free-form — register them here only with

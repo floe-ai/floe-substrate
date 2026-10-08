@@ -11,7 +11,7 @@ cardinality, schema compatibility, collection role and output identity policy
 belong to the Port contract.
 
 An output Port with `min_count` above zero is required: its step completes only
-once it has been handed on (see [Turn](../event/delivery/turn.md)). The count
+once it has been handed on (see [Turn](../event/delivery/turn/turn.md)). The count
 bounds saved ArtefactVersion references only when the Port declares
 `artefact_types`; otherwise a text or data publication satisfies it.
 

@@ -72,7 +72,7 @@ actor/        actor, definition, runtime-binding
 context/      context, participant, subscription
 event/        event, emit, cursor,
               connector/ (connector, pulse, external-effect),
-              delivery/ (delivery, endpoint, turn)
+              delivery/ (delivery, endpoint, turn/ (turn, input))
 scope/        scope, revision, placement, port, edge,
               execution/ (scope-execution, node-execution, attempt)
 command.md

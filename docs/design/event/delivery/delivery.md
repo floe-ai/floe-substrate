@@ -20,3 +20,24 @@ ScopeExecution.
 Once a Delivery enters a runtime it may already have caused effects. Losing
 runtime ownership becomes a terminal unknown-outcome failure and is never
 silently replayed.
+
+## Lifecycle
+
+A Delivery moves durably through `queued → reserved → delivered_to_bridge →
+injected_to_runtime → acknowledged`. Transport may retry before injection.
+After injection, pushed runtime activity renews a single-shot ownership lease;
+runtime failure or lost ownership is a terminal dead letter. Queued Events reach
+a runtime as bundles at safe boundaries.
+
+## Stopping
+
+The operator stops one exact active response through the shared
+`runtime.delivery.cancel` operation. Cancellation is terminal: it interrupts the
+exact runtime or Command process, revokes that Delivery's operation authority
+and ignores late acknowledgements. Partial text from a stopped or failed
+response never becomes a successful completion; already committed results and
+file changes remain.
+
+Stopping one response does not stop the responses it requested; each has its
+own Stop. Stopping a whole Scope run uses `scope.execution.stop`. Cancellation is
+runtime state, never an Actor instruction.

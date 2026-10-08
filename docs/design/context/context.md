@@ -20,3 +20,9 @@ ScopeExecution; only an [Edge](../scope/edge.md) does.
 Tool calls and scratch reasoning are not automatically Context content.
 
 Avoid: channel as topology, room as routing table, Thread in new contracts.
+
+## Legacy
+
+The Thread primitive is removed. The Event and pending-response stores still
+carry `thread_id` columns, read by the event filter and response matching; they
+go with the schema collapse in [pillars](../pillars/pillars.md) (Pre-release).

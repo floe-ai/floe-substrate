@@ -13,6 +13,13 @@ back state and short-lived bearers.
 Clients authenticate as themselves and receive an unprivileged Workspace
 credential; authority comes from grants, never from being a particular client.
 
+## Connection credentials
+
+Credentials have three audiences that are never interchangeable: host control,
+the Bridge service, and Workspace operations. HTTP sends them only in the
+`Authorization` header, never in URLs or logs. A WebSocket client authenticates
+in its first frame and receives nothing before that succeeds.
+
 Decisions: [ADR-0015](../../adr/0015-client-identity-and-unprivileged-workspace-credential.md),
 [ADR-0016](../../adr/0016-floe-owns-the-identity.md).
 Contract: `docs/reference/identity-agent-protocol.md`,

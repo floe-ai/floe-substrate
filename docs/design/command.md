@@ -20,3 +20,15 @@ to an isolated Command host. Implementations are exact core or Extension version
 references. Filesystem, network, secret and external access goes only through
 granted operations and brokers. Command output advances Edges only through a
 named Port using `scope.node-output.publish`.
+
+## Direction: repeated work becomes a Command
+
+_Resolution: direction_
+_Built: partly_
+_Authority: agent-provisional_
+_Authored by: operator (thought log, June)_
+
+When an Actor meets a deterministic, repeatable step (a calculation, a
+transformation, a check), it builds or reuses a Command for it instead of
+reasoning through it again, and packages it so it can be found later. Commands
+exist; Actors doing this as a habit does not yet.

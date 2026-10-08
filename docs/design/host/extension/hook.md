@@ -6,13 +6,27 @@ _Authority: agent-provisional_
 _Authored by: unknown_
 
 A handler an [Extension](extension.md) registers for a named point in a
-[Turn](../../event/delivery/turn.md)'s lifecycle. The Bridge fires it at that
+[Turn](../../event/delivery/turn/turn.md)'s lifecycle. The Bridge fires it at that
 point. Handlers run in registration order; a failing handler is caught and
 logged and never crashes the turn.
 
 Fired today: `SessionStart`, `BeforeTurn`, `TurnEnd`, `Error`. `WebhookReceived`
 is a Bridge ingress hook. Other declared names (including `Pulse`, fired only by
-the test engine) are not promises.
+the test engine) are not promises. `BeforeTurn` can add text to the
+[turn input](../../event/delivery/turn/input.md); the others observe.
+Handlers are registered in code (`hooks.on(...)`); declaring hooks in YAML is
+not built.
+
+## Direction: more hook points
+
+_Resolution: question_
+_Built: no_
+_Authority: agent-provisional_
+_Authored by: unknown_
+
+The September release direction asked for hook points around Events received
+and emitted, Deliveries, tool use, session lifecycle, Pulse runs and Extension
+lifecycle. Only the points above exist; add one when a real Extension needs it.
 
 ## Open
 

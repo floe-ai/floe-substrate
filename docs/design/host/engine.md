@@ -5,7 +5,7 @@ _Built: partly_
 _Authority: agent-provisional_
 _Authored by: unknown_
 
-An engine is the AI runtime that performs an Actor's [Turn](../event/delivery/turn.md).
+An engine is the AI runtime that performs an Actor's [Turn](../event/delivery/turn/turn.md).
 Floe has one runtime, floe-runtime, built on the GitHub Copilot SDK.
 
 ## Sign-in belongs to the vendor

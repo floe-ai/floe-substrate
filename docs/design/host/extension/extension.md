@@ -21,6 +21,10 @@ dashboards and bounded product surfaces. It may also register [hooks](hook.md).
 - An Extension may own domain schemas, specialised statuses, invalidation and
   regeneration policy, and rich presentation. It never owns competing
   Workspace, Context, Scope topology, Artefact identity or authority.
+- Install, enable, upgrade and rollback are governed operations
+  (`extension.install`, `extension.enable`, `extension.upgrade`,
+  `extension.rollback`), so an Actor can add capability without anyone copying
+  files by hand.
 
 Decisions: [ADR-0002](../../../adr/0002-extension-substrate-design.md),
 [ADR-0006](../../../adr/0006-external-extension-repositories.md).

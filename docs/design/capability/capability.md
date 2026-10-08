@@ -14,6 +14,12 @@ Each call returns a [receipt](receipt.md) and leaves an [audit record](audit.md)
 Authority comes from a [grant](grant.md); [Policy](policy/policy.md) can only
 narrow it.
 
+Principal, Workspace or host boundary, grants, interaction mode and causal
+origin come from the authenticated connection or the active Delivery. Request
+content can never claim them. Consequential calls need an idempotency key, and
+state-changing calls carry the expected resource revision where the operation
+requires one.
+
 Decisions: [ADR-0009](../../adr/0009-bus-owned-actor-capability-discovery.md),
 [ADR-0011](../../adr/0011-one-semantic-operation-contract.md).
 

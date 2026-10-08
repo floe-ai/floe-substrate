@@ -373,4 +373,3 @@ graph LR
 | [`docs/adr/0010-canonical-scope-composition-execution-and-artefacts.md`](../adr/0010-canonical-scope-composition-execution-and-artefacts.md) | Context is collaboration; immutable Scope revisions own Ports/Edges; execution and Artefact provenance are canonical. |
 | [`docs/adr/0011-one-semantic-operation-contract.md`](../adr/0011-one-semantic-operation-contract.md) | App, Actor, CLI, SDK, API, and MCP clients share one Bus-owned operation contract. |
 | [`docs/adr/0012-portable-workspace-authority-and-secret-brokering.md`](../adr/0012-portable-workspace-authority-and-secret-brokering.md) | Portable Workspace identity, authenticated authority, transport audiences, and credential brokering. |
-| [`docs/substrate-semantics.md`](../substrate-semantics.md) | Current working synthesis of canonical terms and accepted decisions. |

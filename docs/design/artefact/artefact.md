@@ -9,8 +9,8 @@ A stable logical thing produced, consumed, discussed, revised, assembled,
 tested, approved or derived by work: a document, image, collection, source tree,
 website, report, decision or deployable package.
 
-Floe owns identity, type, access and retention state, creation provenance and
-the [version](version.md) graph. Extensions own domain schemas, metadata,
+Floe owns identity, type, access, retention, redaction and tombstone state,
+creation provenance and the [version](version.md) graph. Extensions own domain schemas, metadata,
 specialised statuses, invalidation and regeneration policy, and rich
 presentation.
 

@@ -65,7 +65,8 @@ work is not rediscovered.
 
 Measure tokens, time, repeated work and interventions per successful outcome.
 Fewer tokens is an improvement only when usefulness, correctness, continuity and
-clarity hold.
+clarity hold. The fear is not spend; it is high cost with little momentum.
+Spend is fine when it visibly turns into progress.
 
 ## Laws
 
@@ -106,19 +107,28 @@ deployment are deferred, not designed away. See the direction below.
 ### Pre-release
 
 _Resolution: settled_
-_Built: yes_
+_Built: partly_
 _Authority: agent-provisional_
 _Authored by: unknown_
 
 Nothing external depends on Floe yet. Prefer replacement over compatibility and
 migration machinery. Preserve credentials and genuinely valuable user state.
 
+Still in code (operator decision, 14 Jun: collapse the schema to one
+authoritative set of tables and recreate local databases instead of migrating):
+`floe-bus/src/store.ts` keeps `relaxEventScopeColumn()` with its table rebuild,
+`addColumnIfMissing()` and `backfill*` methods, reserved-id cleanup paths and the
+`is_default` index cleanup, plus the legacy `thread_id` columns
+([Context](../context/context.md)).
+
 ## Tests every change must pass
 
 - **Delete test.** If deleting one surface would leave something in Floe that
   only made sense for it, it does not belong in Floe. Floe owns shared
   mechanism; a surface owns its domain, rules, formats and state.
-  _Authority: operator-confirmed (30 Sep ruling)._
+  _Authority: operator-confirmed (30 Sep ruling)._ The same holds for aids built
+  while Floe builds itself: they belong in Floe only if still valuable when the
+  Workspace, the Actor, the operator and the workflow are all different.
 - **Redundancy test.** If models become 10× more capable, does this become
   unnecessary (leave it to models, instructions, tools or an Extension) or more
   valuable (durable identity, coordination, history, permissions, continuity,
@@ -131,7 +141,9 @@ migration machinery. Preserve credentials and genuinely valuable user state.
 
 Not a workflow product with every workflow prebuilt. Not an observability
 product exposing every internal primitive. Not a graph editor. Not a collection
-of architecture patterns waiting to be implemented.
+of architecture patterns waiting to be implemented. Not a memory system: memory
+belongs in a separate Extension that works in any harness, on by default and
+removable (direction, not built; operator thought log, June).
 
 The goal is for the operator to say:
 
@@ -158,3 +170,33 @@ brokering, Extensions. Not built: shared multi-user deployment, mobile, remote
 access (deferred by Local-first).
 
 Release boundaries must not redefine these as speculative.
+
+## Direction: north star
+
+_Resolution: direction_
+_Built: no_
+_Authority: agent-provisional_
+_Authored by: operator (thought log, June)_
+
+- **North star.** An AI-first company: the operator discusses a multi-year
+  vision with a co-founding Actor, then steps back, stepping in only for testing
+  and real-world actions such as payments and sign-in.
+- **Proof.** A colleague of any discipline installs Floe, describes an outcome
+  in plain language (for example idea to published video using named tools), and
+  Floe designs the whole system itself: stages, Actors, webhooks, pulses
+  watching a folder, and its own Extensions, without the person explaining any
+  system design.
+- **The world keeps moving.** The operator can step in at any time to watch,
+  comment or redirect, but work continues whether or not they are there.
+- **Keystone.** Thirty seconds of the operator's reaction must be worth hours of
+  Actor work. Feedback must feel like conversation, not review.
+- **Trust gate for full autonomy.** An Actor can hold a one-to-three-year
+  mission, break it into small pieces, stay profitable along the way, run its
+  own pulses, and keep the mission in sight, efficiently. Current gaps: memory
+  and retrieval quality, and long-horizon planning.
+
+## Open
+
+- The live test tier is switched off with the `FLOE_LIVE_RUNTIME_TIER`
+  environment variable (`floe-bridge/src/test-support/machine-copilot-login.ts`).
+  Does the no-environment-variables law cover test switches?
