@@ -40,7 +40,7 @@ _Authored by: agent_
 | **Workspace** | Holds everything below. |
 | **Actor** | Uses judgement: reads, decides, acts, and brings results back. Who or what backs it never matters. |
 | **Command** | A fixed, repeatable step. A script plus a description Floe can read: what goes in, what comes out, what it changes outside Floe, what it may touch, how long it may run, and whether it is safe to retry. |
-| **Context** | A shared room. Actors join it, post in it and read its history; that history is what an Actor reads before it acts. Each member says which kinds of Event wake it. |
+| **Context** | A shared room. Actors join it, post in it and read its history; that history is what an Actor reads before it acts. Each member says which kinds of Event wake it. A Context can sit inside another, like a thread inside a channel. |
 | **Event** | Something that happened. It fires; it does not travel. It has a source: a schedule (a Pulse), a folder change, a webhook, or a person pressing go. It may carry a payload, including pointers to things kept elsewhere. |
 | **Scope** | Holds a workflow: nodes and the connections between them. Saved versions mean a running job keeps the version it started with. |
 | **Artefact** | A real output that can leave Floe: an image, a document, a build deployed somewhere else. |
@@ -52,12 +52,15 @@ _Built: partly_
 _Authority: agent-provisional_
 _Authored by: agent_
 
-- Actors, Commands, Contexts and Event sources can be placed as nodes in a
-  Scope.
+- Actors, Commands, Contexts and Events can be placed as nodes in a Scope. An
+  Event node carries its source.
 - Connections between nodes are their own records. A Context is never the
   wiring between nodes.
 - What an Event triggers depends on its type and what it is connected to: it can
   wake the members of a connected Context, or start a Command directly.
+- Every Event is recorded in a Context, so history can always be replayed. When
+  an Event starts a Command in a workflow, Floe creates a Context for that run
+  to hold its record; the Command does not read it.
 - A Command can be a node in a Scope, or an action an Actor calls. It is the
   same Command either way.
 
@@ -85,9 +88,10 @@ _Authored by: operator_
 
 ## Open
 
-- **Events always sit in a Context in code.** Every stored Event is given a
-  Context (`floe-bus/src/store.ts`, Event insert). An Event that starts a Command
-  directly, with no Context, is not possible today.
+- **Run records are Contexts.** A Command run's record is a Context with no
+  members (`floe-bus/src/store.ts`, `resolveExecutionContext`). Surfaces must
+  not show these as rooms people talk in. Revisit only if that causes real
+  confusion.
 - **Connectors have their own actions in code** (`floe-bus/src/connectors.ts`,
   `connector-action-authority.ts`). Under this list, those become Commands that
   use a Connector.
