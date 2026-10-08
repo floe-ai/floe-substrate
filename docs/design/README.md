@@ -89,3 +89,7 @@ Use **Workspace**, **Scope**, **Context**, **Actor**, **Event**, **Command** and
 **ScopeExecution**, **NodeExecution**, **ExecutionAttempt**, **Delivery** and
 **ExternalEffectReceipt** for execution records. **Thread** is legacy UI wording
 only; new contracts use **Context**.
+
+Each term is defined once, in its own document. Never use a synonym for a
+defined term (for example "source type" for ConnectorDefinition), and never
+reuse one name for two things.

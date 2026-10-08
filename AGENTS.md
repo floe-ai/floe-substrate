@@ -38,6 +38,9 @@ If you are building a surface, you do not edit this repository. You report gaps.
    profile that never touches the operator's own Floe (port 5377, `~/.floe`).
 10. **History lives in git.** Do not keep plans, evidence or worklogs in the
     repository.
+11. **One name per thing.** Every Floe term has one name, defined in its
+    [design document](docs/design/README.md#naming). Use that name in code, docs
+    and conversation; never a synonym, and never one name for two things.
 
 ## Where truth lives
 
