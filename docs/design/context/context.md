@@ -19,6 +19,33 @@ ScopeExecution; only an [Edge](../scope/edge.md) does.
 
 Tool calls and scratch reasoning are not automatically Context content.
 
+## Nesting
+
+_Resolution: settled_
+_Built: yes_
+_Authority: operator-confirmed (9 Oct ruling)_
+_Authored by: operator_
+
+A Context can sit inside another, like a thread inside a channel.
+
+## Archive, redact and delete
+
+_Resolution: settled_
+_Built: yes_
+_Authority: operator-confirmed (9 Oct ruling: keep while working and tested)_
+_Authored by: agent_
+
+- **Archive** hides a finished Context; it can be restored.
+- **Redact** wipes a Context's content but keeps a marker that something was
+  there.
+- **Delete** removes it for good, leaving a marker so links do not break.
+
+## Open
+
+- A Context "anchored by a Scope" with no members conflicts with the ruling in
+  [primitives](../pillars/primitives.md) that a Context exists only when it is
+  meant to have members.
+
 Avoid: channel as topology, room as routing table, Thread in new contracts.
 
 ## Legacy

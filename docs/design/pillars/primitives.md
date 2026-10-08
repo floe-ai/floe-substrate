@@ -58,9 +58,9 @@ _Authored by: agent_
   wiring between nodes.
 - What an Event triggers depends on its type and what it is connected to: it can
   wake the members of a connected Context, or start a Command directly.
-- Every Event is recorded in a Context, so history can always be replayed. When
-  an Event starts a Command in a workflow, Floe creates a Context for that run
-  to hold its record; the Command does not read it.
+- A Context exists only when it is meant to have members. A Command run is
+  recorded in its own run record ([NodeExecution](../scope/execution/node-execution.md)),
+  not in a Context.
 - A Command can be a node in a Scope, or an action an Actor calls. It is the
   same Command either way.
 
@@ -88,10 +88,12 @@ _Authored by: operator_
 
 ## Open
 
-- **Run records are Contexts.** A Command run's record is a Context with no
-  members (`floe-bus/src/store.ts`, `resolveExecutionContext`). Surfaces must
-  not show these as rooms people talk in. Revisit only if that causes real
-  confusion.
+- **Contexts without members (not built).** Today every stored Event is given a
+  Context, and a Command run gets a new Context with no members
+  (`floe-bus/src/store.ts`, `resolveExecutionContext`). This could create
+  millions of empty Contexts. Operator ruling, 9 Oct: a Context exists only
+  when it is meant to have members; Events that start a Command need no
+  Context.
 - **Connectors have their own actions in code** (`floe-bus/src/connectors.ts`,
   `connector-action-authority.ts`). Under this list, those become Commands that
   use a Connector.
