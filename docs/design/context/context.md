@@ -10,8 +10,7 @@ conversation, attached evidence, references, decisions, summaries, and exact
 links to ArtefactVersions and execution records.
 
 A Context may be a direct conversation, a processing space, a persistent Actor
-workspace or a Scope overview. It is anchored by [participants](participant.md),
-a Scope, or both; a Context with neither is invalid.
+workspace or a Scope overview. It may belong to a Scope.
 
 Context is collaboration, never pipeline wiring. Membership, parentage,
 [subscriptions](subscription.md), instructions and proximity never advance a
@@ -40,11 +39,17 @@ _Authored by: agent_
   there.
 - **Delete** removes it for good, leaving a marker so links do not break.
 
-## Open
+## Members
 
-- A Context "anchored by a Scope" with no members conflicts with the ruling in
-  [primitives](../pillars/primitives.md) that a Context exists only when it is
-  meant to have members.
+_Resolution: settled_
+_Built: partly_
+_Authority: operator-confirmed (9 Oct ruling)_
+_Authored by: operator_
+
+A Context exists only when it is meant to have
+[participants](participant.md). An Event or Command run with nobody to take
+part needs no Context. Today the code still creates memberless Contexts for
+stored Events and Command runs ([primitives](../pillars/primitives.md), Open).
 
 Avoid: channel as topology, room as routing table, Thread in new contracts.
 
