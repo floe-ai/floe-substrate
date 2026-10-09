@@ -172,21 +172,12 @@ import {
   resolveAuditOperationResource,
 } from "./audit-operations.js";
 import {
-  ExtensionStore,
-  applyExtensionSchema,
-  type ExtensionActivationAssuranceProvider,
-} from "./extensions.js";
-import { applyExtensionActivationAttemptSchema } from "./extension-activation-authority.js";
-import {
-  applyExtensionRuntimeAuditSchema,
-  CanonicalExtensionRuntime,
-} from "./canonical-extension-runtime.js";
-import {
   RuntimeProcessingContractResolver,
   type RuntimeDispatchContract,
   type RuntimeProcessingContract,
 } from "./runtime-processing-contract.js";
 import { runDatabaseUpgrade } from "./database-upgrade.js";
+import { dropRetiredExtensionTables } from "./retired-extension-tables.js";
 import { SemanticOperationRegistry, type OperationInvocationReceipt } from "./operations.js";
 import { BusOperationGovernanceControlPlane } from "./operation-governance-control-plane.js";
 import { AjvOperationSchemaValidator } from "./operation-schema-validator-ajv.js";
@@ -276,16 +267,6 @@ import {
   type ApprovalOperationBackend,
 } from "./approval-operations.js";
 import { BusApprovalOperationBackend } from "./approval-operation-backend.js";
-import {
-  registerExtensionOperations,
-  resolveExtensionOperationResource,
-  type ExtensionEntryPointExecution,
-} from "./extension-operations.js";
-import {
-  ExtensionSandboxError,
-  type ExtensionHostBroker,
-  type JsonValue,
-} from "./isolated-extension-runtime.js";
 import { BusWorkspaceOperationBackend } from "./workspace-operation-backend.js";
 import { registerWorkspaceOperations } from "./workspace-operations.js";
 import { WorkspaceAccessStore, type WorkspaceAccess } from "./workspace-access.js";
@@ -413,31 +394,8 @@ const CONTEXT_DELIVERIES_CTE = `
   )
 `;
 
-export type BusStoreExtensionRuntime = Readonly<{
-  assurance: ExtensionActivationAssuranceProvider;
-  entry_point_execution: ExtensionEntryPointExecution;
-  inspect?(): import("./canonical-extension-runtime.js").ExtensionRuntimeDescription;
-  terminateAll(): void;
-}>;
-
-export type BusStoreExtensionRuntimeFactory = (input: Readonly<{
-  db: DatabaseSync;
-  approvals: ApprovalStore;
-  broker: ExtensionHostBroker;
-  workspace_root: (workspaceId: string) => string | null;
-  quarantine: (input: Readonly<{
-    workspace_id: string;
-    extension_installation_id: string;
-    extension_package_version_id: string;
-    isolation_host_id: string;
-    failure_code: string;
-    failure_message: string;
-  }>) => void;
-}>) => BusStoreExtensionRuntime;
-
 export type BusStoreOptions = Readonly<{
   workspace_configuration_policy?: WorkspaceConfigurationPolicyProvider;
-  extension_runtime_factory?: BusStoreExtensionRuntimeFactory;
   /** Test seam for the real Command host interface; production always isolates execution. */
   command_runtime_host?: CommandRuntimeHost;
 }>;
@@ -841,8 +799,6 @@ export class BusStore {
   readonly policyStore: PolicyStore;
   readonly budgetStore: BudgetStore;
   readonly auditStore: AuditStore;
-  readonly extensionStore: ExtensionStore;
-  readonly extensionRuntime: BusStoreExtensionRuntime;
   readonly runtimeProcessingContracts: RuntimeProcessingContractResolver;
   readonly workspaceIdentityStore: SqliteWorkspaceIdentityStore;
   readonly workspaceAccessStore: WorkspaceAccessStore;
@@ -904,7 +860,10 @@ export class BusStore {
       db: this.db,
       database_path: databasePath,
       migrate: () => this.migrate(),
-      rebuild: () => { rebuildCapabilityGrantsForUntilRevoked(this.db); },
+      rebuild: () => {
+        rebuildCapabilityGrantsForUntilRevoked(this.db);
+        dropRetiredExtensionTables(this.db);
+      },
     });
     this.localHostId = getOrCreateLocalHostIdentity(this.db).host_id;
     this.localOperatorPrincipalStore = new SqliteLocalOperatorPrincipalStore(this.db);
@@ -995,49 +954,10 @@ export class BusStore {
     this.policyStore = new PolicyStore(this.db);
     this.budgetStore = new BudgetStore(this.db);
     this.auditStore = new AuditStore(this.db);
-    let extensionStore: ExtensionStore | null = null;
-    const extensionBroker: ExtensionHostBroker = {
-      availability: { operations: true, filesystem: false, network: false },
-      invokeOperation: (input) => this.invokeBrokeredExtensionOperation(input),
-      accessFilesystem: () => Promise.reject(new ExtensionSandboxError(
-        "extension_filesystem_broker_unavailable",
-        "Extension filesystem access must use a canonical granted operation; no filesystem broker is configured.",
-      )),
-      requestNetwork: () => Promise.reject(new ExtensionSandboxError(
-        "extension_network_broker_unavailable",
-        "Extension network access must use a canonical Connector action; no Connector broker is configured.",
-      )),
-    };
-    const runtimeFactory = options.extension_runtime_factory
-      ?? ((dependencies) => new CanonicalExtensionRuntime(dependencies));
-    this.extensionRuntime = runtimeFactory({
-      db: this.db,
-      approvals: this.approvalStore,
-      broker: extensionBroker,
-      workspace_root: (workspaceId) =>
-        this.workspaceIdentityStore.getCurrentBinding(workspaceId, this.localHostId)?.locator ?? null,
-      quarantine: (input) => {
-        if (!extensionStore) throw new Error("Extension store is not ready for quarantine evidence.");
-        extensionStore.quarantineAfterHostCrash(input);
-      },
-    });
-    extensionStore = new ExtensionStore(
-      this.db,
-      this.extensionRuntime.assurance,
-      undefined,
-      (workspaceId, extensionInstallationId) => this.workspacePortabilityService.hasUnresolvedDependency(
-        workspaceId,
-        "extension_runtime",
-        extensionInstallationId,
-      ),
-    );
-    this.extensionStore = extensionStore;
     this.commandRuntimeHost = options.command_runtime_host ?? new CanonicalCommandRuntimeHost(
       new IsolatedCoreCommandProcessHost(
         fileURLToPath(new URL("./isolated-command-host-process.js", import.meta.url)),
       ),
-      this.extensionStore,
-      this.extensionRuntime.entry_point_execution,
     );
     this.runtimeProcessingContracts = new RuntimeProcessingContractResolver({
       executions: this.scopeExecutionStore,
@@ -1155,11 +1075,6 @@ export class BusStore {
     operationRegistry = registerPolicyOperations(operationRegistry, this.policyStore);
     operationRegistry = registerBudgetOperations(operationRegistry, this.budgetStore);
     operationRegistry = registerAuditOperations(operationRegistry, this.auditStore);
-    operationRegistry = registerExtensionOperations(
-      operationRegistry,
-      this.extensionStore,
-      this.extensionRuntime.entry_point_execution,
-    );
     this.workspaceOperationBackend = new BusWorkspaceOperationBackend(
       this,
       (type, payload = {}) => this.broadcastFn?.(type, payload),
@@ -1422,92 +1337,6 @@ export class BusStore {
     this.scheduleNextPauseDeadline();
   }
 
-  private async invokeBrokeredExtensionOperation(
-    input: Parameters<ExtensionHostBroker["invokeOperation"]>[0],
-  ): Promise<JsonValue> {
-    const target = input.target ? { kind: input.target.kind, id: input.target.id } : null;
-    const resolved = this.capabilityGrantStore.resolveSessionAuthority({
-      principal_id: input.context.authorized_principal_id,
-      boundary: { kind: "workspace", workspace_id: input.context.workspace_id },
-      grant_ids: input.context.capability_grant_ids,
-      interaction: {
-        mode: "brokered",
-        session_id: `extension:${input.context.operation_invocation_id}`,
-        broker_id: "extension-host:quickjs-process:v1",
-        confirmed_prompts: [],
-        approval_refs: [],
-      },
-    }, target);
-    if (resolved.unavailable_grants.length > 0) {
-      throw new ExtensionSandboxError(
-        "extension_capability_grant_unavailable",
-        "An Extension CapabilityGrant is missing, expired, revoked, or outside this Workspace.",
-      );
-    }
-    if (!resolved.authority.grants.has(input.operation_id)) {
-      throw new ExtensionSandboxError(
-        "extension_operation_grant_denied",
-        "The active CapabilityGrants do not authorise this canonical operation.",
-      );
-    }
-    const contract = this.operationRegistry.listCurrentOperationMetadata({
-      interaction_mode: "brokered",
-      boundary_kind: "workspace",
-    }).find((item) => item.operation_id === input.operation_id);
-    if (!contract) {
-      throw new ExtensionSandboxError(
-        "extension_operation_contract_unavailable",
-        "The requested canonical operation is not available to brokered Extension execution.",
-      );
-    }
-    const idempotency = stableHash(canonicalJson({
-      parent_invocation_id: input.context.operation_invocation_id,
-      extension_package_version_id: input.context.extension_package_version_id,
-      permission_id: input.permission_id,
-      operation_id: input.operation_id,
-      target: input.target,
-      input: input.input,
-    }));
-    const response = await this.operationRegistry.invoke({
-      authority: resolved.authority,
-      provenance: {
-        cause_event_id: null,
-        delivery_ids: [],
-        execution_attempt_id: input.context.execution_attempt_id,
-        node_execution_id: null,
-        scope_execution_id: null,
-      },
-      resolve_resource: (resource) => this.resolveOperationResource(resource, resolved.authority.boundary),
-    }, {
-      operation_id: input.operation_id,
-      operation_version: contract.operation_version,
-      input_schema_version: "1",
-      input: input.input,
-      idempotency_key: `extension:${idempotency}`,
-      ...(input.target ? {
-        target: { kind: input.target.kind, id: input.target.id },
-        expected_resource_revision: input.target.revision ?? undefined,
-      } : {}),
-    });
-    if (response.kind !== "receipt" || response.receipt.state !== "completed") {
-      const code = response.kind === "receipt"
-        ? response.receipt.refusal?.code ?? `extension_nested_operation_${response.receipt.state}`
-        : response.refusal.code;
-      const message = response.kind === "receipt"
-        ? response.receipt.refusal?.message ?? "The nested canonical operation did not complete synchronously."
-        : response.refusal.message;
-      throw new ExtensionSandboxError(code, message);
-    }
-    try {
-      return JSON.parse(JSON.stringify(response.receipt.result ?? null)) as JsonValue;
-    } catch {
-      throw new ExtensionSandboxError(
-        "extension_operation_result_not_json",
-        "The canonical operation returned a result that cannot cross the Extension host boundary.",
-      );
-    }
-  }
-
   close(): void {
     if (this.closed) return;
     this.closed = true;
@@ -1521,7 +1350,6 @@ export class BusStore {
       this.pauseDeadlineTimer = null;
     }
     this.commandRuntimeHost.terminateAll();
-    this.extensionRuntime.terminateAll();
     this.db.close();
   }
 
@@ -1766,9 +1594,6 @@ export class BusStore {
     applyPolicySchema(this.db);
     applyBudgetSchema(this.db);
     applyAuditSchema(this.db);
-    applyExtensionSchema(this.db);
-    applyExtensionActivationAttemptSchema(this.db);
-    applyExtensionRuntimeAuditSchema(this.db);
     applyOperationInvocationLedgerSchema(this.db);
     applyCapabilityGrantSchema(this.db);
     applyCredentialBrokerSchema(this.db);
@@ -3538,9 +3363,6 @@ export class BusStore {
         ?? (["actor", "actor_definition"].includes(action.target?.kind ?? "") ? action.target!.id : null);
     const expectedConnectorBindingId = connectorRevision?.connector_binding_id
       ?? (action.target?.kind === "connector_binding" ? action.target.id : null);
-    const expectedExtensionInstallationId = action.target?.kind === "extension_installation"
-      ? action.target.id
-      : null;
     return (!execution || execution.workspace_id === facts.workspace_id)
       && facts.principal_id === action.authorized_principal_id
       && facts.operation_id === action.operation_id
@@ -3552,8 +3374,6 @@ export class BusStore {
       && facts.node_placement_id === (nodeId ?? null)
       && facts.actor_id === expectedActorId
       && facts.connector_binding_id === expectedConnectorBindingId
-      && facts.extension_installation_id === expectedExtensionInstallationId
-      && facts.extension_package_version_id === action.extension_package_version_id
       && (!binding || binding.node_execution_id === action.node_execution_id);
   }
 
@@ -4070,8 +3890,6 @@ export class BusStore {
         ? { ref: { ...target, revision: approvalReceiptStateRevision(receipt) }, state: receipt }
         : null;
     }
-    const extension = resolveExtensionOperationResource(this.extensionStore, boundary, target);
-    if (extension) return extension;
     const policy = resolvePolicyOperationResource(this.policyStore, boundary, target);
     if (policy) return policy;
     const budget = resolveBudgetOperationResource(this.budgetStore, boundary, target);
@@ -4399,14 +4217,7 @@ export class BusStore {
           `Command '${command.command_id}' has no usable current definition`,
         );
       }
-      if (command.owner.kind === "extension_package_version"
-        && (command.owner.id !== definition.content.implementation_ref.id
-          || definition.content.implementation_ref.kind !== "extension_package_version")) {
-        throw new ScopeExecutionInvalidError(
-          `Extension-owned Command '${command.command_id}' must use its owning exact Extension package`,
-        );
-      }
-      resolveCommandImplementation(definition, revision.workspace_id, this.extensionStore);
+      resolveCommandImplementation(definition);
       const worker = this.commandWorkerBindingStore.ensureDefault(revision.workspace_id, this.localHostId);
       if (worker.status !== "available") {
         throw new ScopeExecutionInvalidError(`Command worker '${worker.command_worker_binding_id}' is unavailable`);
@@ -4733,7 +4544,7 @@ export class BusStore {
         `Command worker '${worker.command_worker_binding_id}' is unavailable in this Workspace`,
       );
     }
-    resolveCommandImplementation(definition, revision.workspace_id, this.extensionStore);
+    resolveCommandImplementation(definition);
     return { definition, worker };
   }
 
@@ -8937,7 +8748,7 @@ export class BusStore {
         idempotency_key: this.commandIdempotencyKey(nodeExecution, definition, inputEvidence),
         timeout_at: timeoutAt,
       });
-      const implementation = resolveCommandImplementation(definition, canonical.workspace_id, this.extensionStore);
+      const implementation = resolveCommandImplementation(definition);
       const invocation = { definition, implementation, contract } as const;
       if (!this.commandRuntimeHost.supports(invocation)) {
         throw new CommandRuntimeContractError("the isolated Command host cannot run this exact implementation");

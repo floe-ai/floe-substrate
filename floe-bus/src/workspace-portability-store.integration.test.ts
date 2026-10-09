@@ -10,7 +10,6 @@ import { createBusServer } from "./server.js";
 import { emitViaRoute } from "./test-support/emit-via-route.js";
 import { BIND_CREDENTIAL_OPERATION_ID } from "./credential-operations.js";
 import { RECORD_CONNECTOR_HEALTH_OPERATION_ID } from "./connector-operations.js";
-import { ENABLE_EXTENSION_OPERATION_ID } from "./extension-operations.js";
 import { REPLACE_ACTOR_RUNTIME_BINDING_OPERATION_ID } from "./runtime-profile-operations.js";
 import {
   EXPORT_WORKSPACE_BUNDLE_OPERATION_ID,
@@ -63,7 +62,6 @@ describe("BusStore portable Workspace integration", () => {
     expect(restoreHoldRecoveryOperations).toEqual([
       BIND_CREDENTIAL_OPERATION_ID,
       RECORD_CONNECTOR_HEALTH_OPERATION_ID,
-      ENABLE_EXTENSION_OPERATION_ID,
       REPLACE_ACTOR_RUNTIME_BINDING_OPERATION_ID,
       RECONCILE_WORKSPACE_RESTORE_OPERATION_ID,
       RELEASE_WORKSPACE_RESTORE_HOLD_OPERATION_ID,

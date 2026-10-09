@@ -80,7 +80,6 @@ describe("canonical portable Workspace package", { timeout: 0 }, () => {
       expect.objectContaining({ kind: "endpoint_attachment", resource_id: "endpoint_builder" }),
       expect.objectContaining({ kind: "actor_runtime", resource_id: "actor_runtime_binding_builder" }),
       expect.objectContaining({ kind: "connector_runtime", resource_id: "connector_binding_source" }),
-      expect.objectContaining({ kind: "extension_runtime", resource_id: "extension_installation_tools" }),
     ]));
 
     const targetPath = join(root, "target", "target.sqlite");
@@ -156,7 +155,6 @@ describe("canonical portable Workspace package", { timeout: 0 }, () => {
       broker_locator: null,
     }));
     expect(row(target, "SELECT status FROM connector_bindings")).toEqual({ status: "enabled" });
-    expect(row(target, "SELECT lifecycle FROM extension_installations")).toEqual({ lifecycle: "enabled" });
     expect(restorer.getRestoreHold("workspace_alpha")).toEqual(expect.objectContaining({
       state: "held",
       bundle_digest: first.bundle_digest,
@@ -241,7 +239,7 @@ describe("canonical portable Workspace package", { timeout: 0 }, () => {
       now: () => "2026-09-04T01:00:00.000Z",
     }).exportWorkspace("workspace_alpha");
     expect(bundle.manifest.unresolved_dependencies.map((item) => item.kind).sort()).toEqual([
-      "actor_runtime", "command_runtime", "connector_runtime", "content", "endpoint_attachment", "extension_runtime", "secret_ref",
+      "actor_runtime", "command_runtime", "connector_runtime", "content", "endpoint_attachment", "secret_ref",
     ]);
 
     const targetPath = join(root, "target.sqlite");
@@ -257,7 +255,7 @@ describe("canonical portable Workspace package", { timeout: 0 }, () => {
       bundle_directory: bundle.bundle_directory,
       workspace_locator: targetRoot,
     });
-    expect(restorer.listUnresolvedDependencies("workspace_alpha")).toHaveLength(7);
+    expect(restorer.listUnresolvedDependencies("workspace_alpha")).toHaveLength(6);
 
     const contentDependency = bundle.manifest.unresolved_dependencies.find((item) => item.kind === "content")!;
     const supplied = restorer.supplyContentDependency({
@@ -330,24 +328,6 @@ describe("canonical portable Workspace package", { timeout: 0 }, () => {
       completed_at: recoveredAt,
     });
 
-    target.prepare(`
-      INSERT INTO extension_activation_attempts VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-      )
-    `).run(
-      "extension_activation_target", "invocation_extension_enable", "workspace_alpha",
-      "extension_installation_tools", "extension_package_1", "extension.enable", "principal_operator",
-      "enabled", ".floe/extensions/tools", "3".repeat(64), "approval_target", "6".repeat(64),
-      "[]", "completed", "{}", null, null, recoveredAt, recoveredAt,
-    );
-    insertOperationReceipt(target, {
-      receipt_id: "receipt_extension_enable", invocation_id: "invocation_extension_enable",
-      operation_id: "extension.enable", target_kind: "extension_installation",
-      target_id: "extension_installation_tools",
-      changed_refs: [{ kind: "extension_installation", id: "extension_installation_tools" }],
-      completed_at: recoveredAt,
-    });
-
     insertOperationReceipt(target, {
       receipt_id: "receipt_restore_reconcile", invocation_id: "invocation_restore_reconcile",
       operation_id: "workspace.package.reconcile_restore", target_kind: "workspace",
@@ -359,7 +339,7 @@ describe("canonical portable Workspace package", { timeout: 0 }, () => {
       reconciliation_operation_receipt_id: "receipt_restore_reconcile",
     });
     expect(reconciliation.unresolved_dependencies).toEqual([]);
-    expect(reconciliation.resolved_dependencies).toHaveLength(7);
+    expect(reconciliation.resolved_dependencies).toHaveLength(6);
     expect(row(target, `
       SELECT resolved_by_operation_receipt_id FROM workspace_portability_dependencies
       WHERE kind = 'endpoint_attachment'
@@ -667,48 +647,6 @@ function fixtureDatabase(path: string): DatabaseSync {
       status TEXT NOT NULL, attempt_count INTEGER NOT NULL, requested_at TEXT NOT NULL,
       updated_at TEXT NOT NULL, completed_at TEXT
     );
-    CREATE TABLE canonical_extensions (
-      extension_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, label TEXT NOT NULL,
-      status TEXT NOT NULL, current_package_version_id TEXT, revision_number INTEGER NOT NULL,
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, retired_at TEXT
-    );
-    CREATE TABLE extension_package_versions (
-      extension_package_version_id TEXT PRIMARY KEY, extension_id TEXT NOT NULL,
-      workspace_id TEXT NOT NULL, package_version TEXT NOT NULL, content_digest TEXT NOT NULL,
-      permission_digest TEXT NOT NULL, record_digest TEXT NOT NULL, definition_json TEXT NOT NULL,
-      registered_by_principal_id TEXT NOT NULL, registered_at TEXT NOT NULL
-    );
-    CREATE TABLE extension_installations (
-      extension_installation_id TEXT PRIMARY KEY, extension_id TEXT NOT NULL,
-      workspace_id TEXT NOT NULL, installation_name TEXT NOT NULL,
-      installation_locator TEXT NOT NULL, installed_package_version_id TEXT,
-      pending_package_version_id TEXT, lifecycle TEXT NOT NULL, rollback_target_json TEXT NOT NULL,
-      permission_approval_receipt_refs_json TEXT NOT NULL, isolation_host_id TEXT,
-      isolation_level TEXT, activation_receipt_ref TEXT, deactivation_receipt_ref TEXT,
-      unresolved_bindings_json TEXT NOT NULL, data_ref_json TEXT, revision_number INTEGER NOT NULL,
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, disabled_at TEXT
-    );
-    CREATE TABLE extension_activation_attempts (
-      extension_activation_attempt_id TEXT PRIMARY KEY,
-      invocation_id TEXT NOT NULL UNIQUE,
-      workspace_id TEXT NOT NULL,
-      extension_installation_id TEXT NOT NULL,
-      extension_package_version_id TEXT NOT NULL,
-      operation_id TEXT NOT NULL,
-      authorized_principal_id TEXT NOT NULL,
-      requested_lifecycle TEXT NOT NULL,
-      installation_locator TEXT NOT NULL,
-      permission_digest TEXT NOT NULL,
-      approval_receipt_ref TEXT NOT NULL,
-      approval_action_digest TEXT NOT NULL,
-      capability_grant_ids_json TEXT NOT NULL,
-      state TEXT NOT NULL,
-      host_claim_json TEXT,
-      failure_code TEXT,
-      failure_message TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
     CREATE TABLE secret_refs (
       secret_ref_id TEXT PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL,
       resource_kind TEXT NOT NULL, resource_id TEXT NOT NULL, secret_kind TEXT NOT NULL,
@@ -924,18 +862,6 @@ function seedCompleteWorkspace(
     "external_effect_1", "connector_binding_source", "connector_binding_revision_1", "workspace",
     "workspace_alpha", "publish", "external-once", "1".repeat(64), "[]", '["secret_openai"]',
     '["grant_workspace"]', "[]", "principal_operator", "{}", "succeeded", 1, at, at, at,
-  );
-  db.prepare("INSERT INTO canonical_extensions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
-    "extension_tools", "workspace_alpha", "Tools", "active", "extension_package_1", 1, at, at, null,
-  );
-  db.prepare("INSERT INTO extension_package_versions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
-    "extension_package_1", "extension_tools", "workspace_alpha", "1.0.0", "2".repeat(64),
-    "3".repeat(64), "4".repeat(64), "{}", "principal_operator", at,
-  );
-  db.prepare("INSERT INTO extension_installations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
-    "extension_installation_tools", "extension_tools", "workspace_alpha", "tools", ".floe/extensions/tools",
-    "extension_package_1", null, "enabled", "{}", "[]", "extension_host_source", "process",
-    "approval_1", null, "[]", null, 1, at, at, null,
   );
   db.prepare("INSERT INTO secret_refs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
     "secret_openai", "workspace", "workspace_alpha", "provider_account", "account_openai",

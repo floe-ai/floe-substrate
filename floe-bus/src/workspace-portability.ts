@@ -54,7 +54,7 @@ export type WorkspaceBundleContentInventory = Readonly<{
 
 export type WorkspaceBundleDependency = Readonly<{
   dependency_id: string;
-  kind: "content" | "secret_ref" | "endpoint_attachment" | "actor_runtime" | "command_runtime" | "connector_runtime" | "extension_runtime";
+  kind: "content" | "secret_ref" | "endpoint_attachment" | "actor_runtime" | "command_runtime" | "connector_runtime";
   resource_id: string;
   reason: string;
 }>;
@@ -257,7 +257,6 @@ export const PORTABLE_WORKSPACE_TABLES = new Set([
   "audit_requests",
   "budget_reservation_items",
   "budget_reservations",
-  "canonical_extensions",
   "capability_grant_operations",
   "capability_grant_delegation_only",
   "capability_grant_delegations",
@@ -286,12 +285,6 @@ export const PORTABLE_WORKSPACE_TABLES = new Set([
   "events",
   "execution_attempt_deliveries",
   "execution_attempts",
-  "extension_activation_attempts",
-  "extension_execution_package_pins",
-  "extension_installation_changes",
-  "extension_installations",
-  "extension_package_versions",
-  "extension_runtime_audit",
   "external_action_attempts",
   "external_action_reconciliations",
   "external_effect_receipts",
@@ -422,11 +415,6 @@ const EXPLICIT_PORTABLE_RELATIONSHIPS: readonly PortableRelationship[] = [
   relation("execution_attempt_deliveries", "attempt_id", "execution_attempts", "attempt_id"),
   relation("execution_attempt_deliveries", "delivery_id", "delivery_bundles", "delivery_id"),
   relation("execution_attempts", "node_execution_id", "node_executions", "node_execution_id"),
-  relation("extension_execution_package_pins", "execution_attempt_id", "execution_attempts", "attempt_id"),
-  relation("extension_execution_package_pins", "extension_installation_id", "extension_installations", "extension_installation_id"),
-  relation("extension_execution_package_pins", "extension_package_version_id", "extension_package_versions", "extension_package_version_id"),
-  relation("extension_installations", "extension_id", "canonical_extensions", "extension_id"),
-  relation("extension_package_versions", "extension_id", "canonical_extensions", "extension_id"),
   relation("external_action_attempts", "external_effect_receipt_id", "external_effect_receipts", "external_effect_receipt_id"),
   relation("external_action_reconciliations", "external_effect_receipt_id", "external_effect_receipts", "external_effect_receipt_id"),
   relation("node_execution_expected_memberships", "node_execution_id", "node_executions", "node_execution_id"),
@@ -1189,34 +1177,6 @@ export class WorkspacePortabilityService {
         : null;
     }
 
-    if (item.kind === "extension_runtime") {
-      const installation = this.dependencies.db.prepare(`
-        SELECT installed_package_version_id, lifecycle
-        FROM extension_installations
-        WHERE extension_installation_id = ? AND workspace_id = ?
-      `).get(item.resource_id, hold.workspace_id) as {
-        installed_package_version_id: string | null; lifecycle: string;
-      } | undefined;
-      const receipt = this.completedWorkspaceOperationReceipt(
-        hold,
-        ["extension.enable"],
-        "extension_installation",
-        item.resource_id,
-      );
-      if (!installation?.installed_package_version_id || installation.lifecycle !== "enabled" || !receipt) return null;
-      const attempt = this.dependencies.db.prepare(`
-        SELECT 1 FROM extension_activation_attempts
-        WHERE invocation_id = ? AND workspace_id = ? AND extension_installation_id = ?
-          AND extension_package_version_id = ? AND operation_id = 'extension.enable' AND state = 'completed'
-      `).get(
-        receipt.invocation_id,
-        hold.workspace_id,
-        item.resource_id,
-        installation.installed_package_version_id,
-      );
-      return attempt ? receipt.receipt_id : null;
-    }
-
     if (item.kind === "content") {
       const version = this.dependencies.db.prepare(`
         SELECT versions.content_ref_json
@@ -1481,11 +1441,6 @@ export class WorkspacePortabilityService {
     for (const row of records.get("connector_bindings") ?? []) {
       if (row.status === "enabled") dependencies.push(dependency("connector_runtime", String(row.connector_binding_id), "The exact Connector revision is retained, but its implementation and external account must be revalidated."));
     }
-    for (const row of records.get("extension_installations") ?? []) {
-      if (row.lifecycle === "enabled" || row.lifecycle === "rolled_back") {
-        dependencies.push(dependency("extension_runtime", String(row.extension_installation_id), "The exact Extension package pin is retained, but package bytes, permissions, and isolation must be revalidated."));
-      }
-    }
     const attempts = new Map((records.get("execution_attempts") ?? []).map((row) => [String(row.attempt_id), row]));
     for (const row of records.get("command_attempt_contracts") ?? []) {
       const attemptId = String(row.attempt_id);
@@ -1653,7 +1608,7 @@ export class WorkspacePortabilityService {
 
 function restoreTableRank(table: string): number {
   if (table === "workspaces") return 0;
-  if (["scopes", "contexts", "actors", "runtime_profiles", "connector_definitions", "canonical_extensions", "policies", "capability_grants", "artefacts"].includes(table)) return 10;
+  if (["scopes", "contexts", "actors", "runtime_profiles", "connector_definitions", "policies", "capability_grants", "artefacts"].includes(table)) return 10;
   if (table.endsWith("_revisions") || table === "artefact_versions" || table === "secret_refs") return 20;
   return 50;
 }
