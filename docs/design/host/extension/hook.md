@@ -32,3 +32,7 @@ lifecycle. Only the points above exist; add one when a real Extension needs it.
 
 - Hooks fire at points in a Turn and look like a trigger, close to Events and
   Pulses. Should hook live under Turn or Event instead of Extension (P4)?
+- The original design fired `SessionResume`, `SessionEnd`, `BeforeToolUse`,
+  `AfterToolUse`, `ToolUseFailed` and `Pulse` too. They stopped firing when the
+  old runtime adapter was removed (14 Sep); the names remain in
+  `floe-bridge/src/hooks.ts`. Restore or drop them in the Extension redesign.

@@ -12,3 +12,9 @@ no backing is privileged.
 A Command never masquerades as its own Endpoint: its identity and definition are
 separate from the host-local worker Endpoint that runs it. A retired Endpoint
 keeps historical references but receives no new Delivery.
+
+## Open
+
+- A Connector as an Endpoint predates [primitives](../../pillars/primitives.md),
+  where a Connector is a Workspace setting, not something that receives
+  Deliveries.

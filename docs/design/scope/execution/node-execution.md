@@ -13,3 +13,9 @@ failure state.
 
 Every NodeExecution references one inspectable, writable Context. Context policy
 may create a Context, reuse one by key, or enter a fixed persistent Context.
+
+## Open
+
+- "Every NodeExecution references one Context" clashes with
+  [primitives](../../pillars/primitives.md) (operator ruling, 9 Oct): a Context
+  exists only when it is meant to have members, so a Command run needs none.

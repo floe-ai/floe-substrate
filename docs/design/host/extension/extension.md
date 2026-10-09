@@ -1,6 +1,6 @@
 # Extension
 
-_Resolution: settled_
+_Resolution: question_
 _Built: yes_
 _Authority: agent-provisional_
 _Authored by: unknown_
@@ -33,3 +33,14 @@ Decisions: [ADR-0002](../../../adr/0002-extension-substrate-design.md),
 
 Old Extension lineage JSON may be imported once as evidence; it is never a
 continuing source of Artefact identity.
+
+## Open
+
+- Being redesigned. Operator rulings, 8 Oct: any Actor can write an Extension;
+  Extension code is trusted like normal code (no sandbox); an Extension can add
+  hooks, Event sources, Connector kinds, Commands, Actors, record types,
+  screens, and actions and know-how for Actors; any Actor with the right
+  permission can enable one. The isolation, permission and package machinery
+  above came from the unreviewed September snapshot, which also rewrote
+  [ADR-0002](../../../adr/0002-extension-substrate-design.md) in place. The
+  original ADR-0002 (May) is the starting point.

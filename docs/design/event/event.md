@@ -38,3 +38,9 @@ Decision: [ADR-0008](../../adr/0008-event-is-the-primitive.md).
 Event references frozen during schema 12's upgrade keep their then-visible
 projection with explicit provenance; that snapshot is not evidence of which
 versions were present at original emission.
+
+## Open
+
+- "Connector observation" above predates [primitives](../pillars/primitives.md):
+  an Event has a source (schedule, folder change, webhook, a person); a
+  Connector is the connection a source may use.
