@@ -7,8 +7,8 @@ _Authored by: unknown_
 
 An immutable fact, signal, communication, observation or decision that landed in
 Floe. Everything that makes something else happen arrives as an Event: a
-message, a [Connector](connector/connector.md) observation, a
-[Pulse](connector/pulse.md), a published output. Floe pushes Events; it never
+message, a webhook, a folder change, a [Pulse](source/pulse.md), a published
+output. Where it comes from is its [source](source/source.md). Floe pushes Events; it never
 polls.
 
 An Event records source, time, Workspace, causation, correlation, schema, small
@@ -38,9 +38,3 @@ Decision: [ADR-0008](../../adr/0008-event-is-the-primitive.md).
 Event references frozen during schema 12's upgrade keep their then-visible
 projection with explicit provenance; that snapshot is not evidence of which
 versions were present at original emission.
-
-## Open
-
-- "Connector observation" above predates [primitives](../pillars/primitives.md):
-  an Event has a source (schedule, folder change, webhook, a person); a
-  Connector is the connection a source may use.

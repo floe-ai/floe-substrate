@@ -11,7 +11,7 @@ unless a technical property is itself part of the design.
 
 - **P1. The top level is fixed.** `pillars/` (goals and laws for all of Floe),
   `host/` (Floe on one machine), the seven building blocks (`workspace/`,
-  `actor/`, `context/`, `event/`, `scope/`, `command.md`, `artefact/`) and
+  `actor/`, `context/`, `event/`, `scope/`, `command/`, `artefact/`) and
   `capability/` (who may do what). Changing the top level needs operator
   approval.
 - **P2. Below that, a thing lives inside the one thing it cannot exist without.**
@@ -68,15 +68,15 @@ pillars/      pillars.md (mission, laws, tests), experience.md (what using Floe 
 host/         installation.md, identity.md, engine.md,
               surface/ (surface, projection, presentation-state),
               extension/ (extension, hook)
-workspace/    workspace, folder-binding, portable-package
+workspace/    workspace, folder-binding, portable-package, connector
 actor/        actor, definition, runtime-binding
 context/      context, participant, subscription
 event/        event, emit, cursor,
-              connector/ (connector, pulse, external-effect),
+              source/ (source, pulse),
               delivery/ (delivery, endpoint, turn/ (turn, input))
 scope/        scope, revision, placement, port, edge,
               execution/ (scope-execution, node-execution, attempt)
-command.md
+command/      command, external-effect
 artefact/     artefact, version, content-ref
 capability/   capability, grant, secret, receipt, audit,
               policy/ (policy, budget, approval)

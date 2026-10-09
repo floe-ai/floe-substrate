@@ -7,7 +7,7 @@ _Authored by: unknown_
 
 A deterministic executable operation with declared inputs, outputs, side
 effects, permissions, timeout, idempotency and implementation. A Command runs a
-defined operation; an [Actor](actor/actor.md) can interpret, choose, converse
+defined operation; an [Actor](../actor/actor.md) can interpret, choose, converse
 and delegate.
 
 A Command points to its current published immutable CommandDefinitionRevision.
@@ -32,3 +32,7 @@ When an Actor meets a deterministic, repeatable step (a calculation, a
 transformation, a check), it builds or reuses a Command for it instead of
 reasoning through it again, and packages it so it can be found later. Commands
 exist; Actors doing this as a habit does not yet.
+
+An action outside Floe, such as posting to Slack, is a Command; it may reach
+the outside system through a [Connector](../workspace/connector.md). Each
+attempt leaves an [external effect](external-effect.md) record.

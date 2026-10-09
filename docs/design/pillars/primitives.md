@@ -71,11 +71,11 @@ _Built: partly_
 _Authority: operator-confirmed (8 Oct ruling)_
 _Authored by: operator_
 
-- **Connector.** A Workspace setting: the connection to an outside system
+- **[Connector](../workspace/connector.md).** A Workspace setting: the connection to an outside system
   (account, sign-in, health). Event sources and Commands that support it use
   it. A Connector does not have actions of its own; acting on the outside world
   is a Command.
-- **Pulse, webhook, folder watcher.** Sources of an Event
+- **Pulse, webhook, folder watcher.** [Sources](../event/source/source.md) of an Event
   ([ADR-0008](../../adr/0008-event-is-the-primitive.md)).
 - **Card.** Something one Extension or surface moves through a workflow. It
   lives where that Extension keeps it (a Markdown file, a database row) and
@@ -94,13 +94,13 @@ _Authored by: operator_
   millions of empty Contexts. Operator ruling, 9 Oct: a Context exists only
   when it is meant to have members; Events that start a Command need no
   Context.
-- **Connectors have their own actions in code** (`floe-bus/src/connectors.ts`,
-  `connector-action-authority.ts`). Under this list, those become Commands that
-  use a Connector.
-- **Other design documents still disagree.** The event/connector, scope/edge and
-  extension documents, and the building blocks named in `AGENTS.md` and the
-  working rules, were written before this list. Each is reviewed against it,
-  with August decisions as the starting truth.
+- **Where the rest of the design still disagrees** is recorded as `## Open` in
+  each affected document: [Connector](../workspace/connector.md),
+  [NodeExecution](../scope/execution/node-execution.md),
+  [Endpoint](../event/delivery/endpoint.md),
+  [Context](../context/context.md) and [Extension](../host/extension/extension.md).
+- `AGENTS.md` and the working rules name five building blocks; this list has
+  seven. They are updated once the operator confirms this list.
 
 ## What would settle it
 
