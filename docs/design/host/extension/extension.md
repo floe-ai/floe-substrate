@@ -1,7 +1,7 @@
 # Extension
 
 _Resolution: direction_
-_Built: no_
+_Built: partly (loading, versions and tools; see Open)_
 _Authority: operator-confirmed (8 Oct and 9 Oct rulings)_
 _Authored by: operator_
 
@@ -33,16 +33,79 @@ or inside `.floe/extensions/NAME/` itself. The Workspace records each installed
 Extension under `.floe/extensions/NAME/`, pointing at its code when the code is
 elsewhere.
 
-Installing records the exact version in use: the git commit when the code is in
-a git repository, otherwise a content digest (see
-[version](../../artefact/version.md)). A change to the code is a new version,
-never a silent change.
+The install record is `.floe/extensions/NAME/installed.json`:
+
+```json
+{ "schema": "floe.extension-install.v1", "code": ".", "enabled": true, "accepted_version": "sha256:…" }
+```
+
+- `code`: the code folder, relative to the record folder or absolute. `"."`
+  means the code sits beside the record.
+- `enabled`: the on/off switch. It lives in Workspace files, so turning an
+  Extension on or off is a normal file change (9 Oct, O23).
+- `accepted_version`: the only version Floe will run.
+
+The folder name is the Extension's name and must match the `name` in the code
+folder's `extension.json`
+(`{ "schema": "floe.extension.v1", "name", "description"?, "entry" }`). Names
+use lowercase letters, digits and hyphens. The entry must stay inside the code
+folder.
+
+### Versions
+
+The version is a digest of every file in the code folder (`sha256:…`),
+leaving out `.git`, `node_modules` and the install record. When the folder is
+committed in git and has no uncommitted changes, the git commit and path are
+recorded beside it as where that version came from.
+
+The digest, not the commit, is the version, for two reasons. When code and
+record share a folder, accepting a version edits the record, which would
+otherwise look like a new version. And a commit elsewhere in the repository
+must not count as a new version of an Extension it did not touch. This
+narrows [version](../../artefact/version.md)'s "git first" rule for Extension
+code.
+
+A change to the code is a new version, never a silent change. Floe keeps
+running the accepted version until an Actor accepts the new one by writing
+its `accepted_version` (9 Oct, O25). A first install also starts held. The
+old code keeps running in memory only until the Extension process next
+reloads or restarts; after that the Extension is held, not running.
+
+### Status
+
+Each installed Extension's status is part of the Workspace's attachment
+report and is pushed again whenever it changes:
+
+| Status | Meaning |
+|---|---|
+| `running` | Loaded at its accepted version; lists its tools and hooks |
+| `off` | `enabled` is false |
+| `new_version` | The code is not the accepted version; held until an Actor accepts it |
+| `failed` | The record, manifest or code could not be loaded; carries the reason |
+
+The Bridge watches each Workspace's `.floe/extensions` folder and every code
+folder outside it with file events, and re-checks after a short quiet period.
 
 ## Where it runs
 
 All Extensions run together in one Extension process, separate from the Bus and
 Bridge. This is for stability, not security: a crash or hang in an Extension
-cannot take Floe down, and the process can be restarted.
+cannot take Floe down, and the process can be restarted. It restarts by itself
+after a crash, waiting a little longer each time, and loads every Workspace's
+Extensions again.
+
+## Tools for Actors
+
+The entry's default export receives
+`{ workspacePath, workspaceId, extensionName, hooks }` and returns its tools.
+Each tool has a `name`, `description`, `parameters` (JSON Schema) and
+`execute(callId, params)`, which returns
+`{ content: [{ type: "text", text }], details? }`. Floe offers the tool as
+`EXTENSION_TOOL` (for example `todo_add`).
+
+Only an Actor whose [definition](../../actor/definition.md) lists the Extension
+in `extensions` is offered its tools (9 Oct, O21). Tool calls run in the
+Extension process and are recorded like Floe's own tools.
 
 ## Origin
 
@@ -59,14 +122,15 @@ continuing source of Artefact identity.
 
 ## Open
 
-- Code does not match. The September snapshot (70e5752, unreviewed) deleted the
-  loader (`floe-bridge/src/extension-loader.ts`), so no Extension loads today,
-  including `examples/extensions/todo`. It added a package system instead
-  (`floe-bus/src/extensions.ts`, `extension-operations.ts`,
-  `extension-activation-authority.ts`, `canonical-extension-runtime.ts`,
-  `isolated-extension-*.ts`, about 5,200 lines): sandboxing, permission lists,
-  test evidence and a seven-stage lifecycle. The operator ruled to remove it
-  (9 Oct, Q27). Removed on branch `extensions/redesign`.
+- Built so far: install records, versions, the Extension process, status
+  reports, watching, and tools for listing Actors. Not built yet: hooks reach
+  the Extension process and are reported, but nothing calls them; skills,
+  Commands, event sources, Connector kinds, Actor definitions, record types
+  and screens.
+- There is no Floe action to accept a version or turn an Extension on or
+  off; an Actor edits `installed.json`. Whether Floe should offer one is open.
+- The September package system (sandboxing, permission lists, a seven-stage
+  lifecycle) was removed on branch `extensions/redesign` (9 Oct, Q27).
 - Needs review with the operator before it is built: permission, approval and
   spending-limit rules still have places for "an Extension" and "a Connector
   action" from the removed systems (`policies.ts`, `budgets.ts`,

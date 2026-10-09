@@ -20,3 +20,11 @@ and published revisions and existing pins are never rewritten to spread prose.
 A new Workspace gets `.floe/agents/floe.md` from the Floe Actor template when
 the file is missing. Existing files are never overwritten, so changing the
 template affects only new Workspaces.
+
+## Extensions
+
+A definition may list Extensions by name (`extensions: [todo]`). Only a listed
+Extension's tools are offered to the Actor, and only while that Extension is
+running in the Workspace ([Extension](../host/extension/extension.md)). The
+list is part of the revision, so a Delivery uses the list that was pinned
+with it.
