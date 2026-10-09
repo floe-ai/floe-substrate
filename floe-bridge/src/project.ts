@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import YAML from "yaml";
 import { readPromptAsset } from "./prompt-assets.js";
 
@@ -310,17 +310,11 @@ function hashFloeDir(floeDir: string): string {
  *    - skills/**   (all skill files — a skill change should trigger reload)
  *    - mcp/**      (all MCP config files — an MCP server change should trigger reload)
  *
- * 2. Per-extension declared config — for each extensions/<name>/:
- *    - installed.json, the install record (on/off and the accepted version)
- *    and, when extensions/<name>/extension.json exists:
- *    - the extension.json file itself (local pointer or direct manifest)
- *    - the resolved `entry` file, if it resolves under .floe
- *    - each `agents[].instructions_path`, if it resolves under .floe
- *
- *    Pointer files (manifest_source) are followed so that instruction files
- *    referenced by an external manifest are still captured when they happen to
- *    live under .floe.  Everything else under extensions/<name>/ is treated as
- *    extension runtime data and excluded — no glob over extension dirs.
+ * 2. Each Extension's install record, extensions/<name>/installed.json (its
+ *    on/off switch and accepted version). Extension code is not config: a code
+ *    change is a new version, held until an Actor accepts it in the install
+ *    record, and the Extension watcher reports it. Everything else under
+ *    extensions/<name>/ is Extension data and excluded.
  *
  * Note on skills/mcp inclusion: neither directory is currently read by
  * loadProject() itself, but both are genuinely config — editing a skill
@@ -355,67 +349,15 @@ export function computeConfigSurface(floeDir: string): string[] {
   // 4. MCP config files (changes here should trigger reload)
   addAllUnder(join(floeDir, "mcp"));
 
-  // 5. Extension declared surface
+  // 5. Extension install records
   const extensionsDir = join(floeDir, "extensions");
   let extEntries: string[];
   try { extEntries = readdirSync(extensionsDir); } catch { extEntries = []; }
-
   for (const dirName of extEntries) {
-    const extDir = join(extensionsDir, dirName);
-    try { if (!statSync(extDir).isDirectory()) continue; } catch { continue; }
-
-    addIfExists(join(extDir, "installed.json"));
-
-    const manifestPath = join(extDir, "extension.json");
-    if (!existsSync(manifestPath)) continue;
-
-    // Always include the local extension.json (pointer or direct manifest)
-    files.add(resolve(manifestPath));
-
-    // Parse to find referenced files
-    let rawManifest: Record<string, unknown>;
-    let manifestBaseDir = extDir;
-    try {
-      rawManifest = JSON.parse(readFileSync(manifestPath, "utf-8")) as Record<string, unknown>;
-    } catch { continue; }
-
-    // Follow pointer if present
-    if (rawManifest !== null && typeof rawManifest.manifest_source === "string") {
-      const sourcePath = resolve(extDir, rawManifest.manifest_source);
-      manifestBaseDir = dirname(sourcePath);
-      // Include canonical manifest if it resolves under .floe
-      if (isUnderDir(sourcePath, floeDir)) addIfExists(sourcePath);
-      // Re-read as the canonical manifest to find referenced files
-      try {
-        rawManifest = JSON.parse(readFileSync(sourcePath, "utf-8")) as Record<string, unknown>;
-      } catch { continue; }
-    }
-
-    // Include entry file if it resolves under .floe
-    if (typeof rawManifest.entry === "string") {
-      const entryPath = resolve(manifestBaseDir, rawManifest.entry);
-      if (isUnderDir(entryPath, floeDir)) addIfExists(entryPath);
-    }
-
-    // Include each bundled-agent instructions_path if it resolves under .floe
-    if (Array.isArray(rawManifest.agents)) {
-      for (const agent of rawManifest.agents) {
-        if (agent !== null && typeof agent === "object" &&
-            typeof (agent as Record<string, unknown>).instructions_path === "string") {
-          const instrPath = resolve(manifestBaseDir, (agent as Record<string, unknown>).instructions_path as string);
-          if (isUnderDir(instrPath, floeDir)) addIfExists(instrPath);
-        }
-      }
-    }
+    addIfExists(join(extensionsDir, dirName, "installed.json"));
   }
 
   return [...files].sort();
-}
-
-/** Returns true iff `filePath` is at or below `dir` (both resolved). */
-function isUnderDir(filePath: string, dir: string): boolean {
-  const rel = relative(resolve(dir), resolve(filePath));
-  return !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 function listFiles(root: string): string[] {
