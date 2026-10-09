@@ -9,7 +9,7 @@ import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ensureConfig } from "./config.js";
-import { fetchHostControlToken, fetchIdentityDeviceKey, forgetIdentityDeviceKey } from "./operation-client.js";
+import { fetchHostControlToken, fetchIdentityDeviceKey, forgetHostControlToken, forgetIdentityDeviceKey } from "./operation-client.js";
 import { canonicalHome } from "./identity/protocol.js";
 
 const guard = (globalThis as unknown as Record<symbol, { violations: string[] }>)[Symbol.for("floe.test.guard")]!;
@@ -78,6 +78,18 @@ describe("test isolation", () => {
     await expect(fetch("http://127.0.0.1:5377/v1/health")).rejects.toThrow(/real Floe bus address/);
     expect(guard.violations.splice(0)).toHaveLength(2);
   });
+
+  it("a throwaway bus's host-control credential can be removed from the OS keyring", async () => {
+    const bus = "http://127.0.0.1:59871";
+    const first = await fetchHostControlToken(bus);
+    expect(await fetchHostControlToken(bus)).toBe(first);
+    expect(await forgetHostControlToken(bus)).toBe(true);
+    expect(await forgetHostControlToken(bus)).toBe(false);
+    expect(await fetchHostControlToken(bus)).not.toBe(first);
+    expect(await forgetHostControlToken(bus)).toBe(true);
+    await expect(forgetHostControlToken("http://127.0.0.1:5377")).rejects.toThrow(/real Floe bus address/);
+    expect(guard.violations.splice(0)).toHaveLength(1);
+  }, 30_000);
 
   it("any other connection to the real bus address is refused: WebSocket, http, raw socket", async () => {
     const attempts: Array<() => Promise<unknown>> = [

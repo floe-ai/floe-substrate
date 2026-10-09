@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import { afterEach, describe, expect, it } from "vitest";
 import YAML from "yaml";
 import { defaultConfig, type LocalConfig } from "./config.js";
+import { forgetHostControlToken } from "./operation-client.js";
 import { isPidRunning, readRecords, SERVICE_NAMES, stopService } from "./process-manager.js";
 
 const runFile = promisify(execFile);
@@ -38,13 +39,18 @@ function config(path: string, busUrl = "http://127.0.0.1:9"): string {
   return configPath;
 }
 
-/** `floe start` spawns real services; stop every one it recorded, and prove none survived. */
+/**
+ * `floe start` spawns real services and mints its bus's host-control credential
+ * in the OS keyring; stop every service it recorded, prove none survived, and
+ * remove the credential.
+ */
 function stopsWhatItStarts(configPath: string): void {
   cleanup.push(async () => {
     const loaded = YAML.parse(readFileSync(configPath, "utf8")) as LocalConfig;
     const pids = Object.values(readRecords(configPath, loaded)).map((record) => record!.pid);
     for (const service of [...SERVICE_NAMES].reverse()) await stopService(configPath, loaded, service);
     expect(pids.filter(isPidRunning), "services left running by the test").toEqual([]);
+    await forgetHostControlToken(loaded.bus.http_base_url);
   });
 }
 

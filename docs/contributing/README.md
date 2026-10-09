@@ -24,6 +24,11 @@ Never touch the operator's own Floe: port 5377 and `~/.floe`.
 - Use a separate configuration file (`floe --config <path>`) whose `home` is a
   throwaway folder and whose ports are in **5480–5489**.
 - Stop the test Floe when finished and leave those ports free.
+- Each Floe saves a key in the computer's secure credential storage, named by
+  its address. When a throwaway Floe is gone, remove its key with the broker's
+  `forget_host_control_token` (`forgetHostControlToken`) before stopping it.
+  The test setup (`test-support/isolated-home.ts`) fails any test file that
+  leaves a key behind.
 
 ## Test tiers
 
