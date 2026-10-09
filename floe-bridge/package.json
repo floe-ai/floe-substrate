@@ -20,7 +20,7 @@
     "@github/copilot": "1.0.89",
     "diff": "^9.0.0",
     "floe-cli": "*",
-    "floe-runtime": "github:floe-ai/floe-runtime#f19b4bf38ff4e6ee3ee5f0c9853be558469e7139",
+    "floe-runtime": "github:floe-ai/floe-runtime#dbdcbe339b23782c90e3320b3f0e8ef079191756",
     "yaml": "^2.6.0",
     "zod": "^3.24.0",
     "zod-to-json-schema": "^3.25.1"

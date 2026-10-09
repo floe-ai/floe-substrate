@@ -19,7 +19,7 @@ import type {
 } from "./extension-protocol.js";
 
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
-const HOOK_NAMES: ReadonlySet<ExtensionHookName> = new Set<ExtensionHookName>(["SessionStart", "BeforeTurn", "TurnEnd", "Error"]);
+const HOOK_NAMES: ReadonlySet<ExtensionHookName> = new Set<ExtensionHookName>(["SessionStart", "BeforeTurn", "TurnEnd", "BeforeToolUse", "Error"]);
 /** A handler that has not settled by then is logged and skipped, so a hung hook cannot hold a turn forever. */
 const HOOK_TIMEOUT_MS = 30_000;
 
@@ -114,25 +114,64 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function runHook(extension: string, hook: string, handlers: ReadonlyArray<(payload: Record<string, unknown>) => unknown>, payload: Record<string, unknown>): Promise<ExtensionHookResult[]> {
+type HookHandler = (payload: Record<string, unknown>) => unknown;
+
+async function settle(handler: HookHandler, payload: Record<string, unknown>): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => handler(payload)),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`did not finish within ${HOOK_TIMEOUT_MS / 1000}s`)), HOOK_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Runs one Extension's BeforeToolUse handlers in order. Each sees the input as
+ * changed by the one before. The first block ends the check; a handler that
+ * fails or answers something unknown blocks the call.
+ */
+async function checkToolUse(extension: string, handlers: readonly HookHandler[], payload: Record<string, unknown>): Promise<ExtensionHookResult[]> {
+  let current = payload;
+  let changed = false;
+  for (const handler of handlers) {
+    let value: unknown;
+    try {
+      value = await settle(handler, current);
+    } catch (error) {
+      return [{ decision: "block", reason: `${extension}'s BeforeToolUse check failed: ${message(error)}` }];
+    }
+    const answer = value as { decision?: unknown; reason?: unknown; args?: unknown } | null | undefined;
+    if (answer === undefined || answer === null || answer.decision === "allow") continue;
+    if (answer.decision === "block") {
+      return [{ decision: "block", reason: typeof answer.reason === "string" && answer.reason.trim() ? answer.reason : `${extension} blocked this tool call` }];
+    }
+    if (answer.decision === "change" && "args" in answer) {
+      current = { ...current, args: JSON.parse(JSON.stringify(answer.args ?? null)) as unknown };
+      changed = true;
+      continue;
+    }
+    return [{ decision: "block", reason: `${extension}'s BeforeToolUse check answered something other than allow, block or change` }];
+  }
+  return changed ? [{ decision: "change", args: current.args }] : [];
+}
+
+async function runHook(extension: string, hook: string, handlers: readonly HookHandler[], payload: Record<string, unknown>): Promise<ExtensionHookResult[]> {
+  if (hook === "BeforeToolUse") return checkToolUse(extension, handlers, payload);
   const results: ExtensionHookResult[] = [];
   for (const handler of handlers) {
-    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const value = await Promise.race([
-        Promise.resolve().then(() => handler(payload)),
-        new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`did not finish within ${HOOK_TIMEOUT_MS / 1000}s`)), HOOK_TIMEOUT_MS);
-        }),
-      ]);
+      const value = await settle(handler, payload);
       const inject = (value as { inject?: unknown } | null | undefined)?.inject;
       if (inject && typeof inject === "object" && !Array.isArray(inject)) {
         results.push({ inject: JSON.parse(JSON.stringify(inject)) as Record<string, unknown> });
       }
     } catch (error) {
       console.error(`[extension:${extension}] ${hook} hook failed: ${message(error)}`);
-    } finally {
-      clearTimeout(timer);
     }
   }
   return results;

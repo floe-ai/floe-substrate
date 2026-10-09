@@ -86,7 +86,11 @@ export class ExtensionHost {
     return reply.value;
   }
 
-  /** Runs one Extension's handlers for a hook. While the process is restarting the hook is skipped and logged. */
+  /**
+   * Runs one Extension's handlers for a hook. While the process is restarting
+   * the hook is skipped and logged, except BeforeToolUse: a check that cannot
+   * run throws, so the tool call is blocked.
+   */
   async hook(
     workspaceId: string,
     extension: string,
@@ -94,6 +98,7 @@ export class ExtensionHost {
     payload: Record<string, unknown>,
   ): Promise<readonly ExtensionHookResult[]> {
     if (!this.child?.connected) {
+      if (hook === "BeforeToolUse") throw new ExtensionProcessError(`${extension}'s BeforeToolUse check cannot run: the Extension process is restarting`);
       this.options.log?.(`Skipped ${extension}'s ${hook} hook: the Extension process is restarting`);
       return [];
     }

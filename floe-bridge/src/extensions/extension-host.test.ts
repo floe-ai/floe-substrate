@@ -131,6 +131,30 @@ describe("Extension process", () => {
     expect(await host.hook("ws1", "notes", "SessionStart", {})).toEqual([]);
   });
 
+  it("checks a tool call with BeforeToolUse: changes chain, a block ends it, and a failure blocks", async () => {
+    await host.load("ws1", root, [{ name: "guard", entry_path: entry("guard", `
+      export default (ctx) => {
+        ctx.hooks.on("BeforeToolUse", (call) => call.tool_name === "rm" ? { decision: "block", reason: "no deleting" } : undefined);
+        ctx.hooks.on("BeforeToolUse", (call) => call.tool_name === "say" ? { decision: "change", args: { text: call.args.text + "!" } } : { decision: "allow" });
+        ctx.hooks.on("BeforeToolUse", (call) => call.tool_name === "say" ? { decision: "change", args: { text: call.args.text + "?" } } : undefined);
+        ctx.hooks.on("BeforeToolUse", (call) => {
+          if (call.tool_name === "explode") throw new Error("checker broke");
+          if (call.tool_name === "odd") return { decision: "maybe" };
+        });
+        return [];
+      };
+    `), version: "v1" }]);
+    expect(await host.hook("ws1", "guard", "BeforeToolUse", { tool_name: "rm", args: {} }))
+      .toEqual([{ decision: "block", reason: "no deleting" }]);
+    expect(await host.hook("ws1", "guard", "BeforeToolUse", { tool_name: "say", args: { text: "hi" } }))
+      .toEqual([{ decision: "change", args: { text: "hi!?" } }]);
+    expect(await host.hook("ws1", "guard", "BeforeToolUse", { tool_name: "view", args: {} })).toEqual([]);
+    expect(await host.hook("ws1", "guard", "BeforeToolUse", { tool_name: "explode", args: {} }))
+      .toEqual([{ decision: "block", reason: "guard's BeforeToolUse check failed: checker broke" }]);
+    expect(await host.hook("ws1", "guard", "BeforeToolUse", { tool_name: "odd", args: {} }))
+      .toEqual([{ decision: "block", reason: expect.stringMatching(/other than allow, block or change/) }]);
+  });
+
   it("refuses a hook Floe does not offer", async () => {
     const [result] = await host.load("ws1", root, [{ name: "hooky", entry_path: entry("hooky", `
       export default (ctx) => { ctx.hooks.on("WebhookReceived", () => {}); return []; };

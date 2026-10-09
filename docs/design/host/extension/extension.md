@@ -123,8 +123,8 @@ continuing source of Artefact identity.
 ## Open
 
 - Built so far: install records, versions, the Extension process, status
-  reports, watching, and tools and [hooks](hook.md) for listing Actors. Not
-  built yet: `BeforeToolUse` (waiting on floe-runtime), skills, Commands, event
+  reports, watching, and tools and [hooks](hook.md) (including
+  `BeforeToolUse`) for listing Actors. Not built yet: skills, Commands, event
   sources, Connector kinds, Actor definitions, record types and screens.
 - Skills do not reach the runtime at all today, not even an Actor's own
   `skills:` list: floe-runtime turns skills off (`enableSkills: false`, no

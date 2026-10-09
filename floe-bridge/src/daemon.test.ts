@@ -901,6 +901,7 @@ describe("BridgeDaemon – Extension tools", () => {
       await installAcceptedExtension(workspace, "echo", `
         export default (ctx) => {
           ctx.hooks.on("BeforeTurn", (payload) => ({ inject: { source: "echo", content: "for " + payload.endpoint_id } }));
+          ctx.hooks.on("BeforeToolUse", (call) => call.tool_name === "rm" ? { decision: "block", reason: "echo forbids rm" } : undefined);
           return [{
           name: "shout",
           description: "Shout the text",
@@ -910,7 +911,7 @@ describe("BridgeDaemon – Extension tools", () => {
         };
       `);
       const statuses = await (daemon as any).extensions.reconcile("workspace:test", workspace);
-      expect(statuses).toEqual([expect.objectContaining({ name: "echo", status: "running", tools: ["echo_shout"], hooks: ["BeforeTurn"] })]);
+      expect(statuses).toEqual([expect.objectContaining({ name: "echo", status: "running", tools: ["echo_shout"], hooks: ["BeforeToolUse", "BeforeTurn"] })]);
 
       const contexts: any[] = [];
       (daemon as any).adapter = { name: "fake", async handleBundle(context: unknown) { contexts.push(context); } };
@@ -939,6 +940,11 @@ describe("BridgeDaemon – Extension tools", () => {
       expect(await contexts[0].hooks.fire("BeforeTurn", beforeTurn))
         .toEqual([{ inject: { source: "echo", content: "for actor:workspace:test:floe" } }]);
       expect(contexts[1].hooks.hasHandlers("BeforeTurn")).toBe(false);
+
+      const toolCall = (tool_name: string) => ({ ...beforeTurn, tool_call_id: "t1", tool_name, source: "builtin", args: {}, cwd: null });
+      expect(await contexts[0].hooks.decideToolUse(toolCall("rm"))).toEqual({ decision: "block", reason: "echo forbids rm" });
+      expect(await contexts[0].hooks.decideToolUse(toolCall("view"))).toEqual({ decision: "allow" });
+      expect(contexts[1].hooks.hasHandlers("BeforeToolUse")).toBe(false);
     } finally {
       (daemon as any).extensions.dispose();
       made.cleanup();

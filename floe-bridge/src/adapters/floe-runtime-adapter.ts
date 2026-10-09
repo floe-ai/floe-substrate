@@ -17,6 +17,8 @@ import { randomUUID } from "node:crypto";
 import { COPILOT_BUILTIN_TOOL_MANIFEST, copilotToolCatalogForModel } from "floe-runtime/adapters/copilot";
 import type {
   ActivityEvent,
+  CopilotBeforeToolUseCall,
+  CopilotBeforeToolUseResult,
   CopilotPermissionRequest,
   CopilotRuntime,
   CopilotRuntimeOptions,
@@ -46,7 +48,7 @@ import { createCopilotAccount, createCopilotRuntime } from "../engines/copilot.j
 import type { EngineAccount } from "../engines/engine-control.js";
 import { EngineToolGate } from "./engine-tool-gate.js";
 
-export type RuntimeFactory = (options: Pick<CopilotRuntimeOptions, "permissionPolicy" | "expectedAccount">) => CopilotRuntime;
+export type RuntimeFactory = (options: Pick<CopilotRuntimeOptions, "permissionPolicy" | "beforeToolUse" | "expectedAccount">) => CopilotRuntime;
 type EngineAccountRef = NonNullable<RuntimeContext["engine_account"]>;
 
 /** The pinned manifest's built-ins, in the model's catalog, that the Actor's granted operations may use. */
@@ -185,6 +187,28 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       deliveryId: turn.delivery_id,
       workspaceLocator: context.workspace_locator ?? null,
       request,
+    });
+  }
+
+  /**
+   * Runs after Floe's permission check has allowed a call. The Extensions the
+   * Actor lists can let it run, block it, or change its input.
+   */
+  private async checkToolUse(session: FloeSession, call: CopilotBeforeToolUseCall): Promise<CopilotBeforeToolUseResult | void> {
+    const turn = session.activeTurn;
+    const hooks = session.context?.hooks;
+    if (!turn || turn.finalized || turn.cancelled) return { decision: "block", reason: "No Floe turn is running." };
+    if (!hooks?.hasHandlers("BeforeToolUse")) return;
+    return hooks.decideToolUse({
+      endpoint_id: session.endpointId,
+      workspace_id: session.workspaceId,
+      delivery_id: turn.delivery_id,
+      trigger_event_id: turn.trigger_event_id,
+      tool_call_id: call.id,
+      tool_name: call.toolName,
+      source: call.source,
+      args: call.args,
+      cwd: call.cwd,
     });
   }
 
@@ -618,6 +642,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
     } as Omit<FloeSession, "runtime" | "toolHandle"> as FloeSession;
     const runtime = this.runtimeFactory({
       permissionPolicy: (request) => this.decideToolCall(session, request),
+      beforeToolUse: (call) => this.checkToolUse(session, call),
       expectedAccount: account,
     });
     session.runtime = runtime;

@@ -20,10 +20,15 @@ export type ExtensionToolResult = Readonly<{
 }>;
 
 /** The points an Extension can step in at. Anything that only reacts afterwards is an Event, not a hook. */
-export type ExtensionHookName = "SessionStart" | "BeforeTurn" | "TurnEnd" | "Error";
+export type ExtensionHookName = "SessionStart" | "BeforeTurn" | "TurnEnd" | "BeforeToolUse" | "Error";
 
-/** What one hook handler returned: text to add to the turn, or nothing. */
-export type ExtensionHookResult = Readonly<{ inject: Record<string, unknown> }>;
+/** A BeforeToolUse answer that is not "allow": stop the call, or run it with other input. */
+export type ExtensionToolDecision =
+  | Readonly<{ decision: "block"; reason: string }>
+  | Readonly<{ decision: "change"; args: unknown }>;
+
+/** What a hook returned: text to add to the turn, or (BeforeToolUse only) one decision for the tool call. */
+export type ExtensionHookResult = Readonly<{ inject: Record<string, unknown> }> | ExtensionToolDecision;
 
 export type ExtensionToLoad = Readonly<{ name: string; entry_path: string; version: string }>;
 
