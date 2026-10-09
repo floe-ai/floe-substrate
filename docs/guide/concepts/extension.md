@@ -66,8 +66,7 @@ requests: `GET|POST /v1/extensions/:name/*` forwards to that extension's
 - `floe-bus/src/extensions.ts` — canonical package/install lifecycle records
 - `floe-bus/src/extension-operations.ts` — shared inspect, install, upgrade,
   disable, and rollback operations
-- `docs/adr/0006-external-extension-repositories.md` — extensions live outside this repo
-- `docs/adr/0002-extension-substrate-design.md` — manifest format, tool prefixing, hook registration
+- `docs/design/host/extension/extension.md` — the Extension design: own repositories, manifest, tool prefixing, hooks
 - `floe-bridge/src/extension-loader.ts` — `loadExtensions`, `validateManifest` (schema `floe.extension.v1`), `loadBundledAgentsInMemory`, tool-name prefixing
 - `floe-bridge/src/extension-relay.ts` — `startExtensionRelayServer`, per-extension path namespacing
 - `GET /v1/extensions` — list registered extensions (`floe-bus/src/server.ts:1543`)

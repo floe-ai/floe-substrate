@@ -67,7 +67,7 @@ New to Floe? Read these four in order:
 ## Implementation
 
 - `docs/guide/` — this guide, a free-form standing document directory (`floe-bus/src/docs-structure.test.ts`)
-- `CONTEXT.md` — canonical terminology and invariants
+- `docs/design/` — canonical terminology, rules and intent
 - `floe-bus/src/operations.ts` — the shared semantic operation contract
 - `floe-bus/src/scope-compositions.ts` — explicit Scope topology
 - `floe-bus/src/server.ts` — authenticated HTTP and WebSocket transports

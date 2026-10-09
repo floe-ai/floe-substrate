@@ -28,7 +28,7 @@ function signAuthEvent(secretKey: Uint8Array, relay: string, challenge: string) 
   );
 }
 
-describe("Client identity credential path (ADR-0015)", () => {
+describe("Client identity credential path (docs/reference/client-identity-protocol.md)", () => {
   let handle: ServerHandle;
   let workspaceId: string;
   const secretKey = privateKeyFromSeedWords(generateSeedWords());
@@ -207,7 +207,7 @@ describe("Client identity credential path (ADR-0015)", () => {
     expect(reauth.status).toBe(401);
   });
 
-  it("reports admitted workspaces and requires selection when there is more than one (ADR-0015 F3)", async () => {
+  it("reports admitted workspaces and requires selection when there is more than one (docs/reference/client-identity-protocol.md)", async () => {
     // A fresh identity admitted to two workspaces.
     const sk2 = privateKeyFromSeedWords(generateSeedWords());
     const pk2 = getPublicKey(sk2);

@@ -1,6 +1,6 @@
 /**
  * The identity's key material: a BIP-39 recovery phrase, the NIP-06 secp256k1
- * key derived from it, and the NIP-42 proof the Bus verifies (ADR-0015). Every
+ * key derived from it, and the NIP-42 proof the Bus verifies (docs/reference/client-identity-protocol.md). Every
  * primitive is nostr-tools / noble; nothing cryptographic is written here.
  */
 import { generateSeedWords, privateKeyFromSeedWords, validateWords } from "nostr-tools/nip06";

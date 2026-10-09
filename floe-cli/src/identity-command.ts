@@ -10,9 +10,9 @@ import { registerPersonIdentityCommands } from "./identity/terminal-commands.js"
  * identities.
  *
  * The person-facing commands (status, create, unlock, lock, reveal, restore,
- * replace, join, sessions) talk to Floe's identity agent (ADR-0016), which holds
+ * replace, join, sessions) talk to Floe's identity agent (docs/reference/identity-agent-protocol.md), which holds
  * the key; see identity/terminal-commands.ts. The roster commands below (add,
- * list, revoke) are host-control actions on the Bus (ADR-0015).
+ * list, revoke) are host-control actions on the Bus (docs/reference/client-identity-protocol.md).
  */
 
 export type IdentityCommandDependencies = Readonly<{

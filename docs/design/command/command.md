@@ -1,0 +1,69 @@
+# Command
+
+_Resolution: settled_
+_Built: yes_
+_Authority: agent-provisional_
+_Authored by: unknown_
+
+A deterministic executable operation with declared inputs, outputs, side
+effects, permissions, timeout, idempotency and implementation. A Command runs a
+defined operation; an [Actor](../actor/actor.md) can interpret, choose, converse
+and delegate.
+
+A Command points to its current published immutable CommandDefinitionRevision.
+Publishing a Scope revision validates referenced Commands and exact Port
+contracts. A NodeExecution pins the Command revision and worker binding it began
+with; every retry keeps those pins even if the Command changes or retires.
+
+The Bus stores the exact processing contract for each attempt and dispatches it
+to an isolated Command host. Implementations are exact core or Extension version
+references. Filesystem, network, secret and external access goes only through
+granted operations and brokers. Command output advances Edges only through a
+named Port using `scope.node-output.publish`.
+
+## Direction: repeated work becomes a Command
+
+_Resolution: direction_
+_Built: partly_
+_Authority: agent-provisional_
+_Authored by: operator (thought log, June)_
+
+When an Actor meets a deterministic, repeatable step (a calculation, a
+transformation, a check), it builds or reuses a Command for it instead of
+reasoning through it again, and packages it so it can be found later. Commands
+exist; Actors doing this as a habit does not yet.
+
+An action outside Floe, such as posting to Slack, is a Command; it may reach
+the outside system through a [Connector](../workspace/connector.md). Each
+attempt leaves an [external effect](external-effect.md) record.
+
+## Direction: a Command is a ready-made node
+
+_Resolution: direction_
+_Built: no_
+_Authority: operator-confirmed (9 Oct ruling, Q25)_
+_Authored by: operator_
+
+A Command can be dropped in as a node without knowing how it works, for example
+"Send to Slack". To allow that, a Command declares:
+
+- a name and description, so it can be found and chosen;
+- a settings form (for example the destination channel);
+- the kind of [Connector](../workspace/connector.md) it needs, so it uses the
+  Workspace's own Connector setting.
+
+Floe stores and exposes these; a surface draws the picker. Every Actor chooses
+from the same list. An [Extension](../host/extension/extension.md) can ship such
+Commands; how a Command is named and set up is defined here, not there.
+
+## Why Command is separate from Actor
+
+_Resolution: settled_
+_Built: yes_
+_Authority: operator-confirmed (ADR-0008, Aug; 9 Oct ruling: decisions from August and earlier stand)_
+_Authored by: operator_
+
+A Command is deterministic: re-runnable, cacheable, trusted without judgement.
+An Actor's output needs judgement. A Command is backed by code that meets the
+Command contract (named inputs in, named outputs out); the Workspace holds the
+reference and the code lives wherever it lives.

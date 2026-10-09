@@ -1,6 +1,6 @@
 # Glossary
 
-Canonical terms used across the guide. `CONTEXT.md` remains authoritative.
+Canonical terms used across the guide. `docs/design/` remains authoritative.
 
 ## Actor
 

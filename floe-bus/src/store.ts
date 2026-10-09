@@ -7617,7 +7617,7 @@ export class BusStore {
    * given endpoint must answer — i.e. requests whose source event was addressed
    * to that endpoint (the actor that asked is `waiting_endpoint_id`). This is
    * how a client discovers what is waiting on the operator endpoint without
-   * host control (ADR-0015). The source event's destination is joined in and
+   * host control (docs/reference/client-identity-protocol.md). The source event's destination is joined in and
    * returned as `destination_endpoint_id` so the result is self-describing.
    */
   listPendingResponses(

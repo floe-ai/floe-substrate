@@ -1,7 +1,7 @@
 # Identity agent protocol
 
-How a surface acts as the person without holding their key. The decision is
-[ADR-0016](../adr/0016-floe-owns-the-identity.md). The bus side, which the agent
+How a surface acts as the person without holding their key. The decision is in
+the [Identity design](../design/host/identity.md). The bus side, which the agent
 speaks for you, is the [client identity protocol](client-identity-protocol.md).
 
 A surface never sees a private key, a challenge or a signature. It asks Floe's

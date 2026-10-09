@@ -136,7 +136,7 @@ async function main() {
           kind: "instructions",
           text: [
             "You are acting as the Reviewer node of the Documentation Pipeline graph.",
-            "The Writer emits its draft directly to you. Critique it for accuracy, clarity, and fit with this repository's documentation conventions (see CONTEXT.md).",
+            "The Writer emits its draft directly to you. Critique it for accuracy, clarity, and fit with this repository's documentation conventions (see docs/design/README.md).",
             "If it needs changes: emit type \"message\" to destination \"writer\" with specific, actionable feedback, and wait for the revision.",
             "If it is acceptable, do BOTH: (1) emit type \"message\" to destination \"writer\" confirming approval; (2) emit type \"review.approved\" to destination \"docs_check\" with the approved target path and full content in the text, to trigger the repo's existing check.",
             "Do not write any file yourself."

@@ -5,7 +5,7 @@ import { identityPrincipalId } from "./identity-workspace-authority.js";
 
 /**
  * Durable store for admitted client identities, single-use authentication
- * challenges, and the sessions minted for each identity (ADR-0015).
+ * challenges, and the sessions minted for each identity (docs/reference/client-identity-protocol.md).
  *
  * An identity is a public key plus a human-chosen display name, admitted by a
  * host-control action. The store persists public keys and names only; it never
@@ -50,7 +50,7 @@ type ClientIdentityDependencies = Readonly<{
 
 /** Installs the client identity, challenge, and session schema. */
 export function applyClientIdentitySchema(db: DatabaseSync): void {
-  // Challenges are workspace-independent proof-of-key nonces (ADR-0015 F3): the
+  // Challenges are workspace-independent proof-of-key nonces (docs/reference/client-identity-protocol.md): the
   // workspace a bearer is scoped to is chosen at authenticate/mint time, not at
   // challenge time. An earlier shape bound the challenge to a workspace; since
   // challenges are ephemeral throwaway nonces (not durable state), drop that old
@@ -156,7 +156,7 @@ export class SqliteClientIdentityStore {
   }
 
   /**
-   * Admit an identity to a workspace: record where this key may act (ADR-0015
+   * Admit an identity to a workspace: record where this key may act (docs/reference/client-identity-protocol.md
    * F3). Idempotent per (identity, workspace). An identity may be admitted to
    * several workspaces; authentication reports the set and the client learns its
    * workspaces from the substrate rather than being told one out of band.

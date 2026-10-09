@@ -1,6 +1,6 @@
 /**
  * The identity agent: the one Floe process that holds the person's unlocked key
- * (ADR-0016). Surfaces ask it to act; it never hands out the key.
+ * (docs/reference/identity-agent-protocol.md). Surfaces ask it to act; it never hands out the key.
  *
  * - It signs only NIP-42 proofs for the Bus it was started with, and returns
  *   bearers, never signatures.

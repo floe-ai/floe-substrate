@@ -67,7 +67,7 @@ For MCP, inspect the current runtime's supported attachment and authority contra
 
 ## Keep the substrate general
 
-Apply the `MISSION.md` tests before proposing substrate machinery:
+Apply the Floe design tests (`docs/design/pillars/pillars.md`) before proposing substrate machinery:
 
 - **Redundancy test** — would a 10x better model make this unnecessary? If yes, prefer actor behaviour
   or an Extension.
@@ -79,7 +79,7 @@ rewrite Floe core to escape its boundaries.
 
 ## Where the canonical knowledge lives
 
-`MISSION.md` owns purpose, `PRODUCT.md` owns the operator experience, `CONTEXT.md` owns terminology,
+`docs/design/` owns purpose, the operator experience, terminology and rules,
 and accepted ADRs explain lasting decisions. Current code, discovered contracts, and observed behaviour
 establish what works now. Plans and historical notes are evidence. Surface contradictions and read
 only the references needed for the current attempt.
