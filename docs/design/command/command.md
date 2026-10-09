@@ -34,8 +34,9 @@ reasoning through it again, and packages it so it can be found later. Commands
 exist; Actors doing this as a habit does not yet.
 
 An action outside Floe, such as posting to Slack, is a Command; it may reach
-the outside system through a [Connector](../workspace/connector.md). Each
-attempt leaves an [external effect](external-effect.md) record.
+the outside system through a [Connector](../workspace/connector.md). Floe does
+not record whether the outside effect happened; retries and unclear outcomes are
+up to whoever builds the Command.
 
 ## Direction: a Command is a ready-made node
 

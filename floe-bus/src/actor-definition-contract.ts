@@ -42,7 +42,13 @@ export type ActorDefinitionContent = Readonly<{
    * Absent means no filesystem authority at all; grants never widen it.
    */
   scope?: ActorScope;
+  /** Names of the Workspace's Extensions whose tools and skills this Actor uses. */
+  extensions?: readonly string[];
 }>;
+
+/** An Extension name: its folder under `.floe/extensions/` and its tool-name prefix. */
+export const EXTENSION_NAME_PATTERN = "^[a-z0-9][a-z0-9-]{0,39}$";
+const EXTENSION_NAME = new RegExp(EXTENSION_NAME_PATTERN);
 
 export class ActorDefinitionValidationError extends Error {
   readonly code = "E_ACTOR_DEFINITION_INVALID" as const;
@@ -96,6 +102,19 @@ export function validateActorDefinition(content: ActorDefinitionContent): void {
       }
     }
     unique(content.scope.paths, "scope path");
+  }
+  if (content.extensions !== undefined) {
+    if (!Array.isArray(content.extensions)) {
+      throw new ActorDefinitionValidationError("extensions must be a list of Extension names");
+    }
+    for (const name of content.extensions) {
+      if (typeof name !== "string" || !EXTENSION_NAME.test(name)) {
+        throw new ActorDefinitionValidationError(
+          `Extension name '${String(name)}' must use lowercase letters, digits and hyphens (for example 'todo')`,
+        );
+      }
+    }
+    unique(content.extensions, "Extension name");
   }
   for (const rule of content.escalation_rules) {
     nonEmpty("escalation condition", rule.when);

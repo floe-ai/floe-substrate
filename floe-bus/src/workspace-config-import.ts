@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 
 import {
   ActorDefinitionStore,
+  EXTENSION_NAME_PATTERN,
   actorDefinitionDigest,
   canonicalActorScopePath,
   validateActorDefinition,
@@ -72,10 +73,6 @@ export const LEGACY_WORKSPACE_MODEL_ACTOR_OPERATION_IDS_V1 = Object.freeze([
   "context.participant.remove",
   "context.participant.set_access",
   "context.restore",
-  "extension.inspect",
-  "extension.list",
-  "extension.package.get",
-  "extension.schema.discover",
   "runtime-profile.create",
   "runtime-profile.draft.create",
   "runtime-profile.draft.replace",
@@ -1153,7 +1150,7 @@ function normalizeActor(value: unknown, index: number): WorkspaceConfigurationAc
     throw new WorkspaceConfigurationInventoryValidationError(`${path}.source.kind is invalid`);
   }
   const definition = exactObject(actor.definition, [
-    "label", "charter", "responsibilities", "instructions", "knowledge_refs", "policy_refs", "escalation_rules", "scope",
+    "label", "charter", "responsibilities", "instructions", "knowledge_refs", "policy_refs", "escalation_rules", "scope", "extensions",
   ], `${path}.definition`);
   const runtime = exactObject(actor.runtime, [
     "label", "backing_kind", "adapter_id", "configuration", "required_capability_ids",
@@ -1219,6 +1216,7 @@ function normalizeActor(value: unknown, index: number): WorkspaceConfigurationAc
         };
       }),
       ...(definition.scope == null ? {} : { scope: normalizeActorScope(definition.scope, `${path}.definition.scope`) }),
+      ...normalizeActorExtensions(definition.extensions, `${path}.definition.extensions`),
     },
     runtime: {
       label: requiredText(runtime.label, `${path}.runtime.label`),
@@ -1339,6 +1337,23 @@ function normalizeActorScope(value: unknown, label: string): ActorScope {
     return canonical;
   });
   return { paths: [...new Set(paths)].sort((left, right) => left.localeCompare(right)) };
+}
+
+function normalizeActorExtensions(value: unknown, label: string): { extensions?: string[] } {
+  if (value == null) return {};
+  if (!Array.isArray(value)) {
+    throw new WorkspaceConfigurationInventoryValidationError(`${label} must be a list of Extension names`);
+  }
+  const pattern = new RegExp(EXTENSION_NAME_PATTERN);
+  const names = value.map((name, index) => {
+    if (typeof name !== "string" || !pattern.test(name)) {
+      throw new WorkspaceConfigurationInventoryValidationError(
+        `${label}[${index}] must use lowercase letters, digits and hyphens`,
+      );
+    }
+    return name;
+  });
+  return names.length === 0 ? {} : { extensions: [...new Set(names)].sort((left, right) => left.localeCompare(right)) };
 }
 
 function safeRelativePath(value: unknown, label: string): string {

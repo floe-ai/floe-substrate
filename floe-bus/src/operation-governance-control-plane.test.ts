@@ -740,7 +740,6 @@ describe("Bus semantic-operation governance control plane", () => {
       "actor.runtime-binding.replace",
       "connector.health.record",
       "credential.bind",
-      "extension.enable",
       "workspace.package.reconcile_restore",
       "workspace.package.release_restore_hold",
     ]);

@@ -24,7 +24,12 @@ outputs: those are [Ports](../scope/port.md) and [Edges](../scope/edge.md).
 
 ## Open
 
-- Code still models a Connector as a definition plus binding with its own
-  actions and approvals (`floe-bus/src/connectors.ts`,
-  `connector-action-authority.ts`). Under this design those actions become
-  Commands that use a Connector.
+- Code models a Connector as a definition plus a binding
+  (`floe-bus/src/connectors.ts`). Connector actions and their outside-effect
+  receipts are removed; outside effects become Commands that use a Connector.
+  Floe does not track whether an outside effect happened: retries and unclear
+  outcomes are up to whoever builds the Command (operator ruling, 9 Oct).
+- Connector listening (`connector-worker.ts`, `connector-source-adapters.ts`)
+  runs only in tests; the live Bus does not start it.
+- Code still has a `connector` node kind that can be placed in a Scope but
+  never runs. It becomes a Command node that uses a Connector.

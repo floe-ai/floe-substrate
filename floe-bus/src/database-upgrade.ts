@@ -3,7 +3,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 
-export const CURRENT_BUS_SCHEMA_VERSION = 16;
+export const CURRENT_BUS_SCHEMA_VERSION = 17;
 
 /**
  * Canonical fingerprint of every persistent schema object (tables, indexes,

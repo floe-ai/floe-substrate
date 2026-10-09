@@ -310,7 +310,9 @@ function hashFloeDir(floeDir: string): string {
  *    - skills/**   (all skill files — a skill change should trigger reload)
  *    - mcp/**      (all MCP config files — an MCP server change should trigger reload)
  *
- * 2. Per-extension declared config — for each extensions/<name>/extension.json:
+ * 2. Per-extension declared config — for each extensions/<name>/:
+ *    - installed.json, the install record (on/off and the accepted version)
+ *    and, when extensions/<name>/extension.json exists:
  *    - the extension.json file itself (local pointer or direct manifest)
  *    - the resolved `entry` file, if it resolves under .floe
  *    - each `agents[].instructions_path`, if it resolves under .floe
@@ -361,6 +363,8 @@ export function computeConfigSurface(floeDir: string): string[] {
   for (const dirName of extEntries) {
     const extDir = join(extensionsDir, dirName);
     try { if (!statSync(extDir).isDirectory()) continue; } catch { continue; }
+
+    addIfExists(join(extDir, "installed.json"));
 
     const manifestPath = join(extDir, "extension.json");
     if (!existsSync(manifestPath)) continue;

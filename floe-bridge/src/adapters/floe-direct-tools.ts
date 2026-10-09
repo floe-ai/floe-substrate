@@ -19,7 +19,12 @@ import {
  * time, preserving Bridge authority and active-turn state across SDK calls.
  */
 
-function result(value: { content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; details: Record<string, unknown> }) {
+export type ToolExecution = {
+  content: ReadonlyArray<{ type: string; text?: string; data?: string; mimeType?: string }>;
+  details: Record<string, unknown>;
+};
+
+function result(value: ToolExecution) {
   return {
     textResultForLlm: value.content.filter(block => block.type === "text").map(block => block.text ?? "").join("\n"),
     binaryResultsForLlm: value.content
@@ -45,14 +50,36 @@ function directTool(
   description: string,
   schema: z.ZodTypeAny,
   handle: SubstrateSessionHandle,
-  execute: (params: Record<string, unknown>, handle: SubstrateSessionHandle) => Promise<{ content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; details: Record<string, unknown> }>,
+  execute: (params: Record<string, unknown>, handle: SubstrateSessionHandle) => Promise<ToolExecution>,
 ): HostTool {
-  return {
+  return recordedTool({
     name,
     description,
     parameters: zodToJsonSchema(schema, { $refStrategy: "none" }) as Record<string, unknown>,
-    // The handler is the Bridge's authority boundary: it resolves the active
-    // delivery and invokes the Bus with Bridge-only or delivery-scoped authority.
+    handle,
+    execute: args => execute(schema.parse(args) as Record<string, unknown>, handle),
+  });
+}
+
+/**
+ * A tool the Bridge runs itself, with its start and result recorded in the
+ * turn's tool activity. Permission is skipped: the handler is the authority
+ * boundary (Floe's own tools check the Bus; Extension tools were granted by
+ * the Actor's definition listing the Extension).
+ */
+export function recordedTool(options: {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  handle: Pick<SubstrateSessionHandle, "recordToolActivity">;
+  /** Receives the arguments exactly as the model sent them. */
+  execute: (args: unknown, callId: string) => Promise<ToolExecution>;
+}): HostTool {
+  const { name, description, parameters, handle, execute } = options;
+  return {
+    name,
+    description,
+    parameters,
     skipPermission: true,
     async handler(args: unknown, invocation) {
       const callId = invocation.toolCallId;
@@ -67,7 +94,7 @@ function directTool(
         started_at: startedAt,
       });
       try {
-        const execution = await execute(schema.parse(args) as Record<string, unknown>, handle);
+        const execution = await execute(args, callId);
         const toolResult = result(execution);
         handle.recordToolActivity({
           name,

@@ -73,7 +73,7 @@ function ownedFolder(home: string): string {
 /** The one production construction of the runtime a real turn runs on. */
 export function createCopilotRuntime(
   home: string,
-  options: Pick<CopilotRuntimeOptions, "permissionPolicy" | "expectedAccount">,
+  options: Pick<CopilotRuntimeOptions, "permissionPolicy" | "beforeToolUse" | "expectedAccount">,
 ): CopilotRuntime {
   const folder = ownedFolder(home);
   return new CopilotRuntime({

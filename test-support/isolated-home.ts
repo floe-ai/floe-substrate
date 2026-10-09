@@ -19,6 +19,11 @@
  *     credential in the OS keyring by it).
  * Device keys in the OS keyring are named per Floe home, so a test's
  * throwaway home can never name a real one.
+ *
+ * Every OS keyring entry a test's broker command may create (a host-control
+ * credential for a throwaway bus, a device key for a throwaway home) is
+ * recorded. A test must remove its own entries; one still left when the test
+ * file ends is removed and fails the file, so the keyring never fills.
  */
 import { afterAll, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -30,7 +35,13 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 const windows = process.platform === "win32";
 
-type Guard = { protectedRoots: string[]; realProfile: string; violations: string[]; isolatedHome: string | null };
+type Guard = {
+  protectedRoots: string[];
+  realProfile: string;
+  violations: string[];
+  isolatedHome: string | null;
+  keyring: { buses: Set<string>; homes: Set<string> };
+};
 const GUARD_KEY = Symbol.for("floe.test.guard");
 const slot = globalThis as unknown as Record<symbol, Guard | undefined>;
 
@@ -164,6 +175,7 @@ function guardChildProcesses(): void {
     const opts = (Array.isArray(args) ? options : args) as { env?: Record<string, string | undefined> } | undefined;
     for (const [name, value] of Object.entries(opts?.env ?? {})) checkBusAddress(`child_process.spawn(${command}) env ${name}`, value);
     const child = original.call(this, command, args, options);
+    const busBase = opts?.env?.FLOE_BUS_HTTP_BASE;
     const stdin = child.stdin;
     if (stdin) {
       // A broker command names the Floe home it acts for on stdin.
@@ -172,7 +184,10 @@ function guardChildProcesses(): void {
         stdin[method] = (chunk?: unknown, ...rest: unknown[]) => {
           try {
             checkContent(`child_process.spawn(${command}) stdin`, chunk);
-            if (typeof chunk === "string" || chunk instanceof Uint8Array) checkBusAddress(`child_process.spawn(${command}) stdin`, String(chunk));
+            if (typeof chunk === "string" || chunk instanceof Uint8Array) {
+              checkBusAddress(`child_process.spawn(${command}) stdin`, String(chunk));
+              if (/floe-authority-broker(\.exe)?$/i.test(command)) recordKeyringEntry(String(chunk), busBase);
+            }
           } catch (error) {
             (child as { kill?: () => void }).kill?.();
             throw error;
@@ -185,6 +200,43 @@ function guardChildProcesses(): void {
   };
   Object.defineProperty(guarded, "__floeGuarded", { value: true });
   childProcess.spawn = guarded;
+}
+
+/** Note the keyring entry a broker command may create or remove, so leftovers can be found. */
+function recordKeyringEntry(payload: string, busBase: string | undefined): void {
+  const guard = slot[GUARD_KEY];
+  if (!guard) return;
+  let request: { command?: unknown; home?: unknown; create?: unknown };
+  try {
+    request = JSON.parse(payload);
+  } catch {
+    return;
+  }
+  if (request.command === "identity_device_key" && request.create === true && typeof request.home === "string") {
+    guard.keyring.homes.add(request.home);
+  } else if (request.command === "forget_identity_device_key" && typeof request.home === "string") {
+    guard.keyring.homes.delete(request.home);
+  } else if (busBase && request.command === "forget_host_control_token") {
+    guard.keyring.buses.delete(busBase);
+  } else if (busBase) {
+    // Any command that opens the broker with a bus address may mint that install's credential.
+    guard.keyring.buses.add(busBase);
+  }
+}
+
+async function removeLeftoverKeyringEntries(guard: Guard): Promise<void> {
+  const buses = [...guard.keyring.buses];
+  const homes = [...guard.keyring.homes];
+  guard.keyring.buses.clear();
+  guard.keyring.homes.clear();
+  if (buses.length === 0 && homes.length === 0) return;
+  const { forgetHostControlToken, forgetIdentityDeviceKey } = await import("../floe-cli/src/operation-client.js");
+  const failures: string[] = [];
+  for (const bus of buses) await forgetHostControlToken(bus).catch((error) => failures.push(`${bus}: ${error}`));
+  for (const home of homes) await forgetIdentityDeviceKey(home).catch((error) => failures.push(`${home}: ${error}`));
+  const left = [...buses, ...homes].join("\n");
+  if (failures.length > 0) throw new Error(`Test keyring entries were left behind and could not be removed:\n${failures.join("\n")}`);
+  throw new Error(`Tests left OS keyring entries behind. Remove each one when its install or home is gone:\n${left}`);
 }
 
 function guardFetch(): void {
@@ -254,6 +306,7 @@ const guard = slot[GUARD_KEY] ?? (slot[GUARD_KEY] = {
   realProfile: normal(userInfo().homedir),
   violations: [],
   isolatedHome: null,
+  keyring: { buses: new Set(), homes: new Set() },
 });
 installGuard();
 isolateProfile(guard);
@@ -264,11 +317,16 @@ afterEach(() => {
   throw new Error(`The real Floe home was reached during this test:\n${found.join("\n")}`);
 });
 
-afterAll(() => {
-  if (!guard.isolatedHome) return;
+afterAll(async () => {
   try {
-    rmSync(guard.isolatedHome, { recursive: true, force: true, maxRetries: 3 });
-  } catch {
-    // A service a test left running may still hold a file; the OS temp cleaner owns it now.
+    await removeLeftoverKeyringEntries(guard);
+  } finally {
+    if (guard.isolatedHome) {
+      try {
+        rmSync(guard.isolatedHome, { recursive: true, force: true, maxRetries: 3 });
+      } catch {
+        // A service a test left running may still hold a file; the OS temp cleaner owns it now.
+      }
+    }
   }
 });

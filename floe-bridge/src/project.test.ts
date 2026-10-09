@@ -308,6 +308,25 @@ describe("hashFloeDir allow-list (Fix 1: extension data must not change config h
     expect(after).not.toBe(before);
   });
 
+  it("turning an Extension off or accepting a version DOES change the config hash", () => {
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test");
+
+    const extDir = join(workspace, ".floe", "extensions", "todo");
+    mkdirSync(extDir, { recursive: true });
+    const record = { schema: "floe.extension-install.v1", code: "../../../todo", enabled: true, accepted_version: null };
+    writeFileSync(join(extDir, "installed.json"), JSON.stringify(record), "utf8");
+
+    const before = loadProject(workspace).config_hash;
+    writeFileSync(join(extDir, "installed.json"), JSON.stringify({ ...record, enabled: false }), "utf8");
+    const afterOff = loadProject(workspace).config_hash;
+    writeFileSync(join(extDir, "installed.json"), JSON.stringify({ ...record, accepted_version: "sha256:abc" }), "utf8");
+    const afterAccept = loadProject(workspace).config_hash;
+
+    expect(afterOff).not.toBe(before);
+    expect(afterAccept).not.toBe(afterOff);
+  });
+
   it("writing non-config runtime files (extensions/README.md, state) does NOT change the config hash", () => {
     const workspace = makeTmp();
     ensureProjectTemplate(workspace, "Test");

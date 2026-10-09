@@ -47,7 +47,7 @@ const dependencySchema: JsonSchema = {
   required: ["dependency_id", "kind", "resource_id", "reason"],
   properties: {
     dependency_id: text,
-    kind: { enum: ["content", "secret_ref", "endpoint_attachment", "actor_runtime", "command_runtime", "connector_runtime", "extension_runtime"] },
+    kind: { enum: ["content", "secret_ref", "endpoint_attachment", "actor_runtime", "command_runtime", "connector_runtime"] },
     resource_id: text,
     reason: text,
   },

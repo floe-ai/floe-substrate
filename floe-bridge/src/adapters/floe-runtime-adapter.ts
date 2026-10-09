@@ -17,6 +17,8 @@ import { randomUUID } from "node:crypto";
 import { COPILOT_BUILTIN_TOOL_MANIFEST, copilotToolCatalogForModel } from "floe-runtime/adapters/copilot";
 import type {
   ActivityEvent,
+  CopilotBeforeToolUseCall,
+  CopilotBeforeToolUseResult,
   CopilotPermissionRequest,
   CopilotRuntime,
   CopilotRuntimeOptions,
@@ -38,6 +40,7 @@ import {
 } from "../runtime-core/index.js";
 import type { EmittedEventSummary, SubstrateTurnAnchor } from "../runtime-core/index.js";
 import { createDirectSubstrateTools } from "./floe-direct-tools.js";
+import { createExtensionHostTools } from "./extension-host-tools.js";
 import type { SubstrateSessionHandle } from "../runtime-core/substrate-tool-definitions.js";
 import { TurnFailedError } from "./turn-failed-error.js";
 import { turnUsage } from "./turn-usage.js";
@@ -45,7 +48,7 @@ import { createCopilotAccount, createCopilotRuntime } from "../engines/copilot.j
 import type { EngineAccount } from "../engines/engine-control.js";
 import { EngineToolGate } from "./engine-tool-gate.js";
 
-export type RuntimeFactory = (options: Pick<CopilotRuntimeOptions, "permissionPolicy" | "expectedAccount">) => CopilotRuntime;
+export type RuntimeFactory = (options: Pick<CopilotRuntimeOptions, "permissionPolicy" | "beforeToolUse" | "expectedAccount">) => CopilotRuntime;
 type EngineAccountRef = NonNullable<RuntimeContext["engine_account"]>;
 
 /** The pinned manifest's built-ins, in the model's catalog, that the Actor's granted operations may use. */
@@ -108,6 +111,8 @@ type FloeSession = {
   contextId: string;
   workspaceId: string;
   directTools: HostTool[];
+  /** Records tool activity into the session's live turn. */
+  toolHandle: SubstrateSessionHandle;
   /** The exact tool list the live SDK session was created with. */
   offeredTools: string | null;
   model?: string;
@@ -182,6 +187,28 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       deliveryId: turn.delivery_id,
       workspaceLocator: context.workspace_locator ?? null,
       request,
+    });
+  }
+
+  /**
+   * Runs after Floe's permission check has allowed a call. The Extensions the
+   * Actor lists can let it run, block it, or change its input.
+   */
+  private async checkToolUse(session: FloeSession, call: CopilotBeforeToolUseCall): Promise<CopilotBeforeToolUseResult | void> {
+    const turn = session.activeTurn;
+    const hooks = session.context?.hooks;
+    if (!turn || turn.finalized || turn.cancelled) return { decision: "block", reason: "No Floe turn is running." };
+    if (!hooks?.hasHandlers("BeforeToolUse")) return;
+    return hooks.decideToolUse({
+      endpoint_id: session.endpointId,
+      workspace_id: session.workspaceId,
+      delivery_id: turn.delivery_id,
+      trigger_event_id: turn.trigger_event_id,
+      tool_call_id: call.id,
+      tool_name: call.toolName,
+      source: call.source,
+      args: call.args,
+      cwd: call.cwd,
     });
   }
 
@@ -328,8 +355,10 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       continuity_token_upper_bound: continuity?.tokenUpperBound ?? 0,
     });
 
+    const extensionTools = createExtensionHostTools(context.extension_tools ?? [], session.toolHandle);
+    const sessionTools = [...session.directTools, ...extensionTools];
     const availableTools = [
-      ...session.directTools.map(tool => tool.name),
+      ...sessionTools.map(tool => tool.name),
       ...grantedBuiltinTools(context.engine_tool_operation_ids, model),
     ];
     try {
@@ -345,8 +374,12 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
         session.continuityTelemetryRecorded = true;
       }
       // An SDK session keeps the tool list it was created with; a changed grant
-      // set resumes it under the new list instead of reporting catalog drift.
-      const offeredTools = JSON.stringify(availableTools);
+      // set or Extension tool resumes it under the new list instead of
+      // reporting catalog drift.
+      const offeredTools = JSON.stringify({
+        availableTools,
+        extensionTools: extensionTools.map(tool => [tool.name, tool.description, tool.parameters]),
+      });
       if (session.sessionId && session.offeredTools !== null && session.offeredTools !== offeredTools) {
         await session.runtime.retire(session.sessionId);
       }
@@ -364,7 +397,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
         },
         {
           ...(model ? { model } : {}),
-          ...(session.directTools.length ? { tools: session.directTools } : {}),
+          ...(sessionTools.length ? { tools: sessionTools } : {}),
           availableTools,
           ...(systemMessage ? { systemMessage: { mode: "append" as const, content: systemMessage } } : {}),
         },
@@ -606,9 +639,10 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       offeredTools: null,
       context,
       account,
-    } as Omit<FloeSession, "runtime"> as FloeSession;
+    } as Omit<FloeSession, "runtime" | "toolHandle"> as FloeSession;
     const runtime = this.runtimeFactory({
       permissionPolicy: (request) => this.decideToolCall(session, request),
+      beforeToolUse: (call) => this.checkToolUse(session, call),
       expectedAccount: account,
     });
     session.runtime = runtime;
@@ -640,6 +674,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
           recordToolActivity(turn, entry);
         },
     };
+    session.toolHandle = toolHandle;
     session.directTools = createDirectSubstrateTools(toolHandle);
     // Normalized activity events feed the work log's tool activity. floe-runtime
     // pushes these (no polling); a started/completed pair shares one toolCallId.

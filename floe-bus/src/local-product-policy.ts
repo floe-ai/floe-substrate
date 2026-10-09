@@ -18,7 +18,6 @@ export const DEFAULT_ACTOR_OPERATIONS_V1: readonly string[] = Object.freeze([
   "artefact.create", "artefact.inspect", "artefact.search", "artefact.version.publish", "artefact.version.export",
   "connector.inspect", "context.archive", "context.communication.emit", "context.create", "context.get",
   "context.inspect", "context.list", "context.participant.remove", "context.participant.set_access", "context.restore",
-  "extension.inspect", "extension.list", "extension.package.get", "extension.schema.discover",
   "runtime-profile.create", "runtime-profile.draft.create", "runtime-profile.draft.replace", "runtime-profile.inspect",
   "runtime-profile.list", "runtime-profile.publish", "runtime-profile.reactivate", "runtime-profile.retire",
   "runtime-profile.revision.get", "runtime-profile.rollback",

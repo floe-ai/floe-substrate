@@ -180,6 +180,22 @@ describe("canonical Workspace configuration import", () => {
       .toThrow(/must stay within the Workspace/);
   });
 
+  it("imports the Actor's Extensions list sorted and unique, and refuses an invalid Extension name", () => {
+    const tooled = actor("floe", {
+      definition: { ...actor("floe").definition, extensions: ["todo", "send-to-slack", "todo"] },
+    });
+    const imported = importer().import(WORKSPACE_ID, inventory([tooled])).receipt.imported_actors[0]!;
+    expect(actorDefinitions.requireRevision(imported.actor_definition_revision_id).content.extensions)
+      .toEqual(["send-to-slack", "todo"]);
+
+    const bad = actor("floe", { definition: { ...actor("floe").definition, extensions: ["Todo"] } });
+    expect(() => importer().import(WORKSPACE_ID, inventory([bad]))).toThrow(/lowercase letters, digits and hyphens/);
+
+    const none = actor("floe", { definition: { ...actor("floe").definition, extensions: [] } });
+    const cleared = importer().import(WORKSPACE_ID, inventory([none])).receipt.imported_actors[0]!;
+    expect(actorDefinitions.requireRevision(cleared.actor_definition_revision_id).content).not.toHaveProperty("extensions");
+  });
+
   it("makes the Actor unrestricted when its source file no longer declares a scope", () => {
     const scoped = actor("floe", { definition: { ...actor("floe").definition, scope: { paths: ["./"] } } });
     const first = importer().import(WORKSPACE_ID, inventory([scoped])).receipt.imported_actors[0]!;

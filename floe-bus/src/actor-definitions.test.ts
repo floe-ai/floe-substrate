@@ -62,6 +62,21 @@ describe("Actor scope", () => {
   });
 });
 
+describe("Actor Extensions list", () => {
+  it("accepts unique Extension names and refuses names that cannot be an Extension folder", () => {
+    expect(() => validateActorDefinition({ ...definition("Tooled"), extensions: ["todo", "send-to-slack"] })).not.toThrow();
+    for (const extensions of [["Todo"], ["todo_list"], ["-todo"], [""], ["todo", "todo"], ["a".repeat(41)]]) {
+      expect(() => validateActorDefinition({ ...definition("Tooled"), extensions }), JSON.stringify(extensions))
+        .toThrow(ActorDefinitionValidationError);
+    }
+  });
+
+  it("changes the definition digest when the Extensions list changes", () => {
+    const plain = definition("Plain");
+    expect(actorDefinitionDigest({ ...plain, extensions: ["todo"] })).not.toBe(actorDefinitionDigest(plain));
+  });
+});
+
 describe("ActorDefinitionStore", () => {
   let db: DatabaseSync;
   let store: ActorDefinitionStore;

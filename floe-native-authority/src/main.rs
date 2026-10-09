@@ -6,7 +6,7 @@
 
 use floe_native_authority::{
     ConfirmHostOperationRequest, ConfirmWorkspaceOperationRequest, DiscoverOperationsRequest,
-    forget_identity_device_key, identity_device_key, InvokeOperationRequest,
+    forget_host_control_credential, forget_identity_device_key, identity_device_key, InvokeOperationRequest,
     NativeAuthorityBroker, ProvideBridgeServiceTokenRequest, RegisterWorkspaceRequest,
 };
 use serde::Deserialize;
@@ -21,6 +21,7 @@ const MAX_COMMAND_BYTES: u64 = 1024 * 1024;
 enum AuthorityCommand {
     ListLocalWorkspaces,
     ProvideHostControlToken,
+    ForgetHostControlToken,
     ProvideBridgeServiceToken(ProvideBridgeServiceTokenRequest),
     RegisterWorkspace(RegisterWorkspaceRequest),
     DiscoverOperations(DiscoverOperationsRequest),
@@ -73,9 +74,13 @@ async fn run() -> Result<Value, String> {
     let command = parse_command(&bytes)?;
     bytes.fill(0);
 
-    // The identity device key is a vault entry of its own; it needs no Bus and
-    // no host-control credential, so it is answered before either is opened.
+    // Vault-only commands need no Bus and no open host-control credential, so
+    // they are answered before either is opened.
     match &command {
+        AuthorityCommand::ForgetHostControlToken => {
+            let result = forget_host_control_credential()?;
+            return Ok(json!({ "ok": true, "result": result }));
+        }
         AuthorityCommand::IdentityDeviceKey(input) => {
             let result = identity_device_key(&input.home, input.create)?;
             return Ok(json!({ "ok": true, "result": result }));
@@ -105,7 +110,9 @@ async fn run() -> Result<Value, String> {
         AuthorityCommand::ConfirmAndInvokeWorkspaceOperation(input) => {
             broker.confirm_and_invoke_workspace_operation(input).await
         }
-        AuthorityCommand::IdentityDeviceKey(_) | AuthorityCommand::ForgetIdentityDeviceKey(_) => {
+        AuthorityCommand::ForgetHostControlToken
+        | AuthorityCommand::IdentityDeviceKey(_)
+        | AuthorityCommand::ForgetIdentityDeviceKey(_) => {
             unreachable!("answered before the broker is opened")
         }
     }?;
@@ -125,6 +132,7 @@ fn parse_command(bytes: &[u8]) -> Result<AuthorityCommand, String> {
     let allowed: &[&str] = match command {
         "list_local_workspaces" => &["command"],
         "provide_host_control_token" => &["command"],
+        "forget_host_control_token" => &["command"],
         "provide_bridge_service_token" => &["command", "bridge_id"],
         "register_workspace" => &["command", "locator", "init_authorized"],
         "discover_operations" => &["command", "boundary", "query", "category", "target"],
@@ -155,6 +163,8 @@ mod tests {
     fn accepts_only_typed_commands_and_refuses_raw_transport_or_credentials() {
         assert!(parse_command(br#"{"command":"list_local_workspaces"}"#).is_ok());
         assert!(parse_command(br#"{"command":"provide_host_control_token"}"#).is_ok());
+        assert!(parse_command(br#"{"command":"forget_host_control_token"}"#).is_ok());
+        assert!(parse_command(br#"{"command":"forget_host_control_token","bus":"x"}"#).is_err());
         assert!(parse_command(br#"{"command":"provide_bridge_service_token"}"#).is_ok());
         assert!(parse_command(
             br#"{"command":"provide_bridge_service_token","bridge_id":"bridge:local"}"#

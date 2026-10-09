@@ -11,7 +11,6 @@ import {
   ConnectorRevisionConflictError,
   ConnectorStore,
   ConnectorValidationError,
-  ExternalActionStateError,
   connectorBindingStateRevision,
   type ConnectorBindingContent,
   type ConnectorDefinitionContent,
@@ -31,18 +30,10 @@ const VERIFIED: ConnectorIngressVerification = {
   issues: [],
 };
 const EVIDENCE = { kind: "artefact_version", id: "artefact-version:evidence", revision: DIGEST_A } as const;
-const INVOCATION_PROVENANCE = {
-  cause_event_id: null,
-  delivery_ids: [] as string[],
-  execution_attempt_id: null,
-  node_execution_id: null,
-  scope_execution_id: null,
-} as const;
-
 function definition(label = "External work"): ConnectorDefinitionContent {
   return {
     label,
-    description: "Observe external work and publish approved results.",
+    description: "Observe external work.",
     implementation_ref: { kind: "extension_package_version", id: "extension:example", revision: "1.0.0" },
     configuration_schema_ref: "schema:connector-config@1",
     configuration_ui_schema_ref: "schema:connector-config-ui@1",
@@ -110,36 +101,6 @@ function definition(label = "External work"): ConnectorDefinitionContent {
         checkpoint_schema_ref: "schema:api-cursor@1",
       },
     ],
-    action_interfaces: [
-      {
-        interface_id: "publish",
-        title: "Publish result",
-        action_kind: "core:api-action",
-        input_schema_ref: "schema:publish-input@1",
-        result_schema_ref: "schema:publish-result@1",
-        effect: "irreversible",
-        idempotency: "required",
-        retry: "after_reconcile",
-        compensation_action_interface_id: null,
-        approval: { required: true, policy_ref: "policy:external-publish" },
-        credential_slot_ids: ["account"],
-        required_capability_ids: ["external.publish"],
-      },
-      {
-        interface_id: "sync-safe",
-        title: "Idempotent sync",
-        action_kind: "core:api-action",
-        input_schema_ref: "schema:sync-input@1",
-        result_schema_ref: "schema:sync-result@1",
-        effect: "reversible",
-        idempotency: "provider_guaranteed",
-        retry: "safe",
-        compensation_action_interface_id: null,
-        approval: { required: false, policy_ref: null },
-        credential_slot_ids: ["account"],
-        required_capability_ids: ["external.sync"],
-      },
-    ],
     health: {
       check_capability_id: "connector.health.inspect",
       evidence_schema_ref: "schema:connector-health@1",
@@ -153,7 +114,6 @@ function bindingContent(secretRef = "secretref:account:v1"): ConnectorBindingCon
     external_resource: { kind: "account", id: "account:example", display_name: "Example account" },
     configuration: { project: "project-one", filters: ["active"] },
     enabled_source_interface_ids: ["webhook", "folder", "schedule", "api-poll"],
-    enabled_action_interface_ids: ["publish", "sync-safe"],
     secret_bindings: [{ slot_id: "account", secret_ref_id: secretRef }],
     capability_grant_ids: ["capgrant:connector"],
   };
@@ -481,126 +441,5 @@ describe("ConnectorStore", () => {
     expect(store.currentHealth(seeded.binding.connector_binding_id, WORKSPACE_ONE)).toEqual(health);
     expect(() => store.currentHealth(seeded.binding.connector_binding_id, WORKSPACE_TWO))
       .toThrow(ConnectorOwnerMismatchError);
-  });
-
-  it("never retries an uncertain external effect until evidence reconciles it", () => {
-    const store = memoryStore();
-    const seeded = seed(store);
-    const requested = store.requestExternalAction({
-      connector_binding_id: seeded.binding.connector_binding_id,
-      connector_binding_revision_id: seeded.binding.current_revision_id,
-      owner: WORKSPACE_ONE,
-      action_interface_id: "publish",
-      idempotency_key: "publish:one",
-      input_digest: DIGEST_A,
-      input_refs: [{ kind: "artefact_version", id: "site:v1", revision: DIGEST_A }],
-      approval_receipt_ids: ["approval:publish:v1"],
-      requested_by_principal_id: PRINCIPAL,
-      invocation_provenance: INVOCATION_PROVENANCE,
-    });
-    expect(requested.receipt).toMatchObject({
-      status: "requested",
-      secret_ref_ids: ["secretref:account:v1"],
-      capability_grant_ids: ["capgrant:connector"],
-    });
-    const firstAttempt = store.beginExternalActionAttempt({
-      external_effect_receipt_id: requested.receipt.external_effect_receipt_id,
-      owner: WORKSPACE_ONE,
-      request_evidence_ref: EVIDENCE,
-    });
-    const uncertain = store.completeExternalActionAttempt({
-      external_action_attempt_id: firstAttempt.external_action_attempt_id,
-      owner: WORKSPACE_ONE,
-      outcome: "outcome_unknown",
-      provider_response_ref: EVIDENCE,
-      error_code: "connection_lost",
-      error_message: "The connection closed after the request left Floe.",
-    });
-    expect(uncertain.receipt.status).toBe("outcome_unknown");
-    expect(() => store.beginExternalActionAttempt({
-      external_effect_receipt_id: requested.receipt.external_effect_receipt_id,
-      owner: WORKSPACE_ONE,
-      request_evidence_ref: EVIDENCE,
-    })).toThrow(/reconcile the uncertain effect/);
-
-    const reconciled = store.reconcileExternalAction({
-      external_effect_receipt_id: requested.receipt.external_effect_receipt_id,
-      owner: WORKSPACE_ONE,
-      outcome: "failed",
-      evidence_ref: { kind: "external_observation", id: "provider:no-publication", revision: "1" },
-      reconciled_by_principal_id: "principal:connector-worker",
-    });
-    expect(reconciled.receipt.status).toBe("failed");
-    const secondAttempt = store.beginExternalActionAttempt({
-      external_effect_receipt_id: requested.receipt.external_effect_receipt_id,
-      owner: WORKSPACE_ONE,
-      request_evidence_ref: EVIDENCE,
-    });
-    expect(secondAttempt.attempt_number).toBe(2);
-    const succeeded = store.completeExternalActionAttempt({
-      external_action_attempt_id: secondAttempt.external_action_attempt_id,
-      owner: WORKSPACE_ONE,
-      outcome: "succeeded",
-      observed_result_ref: { kind: "external_revision", id: "published:one", revision: "42" },
-    });
-    expect(succeeded.receipt.status).toBe("succeeded");
-    expect(store.requestExternalAction({
-      connector_binding_id: seeded.binding.connector_binding_id,
-      connector_binding_revision_id: seeded.binding.current_revision_id,
-      owner: WORKSPACE_ONE,
-      action_interface_id: "publish",
-      idempotency_key: "publish:one",
-      input_digest: DIGEST_A,
-      input_refs: [{ kind: "artefact_version", id: "site:v1", revision: DIGEST_A }],
-      approval_receipt_ids: ["approval:publish:v1"],
-      requested_by_principal_id: PRINCIPAL,
-      invocation_provenance: INVOCATION_PROVENANCE,
-    })).toMatchObject({ replayed: true, receipt: { status: "succeeded", attempt_count: 2 } });
-    expect(store.listExternalActionAttempts(requested.receipt.external_effect_receipt_id, WORKSPACE_ONE)).toHaveLength(2);
-  });
-
-  it("allows declared safe retry after a proven failure but not cross-Workspace action access", () => {
-    const store = memoryStore();
-    const seeded = seed(store);
-    expect(() => store.requestExternalAction({
-      connector_binding_id: seeded.binding.connector_binding_id,
-      connector_binding_revision_id: seeded.binding.current_revision_id,
-      owner: WORKSPACE_ONE,
-      action_interface_id: "sync-safe",
-      idempotency_key: "sync:unexpected-approval",
-      input_digest: DIGEST_A,
-      approval_receipt_ids: ["approvalreceipt:unexpected"],
-      requested_by_principal_id: PRINCIPAL,
-      invocation_provenance: INVOCATION_PROVENANCE,
-    })).toThrow(ConnectorValidationError);
-    const requested = store.requestExternalAction({
-      connector_binding_id: seeded.binding.connector_binding_id,
-      connector_binding_revision_id: seeded.binding.current_revision_id,
-      owner: WORKSPACE_ONE,
-      action_interface_id: "sync-safe",
-      idempotency_key: "sync:one",
-      input_digest: DIGEST_A,
-      requested_by_principal_id: PRINCIPAL,
-      invocation_provenance: INVOCATION_PROVENANCE,
-    });
-    expect(() => store.requireExternalEffectReceiptForOwner(requested.receipt.external_effect_receipt_id, WORKSPACE_TWO))
-      .toThrow(ConnectorOwnerMismatchError);
-    const first = store.beginExternalActionAttempt({
-      external_effect_receipt_id: requested.receipt.external_effect_receipt_id,
-      owner: WORKSPACE_ONE,
-      request_evidence_ref: EVIDENCE,
-    });
-    store.completeExternalActionAttempt({
-      external_action_attempt_id: first.external_action_attempt_id,
-      owner: WORKSPACE_ONE,
-      outcome: "failed",
-      error_code: "provider_rejected",
-      error_message: "The provider proved that it made no change.",
-    });
-    expect(store.beginExternalActionAttempt({
-      external_effect_receipt_id: requested.receipt.external_effect_receipt_id,
-      owner: WORKSPACE_ONE,
-      request_evidence_ref: EVIDENCE,
-    }).attempt_number).toBe(2);
   });
 });

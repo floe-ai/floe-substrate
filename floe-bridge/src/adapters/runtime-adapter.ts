@@ -7,6 +7,7 @@ import type { BusClient, DeliveryBundle, RuntimeOperationAuthoritySession } from
 import type { AgentRuntimeConfig } from "../auth.js";
 import type { HookPayload, HookRegistry } from "../hooks.js";
 import type { EngineAccount } from "../engines/engine-control.js";
+import type { ExtensionToolBinding } from "../extensions/workspace-extensions.js";
 
 export type RuntimeContext = {
   bridge_id: string;
@@ -23,6 +24,8 @@ export type RuntimeContext = {
   engine_tool_operation_ids?: string[];
   /** The account the engine's readiness admitted this turn under; the turn must run as it. */
   engine_account?: { label: string; host?: string };
+  /** Tools of the running Extensions the Actor's pinned definition lists. */
+  extension_tools?: readonly ExtensionToolBinding[];
 };
 
 export type RuntimeCancellationResult =

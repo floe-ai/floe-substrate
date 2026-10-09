@@ -7,6 +7,7 @@ import { defaultConfig, type LocalConfig } from "./config.js";
 import { BridgeDaemon, chooseAdapter } from "./daemon.js";
 import { TurnFailedError } from "./adapters/turn-failed-error.js";
 import { HookRegistry, type HookPayload } from "./hooks.js";
+import { checkInstalledExtensions, INSTALL_RECORD_SCHEMA, MANIFEST_SCHEMA } from "./extensions/install-records.js";
 
 const bridgeServiceToken = `test-bridge-service-${"b".repeat(48)}`;
 const originalBridgeServiceToken = process.env.FLOE_BRIDGE_SERVICE_TOKEN;
@@ -734,6 +735,79 @@ describe("BridgeDaemon – TurnFailedError handling (FIX 1)", () => {
 // Canonical direct Context runtime pins
 // ---------------------------------------------------------------------------
 
+/** A direct Context Delivery carrying a Bus-issued processing contract that pins the Actor's runtime. */
+function pinnedDirectDelivery(extensions?: string[]): any {
+  return {
+    delivery_id: "delivery:pinned-direct",
+    stable_delivery_ids: ["stable-delivery:pinned-direct"],
+    endpoint_id: "actor:workspace:test:floe",
+    workspace_id: "workspace:test",
+    trigger_event_id: "event:pinned-direct",
+    delivered_at: new Date().toISOString(),
+    events: [],
+    actor_definition_revision_id: "actor-definition:pinned",
+    runtime_profile_revision_id: "runtime-profile-revision:pinned",
+    actor_runtime_binding_id: "runtime-binding:pinned",
+    processing_contract: {
+      contract_kind: "direct_context",
+      contract_version: 1,
+      processing_contract_id: "runtime-processing-contract:v1:delivery:pinned-direct",
+      workspace_id: "workspace:test",
+      delivery: {
+        delivery_id: "delivery:pinned-direct",
+        stable_delivery_ids: ["stable-delivery:pinned-direct"],
+        endpoint_id: "actor:workspace:test:floe",
+        context_id: "context:pinned-direct",
+      },
+      context: { context_id: "context:pinned-direct", inspect_operation_id: "context.inspect" },
+      actor: {
+        actor_id: "actor:workspace:test:floe",
+        definition: {
+          actor_definition_revision_id: "actor-definition:pinned",
+          actor_id: "actor:workspace:test:floe",
+          workspace_id: "workspace:test",
+          content: {
+            instructions: "Use the exact recorded runtime.",
+            capability_grant_ids: [],
+            ...(extensions ? { extensions } : {}),
+          },
+        },
+      },
+      runtime: {
+        binding: {
+          actor_runtime_binding_id: "runtime-binding:pinned",
+          actor_id: "actor:workspace:test:floe",
+          workspace_id: "workspace:test",
+          runtime_profile_revision_id: "runtime-profile-revision:pinned",
+          endpoint_id: "actor:workspace:test:floe",
+        },
+        profile: {
+          runtime_profile_revision_id: "runtime-profile-revision:pinned",
+          runtime_profile_id: "runtime-profile:floe",
+          content: {
+            adapter_id: "fake",
+            configuration: {
+              provider: "recorded-provider",
+              model: "recorded-model",
+              auth_profile: "recorded-profile",
+              thinking_level: "high",
+            },
+            secret_ref_ids: ["secret-ref:recorded-profile"],
+            resource_policy: {},
+          },
+        },
+      },
+      operation_authority: {
+        principal_id: "actor:workspace:test:floe",
+        capability_grant_ids: [],
+        authority_session_required: true,
+      },
+      events: [],
+      outputs: { publish_operation_id: null, ports: [] },
+    },
+  };
+}
+
 describe("BridgeDaemon – canonical direct Context runtime", () => {
   it.each([false, true])("uses the pinned runtime and its Workspace binding without an Actor file (local access: %s)", async (hasLocalBinding) => {
     const made = makeConfig("fake");
@@ -769,74 +843,7 @@ describe("BridgeDaemon – canonical direct Context runtime", () => {
         async resolveRuntimeBinding() { mutableResolutionCalls += 1; throw new Error("must not resolve"); },
       };
 
-      const delivery: any = {
-        delivery_id: "delivery:pinned-direct",
-        stable_delivery_ids: ["stable-delivery:pinned-direct"],
-        endpoint_id: "actor:workspace:test:floe",
-        workspace_id: "workspace:test",
-        trigger_event_id: "event:pinned-direct",
-        delivered_at: new Date().toISOString(),
-        events: [],
-        actor_definition_revision_id: "actor-definition:pinned",
-        runtime_profile_revision_id: "runtime-profile-revision:pinned",
-        actor_runtime_binding_id: "runtime-binding:pinned",
-        processing_contract: {
-          contract_kind: "direct_context",
-          contract_version: 1,
-          processing_contract_id: "runtime-processing-contract:v1:delivery:pinned-direct",
-          workspace_id: "workspace:test",
-          delivery: {
-            delivery_id: "delivery:pinned-direct",
-            stable_delivery_ids: ["stable-delivery:pinned-direct"],
-            endpoint_id: "actor:workspace:test:floe",
-            context_id: "context:pinned-direct",
-          },
-          context: { context_id: "context:pinned-direct", inspect_operation_id: "context.inspect" },
-          actor: {
-            actor_id: "actor:workspace:test:floe",
-            definition: {
-              actor_definition_revision_id: "actor-definition:pinned",
-              actor_id: "actor:workspace:test:floe",
-              workspace_id: "workspace:test",
-              content: {
-                instructions: "Use the exact recorded runtime.",
-                capability_grant_ids: [],
-              },
-            },
-          },
-          runtime: {
-            binding: {
-              actor_runtime_binding_id: "runtime-binding:pinned",
-              actor_id: "actor:workspace:test:floe",
-              workspace_id: "workspace:test",
-              runtime_profile_revision_id: "runtime-profile-revision:pinned",
-              endpoint_id: "actor:workspace:test:floe",
-            },
-            profile: {
-              runtime_profile_revision_id: "runtime-profile-revision:pinned",
-              runtime_profile_id: "runtime-profile:floe",
-              content: {
-                adapter_id: "fake",
-                configuration: {
-                  provider: "recorded-provider",
-                  model: "recorded-model",
-                  auth_profile: "recorded-profile",
-                  thinking_level: "high",
-                },
-                secret_ref_ids: ["secret-ref:recorded-profile"],
-                resource_policy: {},
-              },
-            },
-          },
-          operation_authority: {
-            principal_id: "actor:workspace:test:floe",
-            capability_grant_ids: [],
-            authority_session_required: true,
-          },
-          events: [],
-          outputs: { publish_operation_id: null, ports: [] },
-        },
-      };
+      const delivery: any = pinnedDirectDelivery();
       const processingContract = delivery.processing_contract;
       delete delivery.processing_contract;
 
@@ -870,11 +877,81 @@ describe("BridgeDaemon – canonical direct Context runtime", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Extension isolation: workspace package code never enters an Actor runtime
+// Extension tools reach only the Actors whose definition lists the Extension
 // ---------------------------------------------------------------------------
 
-describe("BridgeDaemon – Extension isolation", () => {
-  it("does not inject workspace Extension code into an Actor runtime", async () => {
+async function installAcceptedExtension(workspace: string, name: string, source: string): Promise<void> {
+  const dir = join(workspace, ".floe", "extensions", name);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "extension.json"), JSON.stringify({ schema: MANIFEST_SCHEMA, name, entry: "./index.mjs" }));
+  writeFileSync(join(dir, "index.mjs"), source);
+  const record = { schema: INSTALL_RECORD_SCHEMA, code: ".", enabled: true, accepted_version: null as string | null };
+  writeFileSync(join(dir, "installed.json"), JSON.stringify(record));
+  const [held] = await checkInstalledExtensions(join(workspace, ".floe"));
+  record.accepted_version = held?.state === "new_version" ? held.current_version : null;
+  writeFileSync(join(dir, "installed.json"), JSON.stringify(record));
+}
+
+describe("BridgeDaemon – Extension tools", () => {
+  it("gives a pinned Actor the tools and hooks of the running Extensions it lists, run in the Extension process", async () => {
+    const made = makeConfig("fake");
+    const daemon = new BridgeDaemon(made.configPath, made.config);
+    try {
+      const workspace = made.config.home;
+      await installAcceptedExtension(workspace, "echo", `
+        export default (ctx) => {
+          ctx.hooks.on("BeforeTurn", (payload) => ({ inject: { source: "echo", content: "for " + payload.endpoint_id } }));
+          ctx.hooks.on("BeforeToolUse", (call) => call.tool_name === "rm" ? { decision: "block", reason: "echo forbids rm" } : undefined);
+          return [{
+          name: "shout",
+          description: "Shout the text",
+          parameters: { type: "object", properties: { text: { type: "string" } } },
+          async execute(_callId, params) { return { content: [{ type: "text", text: String(params.text).toUpperCase() }] }; },
+          }];
+        };
+      `);
+      const statuses = await (daemon as any).extensions.reconcile("workspace:test", workspace);
+      expect(statuses).toEqual([expect.objectContaining({ name: "echo", status: "running", tools: ["echo_shout"], hooks: ["BeforeToolUse", "BeforeTurn"] })]);
+
+      const contexts: any[] = [];
+      (daemon as any).adapter = { name: "fake", async handleBundle(context: unknown) { contexts.push(context); } };
+      let contract: any;
+      (daemon as any).bus = {
+        async prepareRuntimeDelivery() {
+          return { delivery: { state: "claimed", execution_attempt_id: null }, processing_contract: contract };
+        },
+        async reportDeliveryStatus(_id: string, state: string) { return { state }; },
+        async reportTurnEnd() {},
+      };
+      for (const listed of [["echo"], undefined]) {
+        const delivery = pinnedDirectDelivery(listed);
+        contract = delivery.processing_contract;
+        delete delivery.processing_contract;
+        await (daemon as any).handleDelivery(delivery);
+      }
+
+      expect(contexts).toHaveLength(2);
+      expect(contexts[0].extension_tools.map((tool: any) => tool.name)).toEqual(["echo_shout"]);
+      expect(await contexts[0].extension_tools[0].call({ text: "hi" }, "call-1"))
+        .toEqual({ content: [{ type: "text", text: "HI" }] });
+      expect(contexts[1].extension_tools).toEqual([]);
+
+      const beforeTurn = { endpoint_id: "actor:workspace:test:floe", workspace_id: "workspace:test", delivery_id: "d", trigger_event_id: "e" };
+      expect(await contexts[0].hooks.fire("BeforeTurn", beforeTurn))
+        .toEqual([{ inject: { source: "echo", content: "for actor:workspace:test:floe" } }]);
+      expect(contexts[1].hooks.hasHandlers("BeforeTurn")).toBe(false);
+
+      const toolCall = (tool_name: string) => ({ ...beforeTurn, tool_call_id: "t1", tool_name, source: "builtin", args: {}, cwd: null });
+      expect(await contexts[0].hooks.decideToolUse(toolCall("rm"))).toEqual({ decision: "block", reason: "echo forbids rm" });
+      expect(await contexts[0].hooks.decideToolUse(toolCall("view"))).toEqual({ decision: "allow" });
+      expect(contexts[1].hooks.hasHandlers("BeforeToolUse")).toBe(false);
+    } finally {
+      (daemon as any).extensions.dispose();
+      made.cleanup();
+    }
+  });
+
+  it("gives no Extension tools to a Delivery without a pinned Actor definition", async () => {
     const made = makeConfig("fake");
 
     try {
@@ -890,8 +967,7 @@ describe("BridgeDaemon – Extension isolation", () => {
         }
       };
 
-      // Register an ordinary Actor. Extension capabilities are reached only
-      // through canonical operations and never arrive as imported tool code.
+      // A Delivery from before runtime pins has no Actor definition to list Extensions.
       (daemon as any).endpointRuntime.set("actor:workspace:test:floe", {
         config: { auth_profile: "test-profile", provider: "anthropic", model: "claude-haiku-4-5" },
         instructions: "",
@@ -947,7 +1023,7 @@ describe("BridgeDaemon – Extension isolation", () => {
       await (daemon as any).handleDelivery(delivery);
 
       expect(capturedBundles).toHaveLength(1);
-      expect(capturedBundles[0]).not.toHaveProperty("extensions");
+      expect(capturedBundles[0].extension_tools).toEqual([]);
     } finally {
       made.cleanup();
     }

@@ -12,6 +12,7 @@ import {
   ActorDefinitionStore,
   ActorDefinitionValidationError,
   ActorNotFoundError,
+  EXTENSION_NAME_PATTERN,
   workspaceActorId,
   workspaceActorName,
   type ActorDefinitionContent,
@@ -148,6 +149,12 @@ export const ACTOR_DEFINITION_CONTENT_SCHEMA: JsonSchema = {
       required: ["paths"],
       description: "Optional limit, chosen by a person: Workspace-relative folders that engine file tools must stay within. Omit for no folder limit. Use '.' for the whole Workspace. An Actor with a folder limit cannot use shell, because shell calls do not report which files they touch.",
       properties: { paths: { type: "array", items: nonEmptyString, minItems: 1, uniqueItems: true } },
+    },
+    extensions: {
+      type: "array",
+      uniqueItems: true,
+      items: { type: "string", pattern: EXTENSION_NAME_PATTERN },
+      description: "Optional: names of this Workspace's Extensions whose tools this Actor uses. Omit or leave empty for none.",
     },
   },
 };

@@ -358,6 +358,12 @@ export async function fetchHostControlToken(busHttpBase: string): Promise<string
   return result.token;
 }
 
+/** Remove the host-control credential of the install at `busHttpBase`, once that install is gone for good. */
+export async function forgetHostControlToken(busHttpBase: string): Promise<boolean> {
+  const result = await runNativeAuthorityCommand({ command: "forget_host_control_token" }, busHttpBase);
+  return isRecord(result) && result.removed === true;
+}
+
 /**
  * The vault key that seals a device-protected identity, scoped to one Floe
  * home. Reading never mints one; `create` does, once. Only the identity agent

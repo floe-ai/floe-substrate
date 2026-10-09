@@ -3,8 +3,8 @@
 **A Command is a deterministic executable operation with declared inputs, outputs, side effects, authority, timeout, idempotency, and implementation.**
 
 An Actor can interpret, choose, converse, and delegate. A Command executes one
-defined operation. Deterministic does not mean effect-free; declared effects
-and ExternalEffectReceipts still govern safe retry.
+defined operation. Deterministic does not mean effect-free; a Command that
+changes an outside system decides for itself how to retry safely.
 
 ## Placement and execution
 

@@ -19,6 +19,7 @@ import { startAll } from "../../floe-cli/src/startup.js";
 import { SERVICE_NAMES, stopService } from "../../floe-cli/src/process-manager.js";
 import {
   fetchHostControlToken,
+  forgetHostControlToken,
   registerLocalWorkspaceViaBroker
 } from "../../floe-cli/src/operation-client.js";
 import {
@@ -148,6 +149,10 @@ export class SliceHarness {
   async stop(): Promise<void> {
     this.eventSocket?.close();
     if (this.configPath && this.cliConfig) {
+      // This install is gone for good, so its keyring credential goes too. It is
+      // removed while the Bus still holds its port, so a later harness that is
+      // given the same port can never have its credential removed under it.
+      await forgetHostControlToken(this.busUrl);
       // Every service startAll may have started, the identity agent included.
       for (const service of [...SERVICE_NAMES].reverse()) stopService(this.configPath, this.cliConfig, service);
     }

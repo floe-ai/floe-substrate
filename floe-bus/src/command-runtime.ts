@@ -2,13 +2,6 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
 import type { CommandDefinitionRevision, CommandRecord } from "./command-definitions.js";
-import type { ExtensionEntryPointExecution } from "./extension-operations.js";
-import type {
-  ExtensionInstallation,
-  ExtensionPackageVersion,
-  ExtensionStore,
-} from "./extensions.js";
-import type { JsonValue } from "./isolated-extension-runtime.js";
 import type { ScopeNodePlacement, ScopePort } from "./scope-compositions.js";
 import type {
   ExecutionAttemptRecord,
@@ -94,23 +87,14 @@ export type CommandHostResult = Readonly<{
   outputs: Readonly<Record<string, readonly CommandOutputValue[]>>;
   resource_use?: Readonly<Record<string, number>>;
   evidence_refs?: readonly Readonly<{ kind: string; id: string; revision?: string | null }>[];
-  /** Exact canonical ExternalEffectReceipt refs returned by brokered operations. */
-  external_effect_receipt_ids?: readonly string[];
 }>;
 
-export type ResolvedCommandImplementation =
-  | Readonly<{
-      kind: "core_command_implementation";
-      implementation_id: string;
-      implementation_revision: string;
-      entry_point: string;
-    }>
-  | Readonly<{
-      kind: "extension_package_version";
-      installation: ExtensionInstallation;
-      package_version: ExtensionPackageVersion;
-      entry_point_id: string;
-    }>;
+export type ResolvedCommandImplementation = Readonly<{
+  kind: "core_command_implementation";
+  implementation_id: string;
+  implementation_revision: string;
+  entry_point: string;
+}>;
 
 export type CommandHostInvocation = Readonly<{
   definition: CommandDefinitionRevision;
@@ -301,110 +285,45 @@ export class CommandProcessingContractStore {
 
 export function resolveCommandImplementation(
   definition: CommandDefinitionRevision,
-  workspaceId: string,
-  extensions: ExtensionStore,
 ): ResolvedCommandImplementation {
   const ref = definition.content.implementation_ref;
   if (!ref.revision) {
     throw new CommandRuntimeContractError("the Command implementation reference is not exact");
   }
-  if (ref.kind === "core_command_implementation") {
-    if (!coreCommandImplementationAvailable({
-      implementation_id: ref.id,
-      implementation_revision: ref.revision,
-      entry_point: definition.content.entry_point,
-    })) {
-      throw new CommandRuntimeContractError(
-        `core Command implementation '${ref.id}@${ref.revision}' is not installed`,
-      );
-    }
-    return {
-      kind: "core_command_implementation",
-      implementation_id: ref.id,
-      implementation_revision: ref.revision,
-      entry_point: definition.content.entry_point,
-    };
-  }
-  if (ref.kind !== "extension_package_version") {
+  if (ref.kind !== "core_command_implementation") {
     throw new CommandRuntimeContractError(`unsupported Command implementation kind '${ref.kind}'`);
   }
-  const packageVersion = extensions.getPackageVersion(ref.id);
-  if (!packageVersion || packageVersion.workspace_id !== workspaceId
-    || (ref.revision !== packageVersion.content_digest && ref.revision !== packageVersion.record_digest)) {
-    throw new CommandRuntimeContractError(`Extension package '${ref.id}@${ref.revision}' is unavailable in this Workspace`);
-  }
-  const entryPoint = packageVersion.definition.entry_points.find((entry) =>
-    entry.entry_point_id === definition.content.entry_point && entry.kind === "command"
-  );
-  if (!entryPoint) {
+  if (!coreCommandImplementationAvailable({
+    implementation_id: ref.id,
+    implementation_revision: ref.revision,
+    entry_point: definition.content.entry_point,
+  })) {
     throw new CommandRuntimeContractError(
-      `Extension package '${ref.id}' has no Command entry point '${definition.content.entry_point}'`,
+      `core Command implementation '${ref.id}@${ref.revision}' is not installed`,
     );
   }
-  const installation = extensions.getInstallationForExtension(packageVersion.extension_id);
-  const active = installation?.lifecycle === "enabled"
-    || (installation?.lifecycle === "rolled_back" && installation.deactivation_receipt_ref === null);
-  if (!installation || installation.workspace_id !== workspaceId || !active
-    || installation.installed_package_version_id !== packageVersion.extension_package_version_id
-    || !installation.isolation_host_id) {
-    throw new CommandRuntimeContractError(`Extension package '${ref.id}' is not active in this Workspace`);
-  }
   return {
-    kind: "extension_package_version",
-    installation,
-    package_version: packageVersion,
-    entry_point_id: entryPoint.entry_point_id,
+    kind: "core_command_implementation",
+    implementation_id: ref.id,
+    implementation_revision: ref.revision,
+    entry_point: definition.content.entry_point,
   };
 }
 
-/** Routes exact core and Extension implementations through isolated hosts. */
+/** Routes exact Command implementations to the host that runs them. */
 export class CanonicalCommandRuntimeHost implements CommandRuntimeHost {
-  constructor(
-    private readonly core: CommandRuntimeHost,
-    private readonly extensions: ExtensionStore,
-    private readonly extensionExecution: ExtensionEntryPointExecution,
-  ) {}
+  constructor(private readonly core: CommandRuntimeHost) {}
 
   supports(input: CommandHostInvocation): boolean {
-    return input.implementation.kind === "core_command_implementation"
-      ? this.core.supports(input)
-      : true;
+    return this.core.supports(input);
   }
 
-  async invoke(input: CommandHostInvocation): Promise<CommandHostResult> {
-    if (input.implementation.kind === "core_command_implementation") {
-      return this.core.invoke(input);
-    }
-    const exact = input.implementation;
-    this.extensions.pinPackageForExecution({
-      workspace_id: input.contract.workspace_id,
-      execution_attempt_id: input.contract.execution_attempt.attempt_id,
-      extension_installation_id: exact.installation.extension_installation_id,
-      extension_package_version_id: exact.package_version.extension_package_version_id,
-      invocation_id: input.contract.processing_contract_id,
-    });
-    const result = await this.extensionExecution.invoke({
-      extension_installation_id: exact.installation.extension_installation_id,
-      extension_package_version_id: exact.package_version.extension_package_version_id,
-      entry_point_id: exact.entry_point_id,
-      request: JSON.parse(JSON.stringify({ contract: input.contract })) as JsonValue,
-      context: {
-        workspace_id: input.contract.workspace_id,
-        authorized_principal_id: input.contract.worker.worker_principal_id,
-        operation_invocation_id: input.contract.processing_contract_id,
-        extension_id: exact.package_version.extension_id,
-        extension_package_version_id: exact.package_version.extension_package_version_id,
-        entry_point_id: exact.entry_point_id,
-        execution_attempt_id: input.contract.execution_attempt.attempt_id,
-        capability_grant_ids: input.contract.operation_authority.capability_grant_ids,
-      },
-    });
-    return result as unknown as CommandHostResult;
+  invoke(input: CommandHostInvocation): Promise<CommandHostResult> {
+    return this.core.invoke(input);
   }
 
   cancel(attemptId: string): boolean {
-    return this.core.cancel(attemptId)
-      || this.extensionExecution.cancelExecutionAttempt?.(attemptId) === true;
+    return this.core.cancel(attemptId);
   }
 
   terminateAll(): void {

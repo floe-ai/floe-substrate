@@ -803,6 +803,19 @@ fn mint_or_migrate_host_credential(entry: &keyring::Entry) -> Result<String, Str
     Ok(token)
 }
 
+/// Remove this install's host-control credential from the OS vault. Used when
+/// an install is gone for good, such as a throwaway test Floe; the Bus it
+/// guarded can no longer be booted as its trusted owner afterwards.
+pub fn forget_host_control_credential() -> Result<Value, String> {
+    let entry = keyring::Entry::new(VAULT_SERVICE, &install_host_control_account())
+        .map_err(|_| secure_storage_message())?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(json!({ "removed": true })),
+        Err(keyring::Error::NoEntry) => Ok(json!({ "removed": false })),
+        Err(_) => Err(secure_storage_message()),
+    }
+}
+
 /// The vault account holding the device-protection wrapping key for the
 /// identity stored in one Floe home. It is keyed to the home's location, so a
 /// copied Floe home (a backup, a synced folder, another machine or OS user)

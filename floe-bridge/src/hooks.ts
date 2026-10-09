@@ -67,8 +67,12 @@ export type HookPayloadByName = {
     emitted_events: Array<Record<string, unknown>>;
   };
   BeforeToolUse: EndpointDeliveryPayload & {
-    toolCallId: string;
-    toolName: string;
+    /** The runtime's id for this call; the same id Floe's permission check saw. */
+    tool_call_id: string;
+    tool_name: string;
+    source: "builtin" | "custom";
+    args: unknown;
+    cwd: string | null;
   };
   AfterToolUse: EndpointDeliveryPayload & {
     toolCallId: string;
@@ -146,8 +150,15 @@ export type HookResult = {
   inject?: Record<string, unknown>;
 };
 
-// Handler can return void (fire-and-forget) or an object with inject data
-export type HookHandler<Name extends HookName = HookName> = (payload: HookPayload<Name>) => void | HookResult | Promise<HookResult | void>;
+/** A BeforeToolUse answer. Only handlers of the Extensions an Actor lists can give one. */
+export type ToolUseDecision =
+  | { decision: "allow" }
+  | { decision: "block"; reason: string }
+  | { decision: "change"; args: unknown };
+
+// Handler can return void (fire-and-forget), an object with inject data, a tool decision, or several (one per Extension handler)
+type HookReturn = void | HookResult | ToolUseDecision | readonly (HookResult | ToolUseDecision)[];
+export type HookHandler<Name extends HookName = HookName> = (payload: HookPayload<Name>) => HookReturn | Promise<HookReturn>;
 
 export class HookRegistry {
   private handlers = new Map<HookName, Array<{ extensionName: string; handler: HookHandler<any> }>>();
@@ -158,6 +169,13 @@ export class HookRegistry {
       this.handlers.set(hook, []);
     }
     this.handlers.get(hook)!.push({ extensionName, handler });
+  }
+
+  /** A new registry holding the same handlers; adding to it leaves this one unchanged. */
+  copy(): HookRegistry {
+    const copy = new HookRegistry();
+    for (const [hook, handlers] of this.handlers) copy.handlers.set(hook, [...handlers]);
+    return copy;
   }
 
   /** Remove all handlers registered by an extension. */
@@ -176,15 +194,43 @@ export class HookRegistry {
     const results: HookResult[] = [];
     for (const { extensionName, handler } of handlers) {
       try {
-        const result = await handler(payload);
-        if (result && typeof result === "object" && "inject" in result) {
-          results.push(result);
+        const returned = await handler(payload);
+        for (const result of Array.isArray(returned) ? returned : [returned]) {
+          if (result && typeof result === "object" && "inject" in result) results.push(result);
         }
       } catch (error) {
         console.error(`[hooks] ${hook} handler from extension '${extensionName}' failed`, error);
       }
     }
     return results;
+  }
+
+  /**
+   * Asks every BeforeToolUse handler, in order, about one tool call. Each sees
+   * the input as changed by the one before. The first block wins, and a
+   * handler that fails blocks the call.
+   */
+  async decideToolUse(payload: HookPayload<"BeforeToolUse">): Promise<ToolUseDecision> {
+    let current = payload;
+    let changed = false;
+    for (const { extensionName, handler } of this.handlers.get("BeforeToolUse") ?? []) {
+      let returned: HookReturn;
+      try {
+        returned = await handler(current);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return { decision: "block", reason: `${extensionName}'s BeforeToolUse check failed: ${detail}` };
+      }
+      for (const result of Array.isArray(returned) ? returned : [returned]) {
+        if (!result || typeof result !== "object" || !("decision" in result)) continue;
+        if (result.decision === "block") return result;
+        if (result.decision === "change") {
+          current = { ...current, args: result.args };
+          changed = true;
+        }
+      }
+    }
+    return changed ? { decision: "change", args: current.args } : { decision: "allow" };
   }
 
   /** Check if any handlers are registered for a hook. */
