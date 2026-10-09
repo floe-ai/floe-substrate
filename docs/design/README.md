@@ -76,7 +76,7 @@ event/        event, emit, cursor,
               delivery/ (delivery, endpoint, turn/ (turn, input))
 scope/        scope, revision, placement, port, edge, activation,
               execution/ (scope-execution, node-execution, attempt)
-command/      command, external-effect
+command/      command
 artefact/     artefact, version, content-ref
 capability/   capability, grant, secret, receipt, audit,
               policy/ (policy, budget, approval)
@@ -90,8 +90,8 @@ The primitives and the test for adding one are in
 Use **Workspace**, **Scope**, **Context**, **Actor**, **Event**, **Command** and
 **Artefact** for the building blocks. Use **ScopeCompositionRevision**,
 **NodePlacement**, **Port** and **Edge** for composition records, and
-**ScopeExecution**, **NodeExecution**, **ExecutionAttempt**, **Delivery** and
-**ExternalEffectReceipt** for execution records. **Thread** is legacy UI wording
+**ScopeExecution**, **NodeExecution**, **ExecutionAttempt** and **Delivery** for
+execution records. **Thread** is legacy UI wording
 only; new contracts use **Context**.
 
 Each term is defined once, in its own document. Never use a synonym for a

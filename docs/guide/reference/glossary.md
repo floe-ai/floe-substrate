@@ -129,12 +129,6 @@ schemas, templates, Actor definitions, previews, or bounded product surfaces
 under declared permissions, isolation, approval, and rollback. See
 [[Extension]].
 
-## ExternalEffectReceipt
-
-The durable record of an attempted action outside Floe, including exact input,
-target, idempotency identity, provider receipt, and known, failed, or uncertain
-outcome.
-
 ## Hook
 
 An extension-supplied handler at a runtime lifecycle point. A Hook does not
