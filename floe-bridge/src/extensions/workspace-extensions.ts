@@ -2,10 +2,11 @@
  * Keeps each Workspace's running Extensions in step with its install records,
  * and hands an Actor the tools of the Extensions its definition lists.
  */
-import { join } from "node:path";
+import { join, relative, isAbsolute } from "node:path";
 
 import { ExtensionHost, type ExtensionHostOptions } from "./extension-host.js";
 import type { ExtensionLoadResult, ExtensionToolResult } from "./extension-protocol.js";
+import { watchTrees, type WatchedTree } from "./extension-watch.js";
 import { checkInstalledExtensions, type ExtensionCheck, type ExtensionVersionSource } from "./install-records.js";
 
 /** What the Workspace's attachment report shows for one installed Extension. */
@@ -30,16 +31,28 @@ export type ExtensionToolBinding = Readonly<{
   call(params: Record<string, unknown>, callId: string): Promise<ExtensionToolResult>;
 }>;
 
-type WorkspaceState = { checks: readonly ExtensionCheck[]; loaded: Map<string, ExtensionLoadResult> };
+type WorkspaceState = {
+  checks: readonly ExtensionCheck[];
+  loaded: Map<string, ExtensionLoadResult>;
+  stopWatching: () => void;
+};
 
 export type WorkspaceExtensionsOptions = Pick<ExtensionHostOptions, "log" | "processPath" | "restartDelaysMs"> & {
-  /** Pushed when statuses change without a reconcile, such as after the Extension process restarts. */
+  /**
+   * Pushed when statuses change without the caller asking: an install record or
+   * Extension code changed on disk, or the Extension process restarted.
+   */
   onStatusChanged?: (workspaceId: string, statuses: readonly ExtensionStatus[]) => void;
+  /** Quiet period after the last file change before the Workspace is checked again. */
+  watchDebounceMs?: number;
 };
 
 export class WorkspaceExtensions {
   private readonly host: ExtensionHost;
   private readonly workspaces = new Map<string, WorkspaceState>();
+  /** Workspaces that are attached; a reconcile that finishes after stop() is discarded. */
+  private readonly active = new Set<string>();
+  private readonly queues = new Map<string, Promise<unknown>>();
   private readonly options: WorkspaceExtensionsOptions;
 
   constructor(options: WorkspaceExtensionsOptions = {}) {
@@ -57,8 +70,24 @@ export class WorkspaceExtensions {
     });
   }
 
-  /** Reads the Workspace's install records, loads the accepted Extensions and returns every status. */
-  async reconcile(workspaceId: string, workspacePath: string): Promise<readonly ExtensionStatus[]> {
+  /**
+   * Reads the Workspace's install records, loads the accepted Extensions, watches
+   * their records and code for changes, and returns every status.
+   */
+  reconcile(workspaceId: string, workspacePath: string): Promise<readonly ExtensionStatus[]> {
+    this.active.add(workspaceId);
+    const run = (this.queues.get(workspaceId) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => this.reconcileNow(workspaceId, workspacePath));
+    this.queues.set(workspaceId, run);
+    void run.finally(() => {
+      if (this.queues.get(workspaceId) === run) this.queues.delete(workspaceId);
+    }).catch(() => undefined);
+    return run;
+  }
+
+  private async reconcileNow(workspaceId: string, workspacePath: string): Promise<readonly ExtensionStatus[]> {
+    if (!this.active.has(workspaceId)) return [];
     const checks = await checkInstalledExtensions(join(workspacePath, ".floe"));
     const ready = checks.flatMap(check => (check.state === "ready" ? [check] : []));
     let results: readonly ExtensionLoadResult[];
@@ -72,13 +101,39 @@ export class WorkspaceExtensions {
       const message = error instanceof Error ? error.message : String(error);
       results = ready.map(check => ({ name: check.name, version: check.version, ok: false as const, error: message }));
     }
-    const state = { checks, loaded: new Map(results.map(result => [result.name, result])) };
+    if (!this.active.has(workspaceId)) {
+      this.host.unload(workspaceId);
+      return [];
+    }
+    this.workspaces.get(workspaceId)?.stopWatching();
+    const state: WorkspaceState = {
+      checks,
+      loaded: new Map(results.map(result => [result.name, result])),
+      stopWatching: watchTrees(
+        watchedTrees(workspacePath, checks),
+        () => this.recheck(workspaceId, workspacePath),
+        this.options.watchDebounceMs,
+      ),
+    };
     this.workspaces.set(workspaceId, state);
     return statuses(state);
   }
 
+  private recheck(workspaceId: string, workspacePath: string): void {
+    this.reconcile(workspaceId, workspacePath).then(
+      result => {
+        if (this.active.has(workspaceId)) this.options.onStatusChanged?.(workspaceId, result);
+      },
+      error => this.options.log?.(`Extensions in Workspace ${workspaceId} could not be checked again: ${String(error)}`),
+    );
+  }
+
   stop(workspaceId: string): void {
-    if (!this.workspaces.delete(workspaceId)) return;
+    this.active.delete(workspaceId);
+    const state = this.workspaces.get(workspaceId);
+    if (!state) return;
+    state.stopWatching();
+    this.workspaces.delete(workspaceId);
     this.host.unload(workspaceId);
   }
 
@@ -100,9 +155,27 @@ export class WorkspaceExtensions {
   }
 
   dispose(): void {
+    this.active.clear();
+    for (const state of this.workspaces.values()) state.stopWatching();
     this.workspaces.clear();
     this.host.dispose();
   }
+}
+
+/** The install records folder, plus each Extension's code folder that lives outside it. */
+function watchedTrees(workspacePath: string, checks: readonly ExtensionCheck[]): WatchedTree[] {
+  const floeDir = join(workspacePath, ".floe");
+  const recordsDir = join(floeDir, "extensions");
+  const trees: WatchedTree[] = [{ dir: floeDir, matters: path => path === "extensions" || path.startsWith("extensions/") }];
+  const codeDirs = new Set(
+    checks.flatMap(check => (check.state === "ready" || check.state === "new_version" ? [check.code_dir] : [])),
+  );
+  for (const dir of codeDirs) {
+    const fromRecords = relative(recordsDir, dir);
+    if (fromRecords === "" || (!fromRecords.startsWith("..") && !isAbsolute(fromRecords))) continue;
+    trees.push({ dir });
+  }
+  return trees;
 }
 
 function statuses(state: WorkspaceState): ExtensionStatus[] {

@@ -60,6 +60,7 @@ export type ExtensionCheck =
     accepted_version: string | null;
     current_version: string;
     source: ExtensionVersionSource;
+    code_dir: string;
   }>
   | Readonly<{ name: string; state: "failed"; message: string }>;
 
@@ -105,7 +106,7 @@ export async function checkInstalledExtension(recordDir: string, name: string): 
 
     const { version, source } = await currentVersion(codeDir, entryPath, join(recordDir, INSTALL_RECORD_FILE));
     if (version !== record.accepted_version) {
-      return { name, state: "new_version", accepted_version: record.accepted_version, current_version: version, source };
+      return { name, state: "new_version", accepted_version: record.accepted_version, current_version: version, source, code_dir: codeDir };
     }
     return {
       name,
