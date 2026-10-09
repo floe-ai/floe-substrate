@@ -16,7 +16,7 @@ unresolved SecretRef metadata. Missing credentials stay unresolved.
 Model credentials are not Floe secrets; they belong to the vendor
 ([Engine](../host/engine.md)).
 
-Decision: [ADR-0012](../../adr/0012-portable-workspace-authority-and-secret-brokering.md).
+Origin: agent ADR-0012 (4 Sep).
 
 ## Legacy
 

@@ -12,7 +12,7 @@ Floe has one runtime, floe-runtime, built on the GitHub Copilot SDK.
 
 _Resolution: settled_
 _Built: yes_
-_Authority: operator-confirmed ([ADR-0013](../../adr/0013-model-authentication-belongs-to-the-vendor-cli.md))_
+_Authority: operator-confirmed (ADR-0013, 14 Sep)_
 _Authored by: unknown_
 
 The vendor's own sign-in writes the credential to the vendor's store. Floe never

@@ -14,4 +14,4 @@ Context membership, subscription and parentage, Event type matches, prompts,
 observed history, direct Actor requests and Artefact lineage never imply an
 Edge.
 
-Decision: [ADR-0010](../../adr/0010-canonical-scope-composition-execution-and-artefacts.md).
+Origin: agent ADR-0010 (4 Sep).

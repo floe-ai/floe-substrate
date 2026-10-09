@@ -20,8 +20,23 @@ Avoid: graph as a separate product primitive, canvas, universal fallback bucket.
 Do not introduce `Work`, `Job`, `WorkItem`, `NodeRun`, `HumanGate`, `Split`,
 `Gather` or user-facing `Graph` as new primitives.
 
-Decisions: [ADR-0004](../../adr/0004-scope-as-substrate-organising-boundary.md),
-[ADR-0010](../../adr/0010-canonical-scope-composition-execution-and-artefacts.md).
+Origin: agent ADR-0010 (4 Sep).
+
+## What a Scope is not
+
+_Resolution: settled_
+_Built: yes_
+_Authority: operator-confirmed (ADR-0004, May; ADR-0008, Aug; 9 Oct ruling: decisions from August and earlier stand)_
+_Authored by: operator_
+
+- There is no fallback Scope. Work without a Scope stays in the Workspace.
+  Workspace Home is a view over the Workspace, not a Scope. The id `default`
+  cannot be used for a Scope.
+- A webhook or other [Event source](../event/source/source.md) gets its Scope
+  from its own configuration, never from the incoming payload.
+- A graph is not a primitive. It is the picture of a Scope's nodes and how they
+  connect. What will happen is the nodes; what has happened is in the records.
+- The old `trigger` node is retired: it is an Event node with a source.
 
 ## Legacy
 

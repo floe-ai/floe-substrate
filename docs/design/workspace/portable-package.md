@@ -21,4 +21,4 @@ resolves.
 
 A transfer format, not a primitive and not an opaque backup.
 
-Decision: [ADR-0012](../../adr/0012-portable-workspace-authority-and-secret-brokering.md).
+Origin: agent ADR-0012 (4 Sep).

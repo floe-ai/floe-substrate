@@ -47,8 +47,8 @@ If you are building a surface, you do not edit this repository. You report gaps.
 - [docs/README.md](docs/README.md) — how documentation works: where knowledge
   goes and how the docs improve. Read it before adding or moving a document.
 - [docs/design/](docs/design/README.md) — what Floe is and is meant to be:
-  goals, the operator experience, terms and rules. `Built: no` is the roadmap.
-- [docs/adr/](docs/adr/) — why lasting decisions were made.
+  goals, the operator experience, terms, rules and the decisions behind them.
+  `Built: no` is the roadmap.
 - [docs/reference/](docs/reference/) — the published contracts surfaces build against.
 
 Current code says what happens today; design says what should happen.

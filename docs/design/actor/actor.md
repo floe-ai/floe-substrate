@@ -76,5 +76,4 @@ responsibility rather than disappearing. Something that coordinates the
 Workspace then decides: extend an existing Actor, create one, or redraw
 boundaries.
 
-Decision: [ADR-0009](../../adr/0009-bus-owned-actor-capability-discovery.md)
-(in part superseded by ADR-0011).
+Origin: agent ADR-0009 (25 Aug), partly replaced by agent ADR-0011 (4 Sep).

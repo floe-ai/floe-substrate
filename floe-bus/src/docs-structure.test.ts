@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 // Standing regression check: the set of standing documents is closed.
 // New knowledge routes into living documents, not new files:
 //   - what Floe is, terms and rules -> docs/design/ (see docs/design/README.md)
-//   - lasting decisions      -> new ADR in docs/adr/ (append-only, NNNN-slug.md)
+//   - decisions              -> the design document they concern
 // A new top-level doc fails this test until the operator approves a new standing
 // document and it is registered here with its tier. A registered doc that no
 // longer exists fails too — delete its entry when the doc is deleted.
@@ -33,8 +33,6 @@ const FREE_FORM_DOC_DIRS = new Set([
   "design" // what Floe is and is meant to be (operator-approved 2026-10-08)
 ]);
 
-const ADR_NAME = /^\d{4}-[a-z0-9-]+\.md$/;
-
 function topLevelMarkdown(dir: string): string[] {
   return readdirSync(join(REPO_ROOT, dir))
     .filter((entry) => entry.endsWith(".md"))
@@ -48,7 +46,7 @@ describe("docs structure lint", () => {
     const unregistered = found.filter((path) => !(path in REGISTERED));
     expect(
       unregistered,
-      "new standing doc — does this belong in docs/design/ or a new ADR? " +
+      "new standing doc — does this belong in docs/design/? " +
         "Register it here only if the operator approved a new standing document"
     ).toEqual([]);
     const missing = Object.keys(REGISTERED).filter(
@@ -57,17 +55,10 @@ describe("docs structure lint", () => {
     expect(missing, "registered doc no longer exists — delete its entry").toEqual([]);
   });
 
-  it("docs/adr/ is an append-only decision log with NNNN-slug names", () => {
-    const offenders = readdirSync(join(REPO_ROOT, "docs", "adr")).filter(
-      (entry) => !ADR_NAME.test(entry)
-    );
-    expect(offenders, "ADR files must be named NNNN-kebab-slug.md").toEqual([]);
-  });
-
   it("docs/ subdirectories are explicitly accounted for", () => {
     const unknown = readdirSync(join(REPO_ROOT, "docs")).filter((entry) => {
       if (!statSync(join(REPO_ROOT, "docs", entry)).isDirectory()) return false;
-      return entry !== "adr" && !FREE_FORM_DOC_DIRS.has(entry);
+      return !FREE_FORM_DOC_DIRS.has(entry);
     });
     expect(
       unknown,

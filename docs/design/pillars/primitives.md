@@ -19,7 +19,7 @@ Something becomes a primitive only if it passes all of these:
 
 1. **It owns something no existing primitive owns.** A name that only
    describes a shape of an existing primitive is not a primitive.
-   ([ADR-0008](../../adr/0008-event-is-the-primitive.md))
+   (ADR-0008, 16 Aug)
 2. **Real work needed it.** Evidence from attempted work, not a guess about
    what Floe might need ([working rules](../../contributing/working-rules.md#primitive-freeze)).
 3. **It is mechanism, not opinion.** If two legitimate uses could want it
@@ -76,7 +76,7 @@ _Authored by: operator_
   it. A Connector does not have actions of its own; acting on the outside world
   is a Command.
 - **Pulse, webhook, folder watcher.** [Sources](../event/source/source.md) of an Event
-  ([ADR-0008](../../adr/0008-event-is-the-primitive.md)).
+  (ADR-0008, 16 Aug).
 - **Card.** Something one Extension or surface moves through a workflow. It
   lives where that Extension keeps it (a Markdown file, a database row) and
   stays editable outside Floe. An Event may carry a pointer to it; Floe never

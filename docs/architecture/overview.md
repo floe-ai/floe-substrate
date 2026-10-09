@@ -12,9 +12,9 @@
 > This document is the human-facing companion: it explains *why* things are shaped as
 > they are and where they are going, and renders as diagrams on GitHub.  
 > Canonical terminology lives in [`docs/design/`](../design/README.md).  
-> Accepted decisions live in [`docs/adr/`](../adr/).
+> Decisions live in the design documents they concern.
 >
-> **Canonical foundation:** ADR-0010 through ADR-0012 supersede the earlier
+> **Canonical foundation:** the design (from agent ADRs 0010–0012) supersedes the earlier
 > subscription-routed mutable-graph, path-identity, raw-client, and direct-secret
 > assumptions still visible in legacy adapters. This document distinguishes
 > those adapters from the accepted contract; they are not alternate product
@@ -25,7 +25,7 @@
 ## Part 1 — Transitional implementation inventory
 
 Grounded in current code. Legacy adapters are labelled as such; canonical
-semantics come from `docs/design/` and accepted ADRs.
+semantics come from `docs/design/`.
 
 ---
 
@@ -117,7 +117,7 @@ graph TD
     PF -->|"creates"| DEL
 ```
 
-**Context anchoring rules (ADR-0004 + `floe-bus/src/contexts/store.ts`):**
+**Context anchoring rules ([Scope](../design/scope/scope.md) + `floe-bus/src/contexts/store.ts`):**
 
 - A Context must be anchored by actor participants, a Scope, or both.
 - A Context with no actor participants **must** have a non-null `scope_id`.
@@ -128,7 +128,7 @@ graph TD
 - Context membership, parentage, and subscriptions never advance a canonical
   ScopeExecution. Only stored Edges do.
 
-**Pulse = scheduled event (ADR-0001, `floe-bus/src/server.ts:firePulse`):**
+**Pulse = scheduled event ([Pulse](../design/event/source/pulse.md), `floe-bus/src/server.ts:firePulse`):**
 
 ```mermaid
 sequenceDiagram
@@ -264,7 +264,7 @@ remain observable through their respective runtime/Bus records, not hooks.
 ## Part 2 — Extension implementation notes
 
 > This section records extension boundaries that are not fully implemented.
-> Accepted ADR-0010 through ADR-0012 are current contract, not aspirations;
+> The design for Scope composition, operations and Workspace authority is current contract, not aspirations;
 > older extension-loader details remain transitional implementation only.
 
 ---
@@ -305,7 +305,7 @@ Extensions integrate into substrate primitives; they must not build parallel sto
 
 ### 2.2 Definitions-in-Files / Runtime-in-Bus Split
 
-Following ADR-0001, human-authored definitions are committed and portable; bus runtime state is local and ephemeral. An extension may define its own durable files, but it must not treat runtime scratch state as committed configuration.
+Following the [Pulse](../design/event/source/pulse.md) design, human-authored definitions are committed and portable; bus runtime state is local and ephemeral. An extension may define its own durable files, but it must not treat runtime scratch state as committed configuration.
 
 | What | Home | Committed? |
 |---|---|---|
@@ -364,12 +364,3 @@ graph LR
 |---|---|
 | [`architecture.map.yaml`](../../architecture.map.yaml) | Machine-readable ownership map (clusters, cells, modules, write-authority, path globs). This doc is the human-facing companion. |
 | [`docs/design/`](../design/README.md) | Canonical design: terminology, rules and intent. Authoritative for all code and docs. |
-| [`docs/adr/0001-pulse-scheduled-event-delivery.md`](../adr/0001-pulse-scheduled-event-delivery.md) | Pulse = scheduled event; definitions-in-files / runtime-in-bus split; event-driven scheduler. |
-| [`docs/adr/0002-extension-substrate-design.md`](../adr/0002-extension-substrate-design.md) | Extension manifest format, factory function entry, hook registration model, tool namespacing. |
-| [`docs/adr/0003-field-substrate-primitive.md`](../adr/0003-field-substrate-primitive.md) | Superseded renderer vocabulary decision (superseded by ADR-0004 for ownership questions). |
-| [`docs/adr/0004-scope-as-substrate-organising-boundary.md`](../adr/0004-scope-as-substrate-organising-boundary.md) | Scope is the organising boundary; contexts may be scope-anchored or actor-anchored; there is no automatic fallback Scope. |
-| [`docs/adr/0005-file-access-patterns.md`](../adr/0005-file-access-patterns.md) | Original desktop file/auth boundary, now extended by ADR-0012's native authenticated transport and credential broker. |
-| [`docs/adr/0006-external-extension-repositories.md`](../adr/0006-external-extension-repositories.md) | Extensions live in independent repositories; the monorepo contains substrate only. |
-| [`docs/adr/0010-canonical-scope-composition-execution-and-artefacts.md`](../adr/0010-canonical-scope-composition-execution-and-artefacts.md) | Context is collaboration; immutable Scope revisions own Ports/Edges; execution and Artefact provenance are canonical. |
-| [`docs/adr/0011-one-semantic-operation-contract.md`](../adr/0011-one-semantic-operation-contract.md) | App, Actor, CLI, SDK, API, and MCP clients share one Bus-owned operation contract. |
-| [`docs/adr/0012-portable-workspace-authority-and-secret-brokering.md`](../adr/0012-portable-workspace-authority-and-secret-brokering.md) | Portable Workspace identity, authenticated authority, transport audiences, and credential brokering. |

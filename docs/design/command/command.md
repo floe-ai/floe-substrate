@@ -36,3 +36,15 @@ exist; Actors doing this as a habit does not yet.
 An action outside Floe, such as posting to Slack, is a Command; it may reach
 the outside system through a [Connector](../workspace/connector.md). Each
 attempt leaves an [external effect](external-effect.md) record.
+
+## Why Command is separate from Actor
+
+_Resolution: settled_
+_Built: yes_
+_Authority: operator-confirmed (ADR-0008, Aug; 9 Oct ruling: decisions from August and earlier stand)_
+_Authored by: operator_
+
+A Command is deterministic: re-runnable, cacheable, trusted without judgement.
+An Actor's output needs judgement. A Command is backed by code that meets the
+Command contract (named inputs in, named outputs out); the Workspace holds the
+reference and the code lives wherever it lives.

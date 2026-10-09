@@ -176,7 +176,7 @@ The default Floe actor should not be a substrate engineer, but it must be able t
 
 Do not hardcode stale extension recipes into actor instructions.
 
-When extension behaviour matters, inspect current accepted ADRs, runtime/code contracts, and capability discovery surfaces.
+When extension behaviour matters, inspect the [Extension design](../design/host/extension/extension.md), runtime/code contracts, and capability discovery surfaces.
 
 **Extension source and extension installation are different concerns.**
 
@@ -184,7 +184,7 @@ When extension behaviour matters, inspect current accepted ADRs, runtime/code co
 - Extension source may be authored and maintained outside the workspace-installed copy, including in an independent repository or package.
 - Do not develop against an installed workspace copy when a canonical source package exists.
 - An installed `extension.json` may point to canonical source rather than duplicate it.
-- Read ADR-0002 and ADR-0006 together with current loader behaviour. ADR-0006's independent-repository rule is a source/development boundary, not removal of `.floe/extensions` as the workspace installation/discovery surface.
+- Read the [Extension design](../design/host/extension/extension.md) together with current loader behaviour. The own-repository rule is a source/development boundary, not removal of `.floe/extensions` as the workspace installation/discovery surface.
 
 If canonical documentation states this ambiguously, repair the documentation before allowing the ambiguity to drive implementation.
 
@@ -196,7 +196,7 @@ Resolve "what currently happens" from:
 
 1. current code and runtime behaviour;
 2. tests and logs;
-3. repository documentation and ADRs;
+3. repository documentation;
 4. prior assumptions or memory.
 
 Resolve "what should happen" from [`docs/design/`](../design/README.md), first principles, and evidence from real operation. Current code is not proof that an existing product decision is correct.
@@ -204,7 +204,6 @@ Resolve "what should happen" from [`docs/design/`](../design/README.md), first p
 Within documentation:
 
 - `docs/design/` — what Floe is and is meant to be: goals and laws (`pillars/`), the operator experience, terminology and rules for every part. Only `operator-confirmed` content is settled authority.
-- accepted ADRs — why a lasting decision was made.
 - `docs/reference/` — the published contracts surfaces build against.
 - git history, issue/PR prose, chat and notes outside the repository — historical evidence, never authority.
 

@@ -48,7 +48,7 @@ describe("extension boundary", () => {
     }
     expect(
       violations,
-      "Substrate code must not name a specific extension. Extensions are independent repositories that build against the substrate contract; use a neutral placeholder name such as acme in fixtures. See docs/adr/0006-external-extension-repositories.md."
+      "Substrate code must not name a specific extension. Extensions are independent repositories that build against the substrate contract; use a neutral placeholder name such as acme in fixtures. See docs/design/host/extension/extension.md."
     ).toEqual([]);
   });
 });

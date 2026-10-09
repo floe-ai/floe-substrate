@@ -21,4 +21,4 @@ identity, provenance, authority and safe references.
 Avoid: file path as identity, Event payload as identity, Extension-owned
 identity ledger.
 
-Decision: [ADR-0010](../../adr/0010-canonical-scope-composition-execution-and-artefacts.md).
+Origin: agent ADR-0010 (4 Sep).

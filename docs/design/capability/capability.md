@@ -20,8 +20,7 @@ content can never claim them. Consequential calls need an idempotency key, and
 state-changing calls carry the expected resource revision where the operation
 requires one.
 
-Decisions: [ADR-0009](../../adr/0009-bus-owned-actor-capability-discovery.md),
-[ADR-0011](../../adr/0011-one-semantic-operation-contract.md).
+Origin: agent ADR-0009 (25 Aug), ADR-0011 (4 Sep).
 
 ## MCP
 
@@ -32,7 +31,7 @@ _Authored by: unknown_
 
 No MCP inside Floe as a product surface; MCP is for people's own external tools.
 
-Decision: [ADR-0014](../../adr/0014-mcp-is-an-internal-transport-not-a-product-surface.md).
+Origin: agent ADR-0014 (14 Sep).
 
 ## Legacy
 

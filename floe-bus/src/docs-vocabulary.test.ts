@@ -37,15 +37,13 @@ interface VocabularyRule {
 
 const RULES: VocabularyRule[] = [
   {
-    name: "Default Scope as a live concept (ADR-0004 correction: it does not exist)",
+    name: "Default Scope as a live concept (it does not exist; see docs/design/scope/scope.md)",
     pattern: /default[ -]scope/i,
     roots: ["docs", "AGENTS.md", "README.md"],
     extensions: [".md"],
     allowed: {
       "docs/guide/reference/glossary.md":
-        "user guide's Retired terms table — names the term to keep it from creeping back",
-      "docs/adr/0004-scope-as-substrate-organising-boundary.md":
-        "the decision record that defines the correction"
+        "user guide's Retired terms table — names the term to keep it from creeping back"
     }
   },
   {
@@ -62,10 +60,7 @@ const RULES: VocabularyRule[] = [
     extensions: [".md", ".ts", ".tsx"],
     allowed: {
       "docs/guide/reference/glossary.md":
-        "user guide's Retired terms table — names the term to keep it from creeping back",
-      "docs/adr/0003-field-substrate-primitive.md": "superseded decision record",
-      "docs/adr/0004-scope-as-substrate-organising-boundary.md": "superseded decision record",
-      "docs/adr/0007-renderer-identifier-and-field-retirement.md": "decision record that retires the term"
+        "user guide's Retired terms table — names the term to keep it from creeping back"
     }
   },
   {
@@ -91,7 +86,6 @@ const RULES: VocabularyRule[] = [
     roots: ["floe-bus/src", "docs", "AGENTS.md"],
     extensions: [".ts", ".tsx", ".md"],
     allowed: {
-      "docs/adr/0003-field-substrate-primitive.md": "decision record that rejected it",
       "floe-bus/src/scope-projection.test.ts": "asserts the substrate stays absent"
     }
   }

@@ -31,8 +31,6 @@ Clients keep the selected Workspace boundary and discover current actions when
 opened. Model input keeps references beside the message text. A named reference
 does not create an Artefact association.
 
-Decision: [ADR-0008](../../adr/0008-event-is-the-primitive.md).
-
 ## Legacy
 
 Event references frozen during schema 12's upgrade keep their then-visible

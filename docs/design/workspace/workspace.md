@@ -17,6 +17,19 @@ host paths, binding IDs or host identity.
 `.floe/floe.yaml` is committed project configuration, never runtime scratch
 state. Runtime state lives in the git-ignored `.floe/state`.
 
+## Files
+
+_Resolution: settled_
+_Built: partly_
+_Authority: operator-confirmed (ADR-0005, Jun; 9 Oct ruling: decisions from August and earlier stand)_
+_Authored by: operator_
+
+- An Actor's file writes stay inside the Workspace's folder. Reaching outside
+  it is refused.
+- No general network route writes host files or credentials, so credentials
+  never travel over network ports. A surface writes local configuration through
+  its own native layer.
+
 Avoid: path-derived Workspace IDs, path as identity, locators in remote
 projections.
 
@@ -24,3 +37,8 @@ projections.
 
 Old path-derived Workspace identifiers are kept as opaque identities during
 migration; new identities are opaque and path-independent.
+
+## Open
+
+- Safe file editing from a remote surface is unsolved (ADR-0005).
+- Not checked: whether engine file tools are held to the Workspace folder.

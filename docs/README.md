@@ -7,7 +7,7 @@ Read this before adding, moving or deleting any document in this repository.
 | Kind of knowledge | Goes in |
 |---|---|
 | What Floe is and is meant to be: goals, experience, terms, rules | `docs/design/`, following its [README](design/README.md) |
-| Why a lasting decision was made | a new ADR in `docs/adr/` |
+| A decision, and who made it | the design document it concerns |
 | A contract a surface builds against | `docs/reference/` |
 | How to use Floe | `docs/guide/` |
 | How to change Floe itself | `docs/contributing/` |
@@ -30,8 +30,10 @@ Read this before adding, moving or deleting any document in this repository.
 5. **No history.** Plans, worklogs and evidence are not kept as documents. A
    document describes the present and the intended future. Delete what is no
    longer true instead of marking it old.
-6. **ADRs are append-only.** Never edit an accepted ADR's decision; write a new
-   one that supersedes it.
+6. **Decisions live in design.** A decision is written into the design document
+   it concerns, and its Authority says who decided and when. There are no
+   separate decision records. The old ADRs were retired on 9 Oct 2026; read
+   one with `git show 4698b60:docs/adr/<file>`.
 7. **The set of standing documents is closed.** A new top-level document or a
    new `docs/` folder needs operator approval.
    `floe-bus/src/docs-structure.test.ts` fails until it is registered.

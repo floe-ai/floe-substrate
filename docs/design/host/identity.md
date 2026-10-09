@@ -20,8 +20,7 @@ the Bridge service, and Workspace operations. HTTP sends them only in the
 `Authorization` header, never in URLs or logs. A WebSocket client authenticates
 in its first frame and receives nothing before that succeeds.
 
-Decisions: [ADR-0015](../../adr/0015-client-identity-and-unprivileged-workspace-credential.md),
-[ADR-0016](../../adr/0016-floe-owns-the-identity.md).
+Origin: agent ADR-0015 (14 Sep), ADR-0016 (28 Sep).
 Contract: `docs/reference/identity-agent-protocol.md`,
 `docs/reference/client-identity-protocol.md`.
 
