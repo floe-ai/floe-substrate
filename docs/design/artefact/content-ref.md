@@ -14,3 +14,8 @@ Publishing a local Workspace file verifies its digest and size, keeps those
 bytes in the Workspace content store, and records that reference. Later edits to
 the source file never change the published version. Externally pinned revisions
 keep their resolver contract.
+
+## Open
+
+- Copying every local file differs from D18: pin by git commit first, copy only
+  when nothing can pin it (see [version](version.md)).

@@ -74,7 +74,7 @@ context/      context, participant, subscription
 event/        event, emit, cursor,
               source/ (source, pulse),
               delivery/ (delivery, endpoint, turn/ (turn, input))
-scope/        scope, revision, placement, port, edge,
+scope/        scope, revision, placement, port, edge, activation,
               execution/ (scope-execution, node-execution, attempt)
 command/      command, external-effect
 artefact/     artefact, version, content-ref

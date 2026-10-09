@@ -9,6 +9,8 @@ A versioned package that contributes bounded capability under declared
 permissions, isolation, approval and rollback: Capabilities, Commands,
 Connectors, schemas, templates, Actor definitions, previews, renderers,
 dashboards and bounded product surfaces. It may also register [hooks](hook.md).
+A Command it ships is named and set up as described in
+[Command](../../command/command.md#direction-a-command-is-a-ready-made-node).
 
 - Source and installation are separate. Canonical source lives in its own
   repository or package; a Workspace installs it under `.floe/extensions/NAME/`,

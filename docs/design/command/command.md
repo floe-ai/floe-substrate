@@ -37,6 +37,25 @@ An action outside Floe, such as posting to Slack, is a Command; it may reach
 the outside system through a [Connector](../workspace/connector.md). Each
 attempt leaves an [external effect](external-effect.md) record.
 
+## Direction: a Command is a ready-made node
+
+_Resolution: direction_
+_Built: no_
+_Authority: operator-confirmed (9 Oct ruling, Q25)_
+_Authored by: operator_
+
+A Command can be dropped in as a node without knowing how it works, for example
+"Send to Slack". To allow that, a Command declares:
+
+- a name and description, so it can be found and chosen;
+- a settings form (for example the destination channel);
+- the kind of [Connector](../workspace/connector.md) it needs, so it uses the
+  Workspace's own Connector setting.
+
+Floe stores and exposes these; a surface draws the picker. Every Actor chooses
+from the same list. An [Extension](../host/extension/extension.md) can ship such
+Commands; how a Command is named and set up is defined here, not there.
+
 ## Why Command is separate from Actor
 
 _Resolution: settled_
