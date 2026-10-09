@@ -88,17 +88,11 @@ _Authored by: operator_
 
 ## Open
 
-- **Contexts without members (not built).** Today every stored Event is given a
-  Context, and a Command run gets a new Context with no members
-  (`floe-bus/src/store.ts`, `resolveExecutionContext`). This could create
-  millions of empty Contexts. Operator ruling, 9 Oct: a Context exists only
-  when it is meant to have members; Events that start a Command need no
-  Context.
-- **Where the rest of the design still disagrees** is recorded as `## Open` in
-  each affected document: [Connector](../workspace/connector.md),
-  [NodeExecution](../scope/execution/node-execution.md),
-  [Endpoint](../event/delivery/endpoint.md),
-  [Context](../context/context.md) and [Extension](../host/extension/extension.md).
+- **Code does not match yet.** Every stored Event is still given a Context, and
+  a Command run still gets a Context with no members
+  (`floe-bus/src/store.ts`, `resolveExecutionContext`). Connectors still have
+  their own actions ([Connector](../workspace/connector.md)).
+- **Extension** is being redesigned ([Extension](../host/extension/extension.md)).
 - `AGENTS.md` and the working rules name five building blocks; this list has
   seven. They are updated once the operator confirms this list.
 
