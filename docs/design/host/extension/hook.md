@@ -52,8 +52,6 @@ cannot run because the Extension process is restarting blocks the call.
 
 ## Open
 
-- `BeforeToolUse` needs floe-runtime branch `before-tool-use`; the Bridge pins
-  that branch's commit until the operator approves and it merges.
 - `WebhookReceived` and the Context hooks (`ContextCompacted`,
   `ContextHistoryCleared`, `ParticipantAdded`, `ParticipantRemoved`) still fire
   inside the Bridge but are not offered to Extensions: they only react
