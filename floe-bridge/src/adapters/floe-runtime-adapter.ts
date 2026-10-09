@@ -38,6 +38,7 @@ import {
 } from "../runtime-core/index.js";
 import type { EmittedEventSummary, SubstrateTurnAnchor } from "../runtime-core/index.js";
 import { createDirectSubstrateTools } from "./floe-direct-tools.js";
+import { createExtensionHostTools } from "./extension-host-tools.js";
 import type { SubstrateSessionHandle } from "../runtime-core/substrate-tool-definitions.js";
 import { TurnFailedError } from "./turn-failed-error.js";
 import { turnUsage } from "./turn-usage.js";
@@ -108,6 +109,8 @@ type FloeSession = {
   contextId: string;
   workspaceId: string;
   directTools: HostTool[];
+  /** Records tool activity into the session's live turn. */
+  toolHandle: SubstrateSessionHandle;
   /** The exact tool list the live SDK session was created with. */
   offeredTools: string | null;
   model?: string;
@@ -328,8 +331,10 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       continuity_token_upper_bound: continuity?.tokenUpperBound ?? 0,
     });
 
+    const extensionTools = createExtensionHostTools(context.extension_tools ?? [], session.toolHandle);
+    const sessionTools = [...session.directTools, ...extensionTools];
     const availableTools = [
-      ...session.directTools.map(tool => tool.name),
+      ...sessionTools.map(tool => tool.name),
       ...grantedBuiltinTools(context.engine_tool_operation_ids, model),
     ];
     try {
@@ -345,8 +350,12 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
         session.continuityTelemetryRecorded = true;
       }
       // An SDK session keeps the tool list it was created with; a changed grant
-      // set resumes it under the new list instead of reporting catalog drift.
-      const offeredTools = JSON.stringify(availableTools);
+      // set or Extension tool resumes it under the new list instead of
+      // reporting catalog drift.
+      const offeredTools = JSON.stringify({
+        availableTools,
+        extensionTools: extensionTools.map(tool => [tool.name, tool.description, tool.parameters]),
+      });
       if (session.sessionId && session.offeredTools !== null && session.offeredTools !== offeredTools) {
         await session.runtime.retire(session.sessionId);
       }
@@ -364,7 +373,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
         },
         {
           ...(model ? { model } : {}),
-          ...(session.directTools.length ? { tools: session.directTools } : {}),
+          ...(sessionTools.length ? { tools: sessionTools } : {}),
           availableTools,
           ...(systemMessage ? { systemMessage: { mode: "append" as const, content: systemMessage } } : {}),
         },
@@ -606,7 +615,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
       offeredTools: null,
       context,
       account,
-    } as Omit<FloeSession, "runtime"> as FloeSession;
+    } as Omit<FloeSession, "runtime" | "toolHandle"> as FloeSession;
     const runtime = this.runtimeFactory({
       permissionPolicy: (request) => this.decideToolCall(session, request),
       expectedAccount: account,
@@ -640,6 +649,7 @@ export class FloeRuntimeAdapter implements RuntimeAdapter {
           recordToolActivity(turn, entry);
         },
     };
+    session.toolHandle = toolHandle;
     session.directTools = createDirectSubstrateTools(toolHandle);
     // Normalized activity events feed the work log's tool activity. floe-runtime
     // pushes these (no polling); a started/completed pair shares one toolCallId.

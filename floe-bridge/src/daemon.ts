@@ -39,6 +39,7 @@ import { copilotHome } from "./engines/copilot.js";
 import { TurnFailedError } from "./adapters/turn-failed-error.js";
 import { HookRegistry } from "./hooks.js";
 import { watchFolder } from "./folder-watcher.js";
+import { WorkspaceExtensions, type ExtensionStatus } from "./extensions/workspace-extensions.js";
 import { selectPinnedRuntime } from "./runtime-processing-contract.js";
 import {
   buildWorkspaceConfigurationInventory,
@@ -111,6 +112,9 @@ export class BridgeDaemon {
   private pendingDeliveries = new Map<string, Map<string, DeliveryBundle>>();
   private cancelledDeliveries = new Set<string>();
   private reportedAttachments = new Map<string, string>();
+  private readonly extensions: WorkspaceExtensions;
+  /** The last "attached" report per Workspace, re-sent when Extension statuses change. */
+  private attachedReports = new Map<string, { bindingId: string; configHash: string | null; validation: Record<string, unknown> }>();
   private firedWebhookEvents = new Set<string>();
   // D1: reconnect state
   private streamCancelled = false;
@@ -152,6 +156,14 @@ export class BridgeDaemon {
       (line, detail) => console.log(`[floe-bridge] ${line}`, detail ?? ""),
     );
     this.engines.onReady((engine) => this.releaseHeldWork(engine));
+    this.extensions = new WorkspaceExtensions({
+      log: line => console.log(line),
+      onStatusChanged: (workspaceId, statuses) => {
+        void this.reportExtensionStatuses(workspaceId, statuses).catch(error => {
+          console.error("[bridge] Extension status report failed", { workspace_id: workspaceId, error });
+        });
+      },
+    });
   }
 
   get transportAuthorityState(): BridgeTransportAuthorityState {
@@ -190,6 +202,7 @@ export class BridgeDaemon {
       for (const stop of stops) stop();
     }
     this.workspaceWatchers.clear();
+    this.extensions.dispose();
     await this.engines.close();
     await this.adapter.dispose?.("bridge_shutdown");
   }
@@ -587,13 +600,16 @@ export class BridgeDaemon {
     if (!workspace?.workspace_id) return;
     this.workspaceLocators.delete(workspace.workspace_id);
     const binding = workspace?.binding;
-    if (!binding?.binding_id || !binding.locator) return;
-    if (!binding.init_authorized) return;
+    if (!binding?.binding_id || !binding.locator || !binding.init_authorized) {
+      this.stopWorkspaceExtensions(String(workspace.workspace_id));
+      return;
+    }
 
     const workspaceId = String(workspace.workspace_id);
     const bindingId = String(binding.binding_id);
     const locator = resolve(String(binding.locator));
     if (!this.config.bridge.workspace_access.local_paths || !existsSync(locator)) {
+      this.stopWorkspaceExtensions(workspaceId);
       await this.reportOnce(workspaceId, bindingId, "workspace_inaccessible", "workspace_locator_inaccessible", null, {
         ok: false,
         warnings: [],
@@ -641,7 +657,8 @@ export class BridgeDaemon {
       this.registerNodeInstructionsHook(hookRegistry);
       this.workspaceHooks.set(workspaceId, hookRegistry);
       if (!importApplied || !project) {
-        // Unimported file changes cannot start or replace legacy Event sources.
+        // Unimported file changes cannot start or replace legacy Event sources or Extensions.
+        this.stopWorkspaceExtensions(workspaceId);
         const canAttach = runtimes.length > 0;
         await this.reportOnce(workspaceId, bindingId, canAttach ? "attached" : "config_invalid",
           canAttach ? null : importReceipt?.refusal?.code ?? "workspace_configuration_import_refused", null, {
@@ -761,10 +778,9 @@ export class BridgeDaemon {
       }
       this.workspaceWatchers.set(workspace.workspace_id, watcherStops);
 
-      // Extension installation and activation are owned by the canonical Bus
-      // lifecycle. The Bridge never imports workspace package code. Hooks here
-      // contain only trusted Bridge-owned behaviour.
-      await this.reportOnce(workspaceId, bindingId, "attached", null, importReceipt.config_hash, {
+      // Installed Extensions run in the Extension process, apart from the Bridge.
+      const extensionStatuses = await this.extensions.reconcile(workspaceId, locator);
+      const validation = {
         ...canonicalImport!.inventory.validation,
         import_receipt_id: importReceipt.import_receipt_id,
         unavailable_actors: runtimes
@@ -773,14 +789,30 @@ export class BridgeDaemon {
             actor_id: actor.actor_id,
             reasons: actor.unresolved_reasons,
           })),
-      });
+        extensions: extensionStatuses,
+      };
+      this.attachedReports.set(workspaceId, { bindingId, configHash: importReceipt.config_hash, validation });
+      await this.reportOnce(workspaceId, bindingId, "attached", null, importReceipt.config_hash, validation);
     } catch (error) {
+      this.stopWorkspaceExtensions(workspaceId);
       await this.reportOnce(workspaceId, bindingId, "attach_failed", "bridge_attach_failed", null, {
         ok: false,
         warnings: [],
         errors: [(error as Error).message]
       });
     }
+  }
+
+  private stopWorkspaceExtensions(workspaceId: string): void {
+    this.attachedReports.delete(workspaceId);
+    this.extensions.stop(workspaceId);
+  }
+
+  private async reportExtensionStatuses(workspaceId: string, statuses: readonly ExtensionStatus[]): Promise<void> {
+    const attached = this.attachedReports.get(workspaceId);
+    if (!attached) return;
+    attached.validation = { ...attached.validation, extensions: statuses };
+    await this.reportOnce(workspaceId, attached.bindingId, "attached", null, attached.configHash, attached.validation);
   }
 
   private async reportOnce(
@@ -930,6 +962,7 @@ export class BridgeDaemon {
       let preparedAttemptId: string | null = null;
       let operationAuthoritySession: RuntimeOperationAuthoritySession | undefined;
       let engineToolOperationIds: string[] = [];
+      let actorExtensions: readonly string[] = [];
       let effectiveRuntime: AgentRuntimeConfig;
       const hasCanonicalRuntimePins = Boolean(
         delivery.processing_contract
@@ -968,6 +1001,7 @@ export class BridgeDaemon {
           delivery.execution_attempt_id = preparedAttemptId;
         }
         effectiveRuntime = pinned.config;
+        actorExtensions = pinned.extensions;
       } else {
         // Pre-canonical Endpoints remain readable during the current data
         // upgrade. Canonical direct Context work always carries a Bus-issued
@@ -1023,6 +1057,7 @@ export class BridgeDaemon {
         hooks: hookRegistry,
         operation_authority_session: operationAuthoritySession,
         engine_tool_operation_ids: engineToolOperationIds,
+        extension_tools: this.extensions.toolsFor(delivery.workspace_id, actorExtensions),
         ...(engineAccount ? { engine_account: engineAccount } : {}),
       }, delivery, effectiveRuntime);
       if (this.cancelledDeliveries.delete(delivery.delivery_id)) {

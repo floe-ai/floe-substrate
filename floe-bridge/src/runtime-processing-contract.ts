@@ -6,6 +6,8 @@ export type PinnedRuntimeSelection = Readonly<{
   config: AgentRuntimeConfig;
   secret_ref_ids: readonly string[];
   resource_policy: Readonly<Record<string, unknown>>;
+  /** Extensions whose tools the pinned Actor definition lists. */
+  extensions: readonly string[];
 }>;
 
 export class PinnedRuntimeContractError extends Error {
@@ -59,6 +61,7 @@ export function selectPinnedRuntime(
     }),
     secret_ref_ids: Object.freeze([...contract.runtime.profile.content.secret_ref_ids]),
     resource_policy: Object.freeze({ ...contract.runtime.profile.content.resource_policy }),
+    extensions: Object.freeze(extensionNames(contract.actor.definition.content.extensions)),
   });
 }
 
@@ -129,6 +132,14 @@ function requiredString(value: unknown, label: string): string {
   const result = optionalString(value, label);
   if (!result) fail(`${label} is required`);
   return result;
+}
+
+function extensionNames(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || !value.every(name => typeof name === "string" && name.length > 0)) {
+    fail("Actor definition extensions must be a list of Extension names");
+  }
+  return [...value];
 }
 
 function optionalThinkingLevel(value: unknown): AgentRuntimeConfig["thinking_level"] {

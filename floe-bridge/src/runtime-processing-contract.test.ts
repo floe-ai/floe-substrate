@@ -109,7 +109,16 @@ describe("selectPinnedRuntime", () => {
       },
       secret_ref_ids: ["secret-ref:chatgpt-business"],
       resource_policy: { max_turns: 30 },
+      extensions: [],
     });
+  });
+
+  it("gives the Actor only the Extensions its pinned definition lists", () => {
+    const pinned = contract();
+    pinned.actor.definition.content.extensions = ["todo"];
+    expect(selectPinnedRuntime(pinned).extensions).toEqual(["todo"]);
+    (pinned.actor.definition.content as Record<string, unknown>).extensions = "todo";
+    expect(() => selectPinnedRuntime(pinned)).toThrow(/extensions must be a list/);
   });
 
   it("runs the Actor's own model from its pinned binding over the profile's model", () => {
