@@ -38,7 +38,7 @@ function bearerHeader(token: string) {
  * through the real challenge/authenticate/act routes with a real minted bearer,
  * never by planting a roster row.
  */
-describe("Register-and-join first run (ADR-0015)", () => {
+describe("Register-and-join first run (docs/reference/client-identity-protocol.md)", () => {
   let handle: ServerHandle;
   let root: string;
   let bridgeToken: string;

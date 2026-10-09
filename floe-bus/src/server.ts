@@ -3171,7 +3171,7 @@ export async function createBusServer(
     });
   });
 
-  // --- Client identity: unprivileged keypair authentication (ADR-0015) ---
+  // --- Client identity: unprivileged keypair authentication (docs/reference/client-identity-protocol.md) ---
   // Admission is the trust anchor: only host_control may add a public key to the
   // roster. This is the same authority class as seeding the operator actor.
   const identityRelay = (config.bus.http_base_url ?? "").replace(/\/+$/, "");
@@ -3204,7 +3204,7 @@ export async function createBusServer(
       display_name: body.data.display_name,
       admitted_by: authority.credential_id,
     });
-    // Admission binds the identity to the workspace it may act in (ADR-0015 F3),
+    // Admission binds the identity to the workspace it may act in (docs/reference/client-identity-protocol.md),
     // with durable authority for the lifetime the admitting host chose.
     store.clientIdentityStore.addWorkspaceMembership({
       identity_id: identity.identity_id,
@@ -4675,7 +4675,7 @@ export function resolveTransportRequirement(request: any, store: BusStore): Tran
   if (["/v1/browser/host/operations", "/v1/browser/host/operations/invoke", "/v1/browser/host/operation-receipts/:receipt_id"].includes(route)) return { kind: "public" };
   if (route === "/v1/events/stream") return { kind: "websocket" };
   // Client identity challenge/authenticate are public: possession of an admitted
-  // key is proven by the signature inside the handler, not by a bearer (ADR-0015).
+  // key is proven by the signature inside the handler, not by a bearer (docs/reference/client-identity-protocol.md).
   // register-workspace is the same class: its NIP-42 proof is the authorisation,
   // since a first-run key has no bearer to present.
   if (
@@ -4918,7 +4918,7 @@ function publicWorkspaceAuthority(authority: IdentityWorkspaceAuthorityRecord) {
 /**
  * The workspaces an identity may act in, resolved against currently-registered
  * workspaces and reported as { workspace_id, name } so a client can present them
- * to a human and pick one without a host_control workspace listing (ADR-0015 F3).
+ * to a human and pick one without a host_control workspace listing (docs/reference/client-identity-protocol.md).
  */
 type IdentityWorkspace = { workspace_id: string; name: string; folder_path: string | null; last_used_at: string | null };
 

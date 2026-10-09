@@ -1,6 +1,6 @@
 /**
  * The agent's calls to the Bus. Unprivileged routes carry a signed NIP-42 proof
- * (ADR-0015); the few host routes (re-admission, revocation) carry host_control
+ * (docs/reference/client-identity-protocol.md); the few host routes (re-admission, revocation) carry host_control
  * obtained from the native broker for that one call.
  */
 import type { Event as NostrEvent } from "nostr-tools/pure";

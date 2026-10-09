@@ -5,7 +5,7 @@ import { nip19 } from "nostr-tools";
  * All cryptographic identity handling is isolated here. The rest of the Bus
  * treats a client identity as an opaque lowercase-hex public key and never
  * touches key material or signatures directly. The Bus only ever verifies; it
- * holds, derives, and stores no private key (ADR-0015).
+ * holds, derives, and stores no private key (docs/reference/client-identity-protocol.md).
  *
  * The scheme is the Nostr / Bitcoin stack: BIP-340 Schnorr signatures over
  * secp256k1 (NIP-01), authenticated with a kind:22242 challenge event (NIP-42),
@@ -57,7 +57,7 @@ export type AuthEventVerification =
  * challenge tag matches the challenge we issued, the relay tag matches the exact
  * relay string we issued, and the Schnorr signature (and event id) is valid.
  *
- * Deliberate deviation from NIP-42, stated in ADR-0015: the same event and the
+ * Deliberate deviation from NIP-42, stated in docs/reference/client-identity-protocol.md: the same event and the
  * same rules are carried over HTTP challenge/response rather than the relay
  * WebSocket AUTH frame.
  */

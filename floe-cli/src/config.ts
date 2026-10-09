@@ -43,7 +43,7 @@ const LocalConfigSchema = z.object({
     default_auth_profile: z.string().optional()
   }).optional(),
   // The identity agent holds the unlocked key in memory; it forgets it once no
-  // surface has been connected for this long (ADR-0016).
+  // surface has been connected for this long (docs/reference/identity-agent-protocol.md).
   identity: z.object({
     lock_after_idle_minutes: z.number().int().min(1)
   }).strict().optional()
