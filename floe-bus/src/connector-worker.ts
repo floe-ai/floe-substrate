@@ -10,7 +10,6 @@ import {
   ConnectorRevisionConflictError,
   ConnectorStore,
   ConnectorValidationError,
-  type ConnectorActionInterface,
   type ConnectorBindingRecord,
   type ConnectorBindingRevision,
   type ConnectorDefinitionRevision,
@@ -19,13 +18,9 @@ import {
   type ConnectorIngressVerification,
   type ConnectorOwner,
   type ConnectorSourceInterface,
-  type ExternalActionAttempt,
-  type ExternalEffectReceipt,
 } from "./connectors.js";
 
 export const CONNECTOR_WORKER_SOURCE_OPERATION_ID = "connector.worker.source.observe";
-export const CONNECTOR_WORKER_ACTION_OPERATION_ID = "connector.worker.action.execute";
-export const CONNECTOR_WORKER_RECONCILE_OPERATION_ID = "connector.worker.action.reconcile";
 export const CONNECTOR_WORKER_HEALTH_OPERATION_ID = "connector.worker.health.inspect";
 
 export type ConnectorWorkerPin = Readonly<{
@@ -77,29 +72,6 @@ export type ConnectorWorkerHealthResult = Readonly<{
   observed_at: string;
 }>;
 
-export type ConnectorWorkerActionResult =
-  | Readonly<{
-      outcome: "succeeded";
-      provider_response_ref?: ConnectorEvidenceRef | null;
-      observed_result_ref?: ConnectorEvidenceRef | null;
-    }>
-  | Readonly<{
-      /** The runner proves no external request was sent. */
-      outcome: "not_sent";
-      code: string;
-    }>
-  | Readonly<{
-      /** The runner cannot prove whether the external effect happened. */
-      outcome: "outcome_unknown";
-      code: string;
-      provider_response_ref?: ConnectorEvidenceRef | null;
-    }>;
-
-export type ConnectorWorkerReconciliationResult = Readonly<{
-  outcome: "succeeded" | "failed" | "outcome_unknown";
-  evidence_ref: ConnectorEvidenceRef;
-}>;
-
 export type ConnectorWorkerCredentialAccess = Readonly<{
   withSecret<Result>(
     slotId: string,
@@ -123,14 +95,6 @@ export interface ConnectorWorkerRunner {
     source: ConnectorSourceInterface;
     checkpoint_ref: ConnectorEvidenceRef | null;
   }>): Promise<ConnectorWorkerPollResult>;
-  executeAction?(request: ConnectorWorkerBaseRequest & Readonly<{
-    action: ConnectorActionInterface;
-    external_effect: ExternalEffectReceipt;
-  }>): Promise<ConnectorWorkerActionResult>;
-  reconcileAction?(request: ConnectorWorkerBaseRequest & Readonly<{
-    action: ConnectorActionInterface;
-    external_effect: ExternalEffectReceipt;
-  }>): Promise<ConnectorWorkerReconciliationResult>;
 }
 
 export type ConnectorWorkerDependencies = Readonly<{
@@ -151,21 +115,6 @@ export type ConnectorWorkerDependencies = Readonly<{
     operation_id: string;
     purpose: string;
   }>) => string | null;
-  /**
-   * Atomically verifies and consumes every required canonical ApprovalReceipt
-   * and moves the ExternalEffectReceipt from requested/failed to running by
-   * creating its attempt. A deterministic expected approval ID is never proof.
-   */
-  begin_action_attempt: (input: Readonly<{
-    operation_id: typeof CONNECTOR_WORKER_ACTION_OPERATION_ID;
-    principal_id: string;
-    pin: ConnectorWorkerPin;
-    action: ConnectorActionInterface;
-    external_effect: ExternalEffectReceipt;
-    request_evidence_ref: ConnectorEvidenceRef;
-    approval_receipt_ids: readonly string[];
-    checked_at: string;
-  }>) => Promise<ExternalActionAttempt>;
   /**
    * Materializes by ConnectorIngressReceipt identity. It must be idempotent
    * across process loss: the same receipt always resolves to the same Event.
@@ -574,148 +523,6 @@ export class ConnectorWorkerHost {
     return { plan, ingress, checkpoint };
   }
 
-  async executeExternalAction(
-    externalEffectReceiptId: string,
-    owner: ConnectorOwner,
-  ): Promise<Readonly<{
-    receipt: ExternalEffectReceipt;
-    attempt_id: string;
-  }>> {
-    this.assertOwnerEffectsAllowed(owner);
-    const receipt = this.dependencies.connector_store.requireExternalEffectReceiptForOwner(
-      externalEffectReceiptId,
-      owner,
-    );
-    const binding = this.dependencies.connector_store.requireBindingForOwner(receipt.connector_binding_id, owner);
-    if (binding.status !== "enabled") {
-      throw new ConnectorLifecycleConflictError(binding.connector_binding_id, "it is not enabled");
-    }
-    const pin = this.pinExactRevision(binding, receipt.connector_binding_revision_id, owner);
-    const action = requirePinnedAction(pin, receipt.action_interface_id);
-    const runner = this.requireRunner(pin);
-    if (!runner.executeAction) throw new ConnectorWorkerError("its implementation cannot execute external actions");
-    const requestEvidence = await this.dependencies.write_evidence({
-      kind: "connector_action_request",
-      facts: {
-        external_effect_receipt_id: receipt.external_effect_receipt_id,
-        connector_binding_id: receipt.connector_binding_id,
-        connector_binding_revision_id: receipt.connector_binding_revision_id,
-        action_interface_id: receipt.action_interface_id,
-        idempotency_key: receipt.idempotency_key,
-        input_digest: receipt.input_digest,
-        input_refs: receipt.input_refs.map((ref) => `${ref.kind}:${ref.id}@${ref.revision}`),
-      },
-    });
-    const attempt = await this.dependencies.begin_action_attempt({
-      operation_id: CONNECTOR_WORKER_ACTION_OPERATION_ID,
-      principal_id: this.dependencies.principal_id,
-      pin,
-      action,
-      external_effect: receipt,
-      request_evidence_ref: requestEvidence,
-      approval_receipt_ids: receipt.approval_receipt_ids,
-      checked_at: this.now(),
-    });
-    if (
-      attempt.external_effect_receipt_id !== receipt.external_effect_receipt_id
-      || attempt.status !== "started"
-    ) {
-      throw new ConnectorWorkerError("the approved action boundary returned the wrong attempt");
-    }
-    const guard = new SecretEchoGuard();
-    try {
-      const result = await runner.executeAction({
-        pin,
-        action,
-        external_effect: receipt,
-        credentials: this.credentialAccess(
-          pin,
-          action.credential_slot_ids,
-          [...action.required_capability_ids, CONNECTOR_WORKER_ACTION_OPERATION_ID],
-          guard,
-        ),
-      });
-      guard.assertNoEcho(result);
-      const completed = this.dependencies.connector_store.completeExternalActionAttempt({
-        external_action_attempt_id: attempt.external_action_attempt_id,
-        owner,
-        outcome: result.outcome === "not_sent" ? "failed" : result.outcome,
-        provider_response_ref: result.outcome === "succeeded" || result.outcome === "outcome_unknown"
-          ? result.provider_response_ref ?? null
-          : null,
-        observed_result_ref: result.outcome === "succeeded"
-          ? result.observed_result_ref ?? null
-          : null,
-        error_code: result.outcome === "succeeded" ? null : safeWorkerCode(result.code),
-        error_message: result.outcome === "not_sent"
-          ? "The Connector worker proved that no external request was sent."
-          : result.outcome === "outcome_unknown"
-            ? "The Connector worker cannot prove whether the external effect happened."
-            : null,
-      });
-      return {
-        receipt: completed.receipt,
-        attempt_id: completed.attempt.external_action_attempt_id,
-      };
-    } catch {
-      const completed = this.dependencies.connector_store.completeExternalActionAttempt({
-        external_action_attempt_id: attempt.external_action_attempt_id,
-        owner,
-        outcome: "outcome_unknown",
-        error_code: "connector_worker_lost",
-        error_message: "The Connector worker ended after the external attempt began; its outcome must be reconciled.",
-      });
-      return {
-        receipt: completed.receipt,
-        attempt_id: completed.attempt.external_action_attempt_id,
-      };
-    }
-  }
-
-  async reconcileExternalAction(
-    externalEffectReceiptId: string,
-    owner: ConnectorOwner,
-  ): Promise<ExternalEffectReceipt> {
-    this.assertOwnerEffectsAllowed(owner);
-    const receipt = this.dependencies.connector_store.requireExternalEffectReceiptForOwner(
-      externalEffectReceiptId,
-      owner,
-    );
-    if (receipt.status !== "outcome_unknown") {
-      throw new ConnectorWorkerError("only an uncertain external effect can be reconciled");
-    }
-    const binding = this.dependencies.connector_store.requireBindingForOwner(receipt.connector_binding_id, owner);
-    const pin = this.pinExactRevision(binding, receipt.connector_binding_revision_id, owner);
-    const action = requirePinnedAction(pin, receipt.action_interface_id);
-    const runner = this.requireRunner(pin);
-    if (!runner.reconcileAction) throw new ConnectorWorkerError("its implementation cannot reconcile external actions");
-    const guard = new SecretEchoGuard();
-    let result: ConnectorWorkerReconciliationResult;
-    try {
-      result = await runner.reconcileAction({
-        pin,
-        action,
-        external_effect: receipt,
-        credentials: this.credentialAccess(
-          pin,
-          action.credential_slot_ids,
-          [...action.required_capability_ids, CONNECTOR_WORKER_RECONCILE_OPERATION_ID],
-          guard,
-        ),
-      });
-      guard.assertNoEcho(result);
-    } catch {
-      throw new ConnectorWorkerError("the uncertain external effect could not be reconciled");
-    }
-    return this.dependencies.connector_store.reconcileExternalAction({
-      external_effect_receipt_id: receipt.external_effect_receipt_id,
-      owner,
-      outcome: result.outcome,
-      evidence_ref: result.evidence_ref,
-      reconciled_by_principal_id: this.dependencies.principal_id,
-    }).receipt;
-  }
-
   private async ingest(
     pin: ConnectorWorkerPin,
     source: ConnectorSourceInterface,
@@ -1058,16 +865,6 @@ function requirePinnedSource(
     throw new ConnectorValidationError(`source interface '${sourceInterfaceId}' is not enabled by this pinned binding`);
   }
   return source;
-}
-
-function requirePinnedAction(pin: ConnectorWorkerPin, actionInterfaceId: string): ConnectorActionInterface {
-  const action = pin.definition_revision.content.action_interfaces.find((candidate) =>
-    candidate.interface_id === actionInterfaceId
-  );
-  if (!action || !pin.binding_revision.content.enabled_action_interface_ids.includes(actionInterfaceId)) {
-    throw new ConnectorValidationError(`action interface '${actionInterfaceId}' is not enabled by this pinned binding`);
-  }
-  return action;
 }
 
 function checkpointFromRow(row: ConnectorSourceCheckpointRow): ConnectorSourceCheckpoint {

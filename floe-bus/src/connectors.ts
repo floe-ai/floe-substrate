@@ -3,7 +3,6 @@ import type { DatabaseSync } from "node:sqlite";
 
 import type { JsonValue } from "./artefacts.js";
 import type { VersionedResourceRef } from "./actor-definitions.js";
-import type { OperationInvocationProvenance } from "./operations.js";
 
 export type ConnectorOwner = Readonly<{
   kind: "workspace" | "host" | "deployment";
@@ -38,24 +37,6 @@ export type ConnectorSourceInterface = Readonly<{
   checkpoint_schema_ref: string | null;
 }>;
 
-export type ConnectorActionInterface = Readonly<{
-  interface_id: string;
-  title: string;
-  action_kind: string;
-  input_schema_ref: string;
-  result_schema_ref: string;
-  effect: "none" | "reversible" | "irreversible";
-  idempotency: "required" | "provider_guaranteed";
-  retry: "safe" | "after_reconcile" | "never";
-  compensation_action_interface_id: string | null;
-  approval: Readonly<{
-    required: boolean;
-    policy_ref: string | null;
-  }>;
-  credential_slot_ids: readonly string[];
-  required_capability_ids: readonly string[];
-}>;
-
 export type ConnectorDefinitionContent = Readonly<{
   label: string;
   description: string;
@@ -64,7 +45,6 @@ export type ConnectorDefinitionContent = Readonly<{
   configuration_ui_schema_ref: string | null;
   credential_slots: readonly ConnectorCredentialSlot[];
   source_interfaces: readonly ConnectorSourceInterface[];
-  action_interfaces: readonly ConnectorActionInterface[];
   health: Readonly<{
     check_capability_id: string;
     evidence_schema_ref: string | null;
@@ -107,7 +87,6 @@ export type ConnectorBindingContent = Readonly<{
   }>;
   configuration: JsonValue;
   enabled_source_interface_ids: readonly string[];
-  enabled_action_interface_ids: readonly string[];
   secret_bindings: readonly ConnectorSecretBinding[];
   capability_grant_ids: readonly string[];
 }>;
@@ -211,50 +190,6 @@ export type ConnectorIngressResult = Readonly<{
   observation: ConnectorIngressObservation;
 }>;
 
-export type ExternalEffectReceipt = Readonly<{
-  external_effect_receipt_id: string;
-  connector_binding_id: string;
-  connector_binding_revision_id: string;
-  owner: ConnectorOwner;
-  action_interface_id: string;
-  idempotency_key: string;
-  input_digest: string;
-  input_refs: readonly VersionedResourceRef[];
-  secret_ref_ids: readonly string[];
-  capability_grant_ids: readonly string[];
-  approval_receipt_ids: readonly string[];
-  requested_by_principal_id: string;
-  invocation_provenance: OperationInvocationProvenance;
-  status: "requested" | "running" | "succeeded" | "failed" | "outcome_unknown";
-  attempt_count: number;
-  requested_at: string;
-  updated_at: string;
-  completed_at: string | null;
-}>;
-
-export type ExternalActionAttempt = Readonly<{
-  external_action_attempt_id: string;
-  external_effect_receipt_id: string;
-  attempt_number: number;
-  status: "started" | "succeeded" | "failed" | "outcome_unknown";
-  request_evidence_ref: ConnectorEvidenceRef;
-  provider_response_ref: ConnectorEvidenceRef | null;
-  observed_result_ref: ConnectorEvidenceRef | null;
-  error_code: string | null;
-  error_message: string | null;
-  started_at: string;
-  completed_at: string | null;
-}>;
-
-export type ExternalActionReconciliation = Readonly<{
-  external_action_reconciliation_id: string;
-  external_effect_receipt_id: string;
-  outcome: "succeeded" | "failed" | "outcome_unknown";
-  evidence_ref: ConnectorEvidenceRef;
-  reconciled_by_principal_id: string;
-  reconciled_at: string;
-}>;
-
 export class ConnectorValidationError extends Error {
   readonly code = "E_CONNECTOR_INVALID" as const;
   constructor(readonly reason: string) {
@@ -307,14 +242,6 @@ export class ConnectorIngressIdempotencyConflictError extends Error {
   ) {
     super("The same Connector ingress identity was observed with conflicting immutable facts.");
     this.name = "ConnectorIngressIdempotencyConflictError";
-  }
-}
-
-export class ExternalActionStateError extends Error {
-  readonly code = "E_EXTERNAL_ACTION_STATE" as const;
-  constructor(readonly external_effect_receipt_id: string, readonly reason: string) {
-    super(`External action '${external_effect_receipt_id}' cannot continue: ${reason}`);
-    this.name = "ExternalActionStateError";
   }
 }
 
@@ -452,58 +379,7 @@ export function applyConnectorSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_connector_ingress_observations_receipt
       ON connector_ingress_observations(connector_ingress_receipt_id, recorded_at);
 
-    CREATE TABLE IF NOT EXISTS external_effect_receipts (
-      external_effect_receipt_id TEXT PRIMARY KEY,
-      connector_binding_id TEXT NOT NULL REFERENCES connector_bindings(connector_binding_id),
-      connector_binding_revision_id TEXT NOT NULL REFERENCES connector_binding_revisions(connector_binding_revision_id),
-      owner_kind TEXT NOT NULL CHECK (owner_kind IN ('workspace', 'host', 'deployment')),
-      owner_id TEXT NOT NULL,
-      action_interface_id TEXT NOT NULL,
-      idempotency_key TEXT NOT NULL,
-      input_digest TEXT NOT NULL,
-      input_refs_json TEXT NOT NULL,
-      secret_ref_ids_json TEXT NOT NULL,
-      capability_grant_ids_json TEXT NOT NULL,
-      approval_receipt_ids_json TEXT NOT NULL,
-      requested_by_principal_id TEXT NOT NULL,
-      invocation_provenance_json TEXT NOT NULL,
-      status TEXT NOT NULL CHECK (status IN ('requested', 'running', 'succeeded', 'failed', 'outcome_unknown')),
-      attempt_count INTEGER NOT NULL,
-      requested_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      completed_at TEXT,
-      UNIQUE(connector_binding_id, action_interface_id, idempotency_key)
-    );
-
-    CREATE TABLE IF NOT EXISTS external_action_attempts (
-      external_action_attempt_id TEXT PRIMARY KEY,
-      external_effect_receipt_id TEXT NOT NULL REFERENCES external_effect_receipts(external_effect_receipt_id),
-      attempt_number INTEGER NOT NULL,
-      status TEXT NOT NULL CHECK (status IN ('started', 'succeeded', 'failed', 'outcome_unknown')),
-      request_evidence_ref_json TEXT NOT NULL,
-      provider_response_ref_json TEXT,
-      observed_result_ref_json TEXT,
-      error_code TEXT,
-      error_message TEXT,
-      started_at TEXT NOT NULL,
-      completed_at TEXT,
-      UNIQUE(external_effect_receipt_id, attempt_number)
-    );
-
-    CREATE TABLE IF NOT EXISTS external_action_reconciliations (
-      external_action_reconciliation_id TEXT PRIMARY KEY,
-      external_effect_receipt_id TEXT NOT NULL REFERENCES external_effect_receipts(external_effect_receipt_id),
-      outcome TEXT NOT NULL CHECK (outcome IN ('succeeded', 'failed', 'outcome_unknown')),
-      evidence_ref_json TEXT NOT NULL,
-      reconciled_by_principal_id TEXT NOT NULL,
-      reconciled_at TEXT NOT NULL
-    );
   `);
-  const externalEffectColumns = db.prepare("PRAGMA table_info(external_effect_receipts)").all() as Array<{ name: string }>;
-  if (!externalEffectColumns.some((column) => column.name === "invocation_provenance_json")) {
-    db.exec(`ALTER TABLE external_effect_receipts ADD COLUMN invocation_provenance_json TEXT NOT NULL
-      DEFAULT '{"cause_event_id":null,"delivery_ids":[],"execution_attempt_id":null,"node_execution_id":null,"scope_execution_id":null}'`);
-  }
 }
 
 export class ConnectorStore {
@@ -1027,238 +903,6 @@ export class ConnectorStore {
     return this.requireIngressReceiptForOwner(receipt.connector_ingress_receipt_id, owner);
   }
 
-  requestExternalAction(input: Readonly<{
-    connector_binding_id: string;
-    connector_binding_revision_id: string;
-    owner: ConnectorOwner;
-    action_interface_id: string;
-    idempotency_key: string;
-    input_digest: string;
-    input_refs?: readonly VersionedResourceRef[];
-    approval_receipt_ids?: readonly string[];
-    requested_by_principal_id: string;
-    invocation_provenance: OperationInvocationProvenance;
-  }>): { replayed: boolean; receipt: ExternalEffectReceipt } {
-    const owner = normalizeOwner(input.owner);
-    const { binding, revision, action } = this.requireActiveAction(
-      input.connector_binding_id,
-      input.connector_binding_revision_id,
-      owner,
-      input.action_interface_id,
-    );
-    const idempotencyKey = requireText(input.idempotency_key, "idempotency_key", 256);
-    const inputDigest = requireDigest(input.input_digest, "input_digest");
-    const inputRefs = normalizeRefs(input.input_refs ?? [], "input_refs");
-    const approvalReceiptIds = uniqueTexts(input.approval_receipt_ids ?? [], "approval_receipt_id");
-    if (action.approval.required && approvalReceiptIds.length === 0) {
-      throw new ConnectorValidationError("this external action requires an ApprovalReceipt reference");
-    }
-    if (!action.approval.required && approvalReceiptIds.length > 0) {
-      throw new ConnectorValidationError("this external action does not accept ApprovalReceipt references");
-    }
-    const requestedByPrincipalId = requireText(input.requested_by_principal_id, "requested_by_principal_id");
-    const invocationProvenance = normalizeInvocationProvenance(input.invocation_provenance);
-    const receiptId = `external_effect_${sha256([
-      binding.connector_binding_id,
-      action.interface_id,
-      idempotencyKey,
-    ].join("\u0000"))}`;
-    const existing = this.getExternalEffectReceipt(receiptId);
-    if (existing) {
-      if (
-        existing.input_digest !== inputDigest
-        || canonicalJson(existing.input_refs as unknown as JsonValue) !== canonicalJson(inputRefs as unknown as JsonValue)
-        || canonicalJson(existing.approval_receipt_ids as unknown as JsonValue) !== canonicalJson(approvalReceiptIds as unknown as JsonValue)
-        || existing.requested_by_principal_id !== requestedByPrincipalId
-        || canonicalJson(existing.invocation_provenance as unknown as JsonValue) !== canonicalJson(invocationProvenance as unknown as JsonValue)
-      ) {
-        throw new ExternalActionStateError(receiptId, "the idempotency key already identifies different immutable inputs");
-      }
-      return { replayed: true, receipt: existing };
-    }
-    const secretRefIds = revision.content.secret_bindings.map((item) => item.secret_ref_id).sort();
-    const at = this.now();
-    this.db.prepare(`
-      INSERT INTO external_effect_receipts (
-        external_effect_receipt_id, connector_binding_id,
-        connector_binding_revision_id, owner_kind, owner_id, action_interface_id,
-        idempotency_key, input_digest, input_refs_json, secret_ref_ids_json,
-        capability_grant_ids_json, approval_receipt_ids_json,
-        requested_by_principal_id, invocation_provenance_json,
-        status, attempt_count, requested_at,
-        updated_at, completed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'requested', 0, ?, ?, NULL)
-    `).run(
-      receiptId,
-      binding.connector_binding_id,
-      revision.connector_binding_revision_id,
-      owner.kind,
-      owner.id,
-      action.interface_id,
-      idempotencyKey,
-      inputDigest,
-      JSON.stringify(inputRefs),
-      JSON.stringify(secretRefIds),
-      JSON.stringify([...revision.content.capability_grant_ids].sort()),
-      JSON.stringify(approvalReceiptIds),
-      requestedByPrincipalId,
-      JSON.stringify(invocationProvenance),
-      at,
-      at,
-    );
-    return { replayed: false, receipt: this.requireExternalEffectReceiptForOwner(receiptId, owner) };
-  }
-
-  beginExternalActionAttempt(input: Readonly<{
-    external_effect_receipt_id: string;
-    owner: ConnectorOwner;
-    request_evidence_ref: ConnectorEvidenceRef;
-  }>): ExternalActionAttempt {
-    const owner = normalizeOwner(input.owner);
-    const receipt = this.requireExternalEffectReceiptForOwner(input.external_effect_receipt_id, owner);
-    const action = this.actionForReceipt(receipt);
-    if (receipt.status === "outcome_unknown") {
-      throw new ExternalActionStateError(receipt.external_effect_receipt_id, "reconcile the uncertain effect before any retry");
-    }
-    if (receipt.status === "running" || receipt.status === "succeeded") {
-      throw new ExternalActionStateError(receipt.external_effect_receipt_id, `its current status is ${receipt.status}`);
-    }
-    if (receipt.status === "failed") {
-      const reconciledFailure = this.latestActionReconciliation(receipt.external_effect_receipt_id)?.outcome === "failed";
-      if (action.retry === "never" || (action.retry === "after_reconcile" && !reconciledFailure)) {
-        throw new ExternalActionStateError(
-          receipt.external_effect_receipt_id,
-          action.retry === "never" ? "this action contract forbids retry" : "reconcile and prove the effect absent before retry",
-        );
-      }
-    }
-    const evidence = normalizeRef(input.request_evidence_ref, "request_evidence_ref");
-    const attemptId = `external_action_attempt_${randomUUID()}`;
-    const attemptNumber = receipt.attempt_count + 1;
-    const at = this.now();
-    transaction(this.db, "external_action_begin", () => {
-      this.db.prepare(`
-        INSERT INTO external_action_attempts (
-          external_action_attempt_id, external_effect_receipt_id, attempt_number,
-          status, request_evidence_ref_json, provider_response_ref_json,
-          observed_result_ref_json, error_code, error_message, started_at, completed_at
-        ) VALUES (?, ?, ?, 'started', ?, NULL, NULL, NULL, NULL, ?, NULL)
-      `).run(attemptId, receipt.external_effect_receipt_id, attemptNumber, JSON.stringify(evidence), at);
-      this.db.prepare(`
-        UPDATE external_effect_receipts
-        SET status = 'running', attempt_count = ?, updated_at = ?, completed_at = NULL
-        WHERE external_effect_receipt_id = ?
-      `).run(attemptNumber, at, receipt.external_effect_receipt_id);
-    });
-    return this.requireExternalActionAttempt(attemptId);
-  }
-
-  completeExternalActionAttempt(input: Readonly<{
-    external_action_attempt_id: string;
-    owner: ConnectorOwner;
-    outcome: "succeeded" | "failed" | "outcome_unknown";
-    provider_response_ref?: ConnectorEvidenceRef | null;
-    observed_result_ref?: ConnectorEvidenceRef | null;
-    error_code?: string | null;
-    error_message?: string | null;
-  }>): { receipt: ExternalEffectReceipt; attempt: ExternalActionAttempt } {
-    const owner = normalizeOwner(input.owner);
-    const attempt = this.requireExternalActionAttempt(input.external_action_attempt_id);
-    const receipt = this.requireExternalEffectReceiptForOwner(attempt.external_effect_receipt_id, owner);
-    if (attempt.status !== "started" || receipt.status !== "running") {
-      throw new ExternalActionStateError(receipt.external_effect_receipt_id, "the attempt is no longer active");
-    }
-    const providerResponse = input.provider_response_ref == null
-      ? null
-      : normalizeRef(input.provider_response_ref, "provider_response_ref");
-    const observedResult = input.observed_result_ref == null
-      ? null
-      : normalizeRef(input.observed_result_ref, "observed_result_ref");
-    if (input.outcome === "succeeded" && !providerResponse && !observedResult) {
-      throw new ConnectorValidationError("a succeeded external action requires provider or observed-result evidence");
-    }
-    if (input.outcome !== "succeeded" && input.error_message == null) {
-      throw new ConnectorValidationError("a failed or uncertain external action requires an error message");
-    }
-    const at = this.now();
-    transaction(this.db, "external_action_complete", () => {
-      this.db.prepare(`
-        UPDATE external_action_attempts
-        SET status = ?, provider_response_ref_json = ?, observed_result_ref_json = ?,
-            error_code = ?, error_message = ?, completed_at = ?
-        WHERE external_action_attempt_id = ?
-      `).run(
-        input.outcome,
-        providerResponse === null ? null : JSON.stringify(providerResponse),
-        observedResult === null ? null : JSON.stringify(observedResult),
-        input.error_code == null ? null : requireText(input.error_code, "error_code"),
-        input.error_message == null ? null : requireText(input.error_message, "error_message", 4096),
-        at,
-        attempt.external_action_attempt_id,
-      );
-      this.db.prepare(`
-        UPDATE external_effect_receipts
-        SET status = ?, updated_at = ?, completed_at = ?
-        WHERE external_effect_receipt_id = ?
-      `).run(
-        input.outcome,
-        at,
-        input.outcome === "succeeded" ? at : null,
-        receipt.external_effect_receipt_id,
-      );
-    });
-    return {
-      receipt: this.requireExternalEffectReceiptForOwner(receipt.external_effect_receipt_id, owner),
-      attempt: this.requireExternalActionAttempt(attempt.external_action_attempt_id),
-    };
-  }
-
-  reconcileExternalAction(input: Readonly<{
-    external_effect_receipt_id: string;
-    owner: ConnectorOwner;
-    outcome: "succeeded" | "failed" | "outcome_unknown";
-    evidence_ref: ConnectorEvidenceRef;
-    reconciled_by_principal_id: string;
-  }>): { receipt: ExternalEffectReceipt; reconciliation: ExternalActionReconciliation } {
-    const owner = normalizeOwner(input.owner);
-    const receipt = this.requireExternalEffectReceiptForOwner(input.external_effect_receipt_id, owner);
-    if (receipt.status !== "outcome_unknown") {
-      throw new ExternalActionStateError(receipt.external_effect_receipt_id, "only an uncertain effect can be reconciled");
-    }
-    const evidence = normalizeRef(input.evidence_ref, "evidence_ref");
-    const id = `external_action_reconciliation_${randomUUID()}`;
-    const at = this.now();
-    transaction(this.db, "external_action_reconcile", () => {
-      this.db.prepare(`
-        INSERT INTO external_action_reconciliations (
-          external_action_reconciliation_id, external_effect_receipt_id,
-          outcome, evidence_ref_json, reconciled_by_principal_id, reconciled_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
-      `).run(
-        id,
-        receipt.external_effect_receipt_id,
-        input.outcome,
-        JSON.stringify(evidence),
-        requireText(input.reconciled_by_principal_id, "reconciled_by_principal_id"),
-        at,
-      );
-      this.db.prepare(`
-        UPDATE external_effect_receipts
-        SET status = ?, updated_at = ?, completed_at = ?
-        WHERE external_effect_receipt_id = ?
-      `).run(
-        input.outcome,
-        at,
-        input.outcome === "succeeded" ? at : null,
-        receipt.external_effect_receipt_id,
-      );
-    });
-    return {
-      receipt: this.requireExternalEffectReceiptForOwner(receipt.external_effect_receipt_id, owner),
-      reconciliation: this.requireActionReconciliation(id),
-    };
-  }
-
   getDefinition(id: string): ConnectorDefinitionRecord | null {
     const row = this.db.prepare(`SELECT * FROM connector_definitions WHERE connector_definition_id = ?`).get(id) as any;
     return row ? rowToDefinition(row) : null;
@@ -1417,71 +1061,9 @@ export class ConnectorStore {
     `).all(receiptId) as any[]).map(rowToIngressObservation);
   }
 
-  getExternalEffectReceipt(id: string): ExternalEffectReceipt | null {
-    const row = this.db.prepare(`
-      SELECT * FROM external_effect_receipts WHERE external_effect_receipt_id = ?
-    `).get(id) as any;
-    return row ? rowToExternalEffect(row) : null;
-  }
-
-  listExternalEffectReceipts(
-    owner: ConnectorOwner,
-    options: Readonly<{
-      statuses?: readonly ExternalEffectReceipt["status"][];
-      connector_binding_id?: string;
-    }> = {},
-  ): ExternalEffectReceipt[] {
-    const normalized = normalizeOwner(owner);
-    const statuses = options.statuses === undefined
-      ? ["requested", "running", "succeeded", "failed", "outcome_unknown"] as const
-      : uniqueTexts(options.statuses, "external effect status") as ExternalEffectReceipt["status"][];
-    if (statuses.some((status) => !["requested", "running", "succeeded", "failed", "outcome_unknown"].includes(status))) {
-      throw new ConnectorValidationError("unknown ExternalEffectReceipt status");
-    }
-    if (statuses.length === 0) return [];
-    const bindingId = options.connector_binding_id === undefined
-      ? null
-      : requireText(options.connector_binding_id, "connector_binding_id");
-    const placeholders = statuses.map(() => "?").join(", ");
-    return (this.db.prepare(`
-      SELECT * FROM external_effect_receipts
-      WHERE owner_kind = ? AND owner_id = ?
-        AND status IN (${placeholders})
-        AND (? IS NULL OR connector_binding_id = ?)
-      ORDER BY requested_at, external_effect_receipt_id
-    `).all(normalized.kind, normalized.id, ...statuses, bindingId, bindingId) as any[])
-      .map(rowToExternalEffect);
-  }
-
-  requireExternalEffectReceiptForOwner(id: string, owner: ConnectorOwner): ExternalEffectReceipt {
-    const value = this.getExternalEffectReceipt(id);
-    if (!value) throw new ConnectorNotFoundError("ExternalEffectReceipt", id);
-    assertOwner(normalizeOwner(owner), value.owner);
-    return value;
-  }
-
-  listExternalActionAttempts(receiptId: string, owner: ConnectorOwner): ExternalActionAttempt[] {
-    this.requireExternalEffectReceiptForOwner(receiptId, owner);
-    return (this.db.prepare(`
-      SELECT * FROM external_action_attempts
-      WHERE external_effect_receipt_id = ? ORDER BY attempt_number
-    `).all(receiptId) as any[]).map(rowToActionAttempt);
-  }
-
   getSourceInterfaceForBinding(bindingId: string, owner: ConnectorOwner, interfaceId: string): ConnectorSourceInterface {
     const binding = this.requireBindingForOwner(bindingId, owner);
     return this.requireActiveSource(bindingId, binding.current_revision_id, owner, interfaceId).source;
-  }
-
-  getActionInterfaceForBinding(bindingId: string, owner: ConnectorOwner, interfaceId: string): ConnectorActionInterface {
-    const binding = this.requireBindingForOwner(bindingId, owner);
-    const revision = this.requireBindingRevision(binding.current_revision_id);
-    const definition = this.requireDefinitionRevision(revision.connector_definition_revision_id);
-    const action = definition.content.action_interfaces.find((item) => item.interface_id === interfaceId);
-    if (!action || !revision.content.enabled_action_interface_ids.includes(interfaceId)) {
-      throw new ConnectorValidationError(`action interface '${interfaceId}' is not enabled by this binding`);
-    }
-    return action;
   }
 
   private requireHealthObservation(id: string): ConnectorHealthObservation {
@@ -1490,45 +1072,6 @@ export class ConnectorStore {
     `).get(id) as any;
     if (!row) throw new ConnectorNotFoundError("ConnectorHealthObservation", id);
     return rowToHealth(row);
-  }
-
-  private requireExternalEffectReceipt(id: string): ExternalEffectReceipt {
-    const value = this.getExternalEffectReceipt(id);
-    if (!value) throw new ConnectorNotFoundError("ExternalEffectReceipt", id);
-    return value;
-  }
-
-  private requireExternalActionAttempt(id: string): ExternalActionAttempt {
-    const row = this.db.prepare(`
-      SELECT * FROM external_action_attempts WHERE external_action_attempt_id = ?
-    `).get(id) as any;
-    if (!row) throw new ConnectorNotFoundError("ExternalActionAttempt", id);
-    return rowToActionAttempt(row);
-  }
-
-  private requireActionReconciliation(id: string): ExternalActionReconciliation {
-    const row = this.db.prepare(`
-      SELECT * FROM external_action_reconciliations WHERE external_action_reconciliation_id = ?
-    `).get(id) as any;
-    if (!row) throw new ConnectorNotFoundError("ExternalActionReconciliation", id);
-    return rowToActionReconciliation(row);
-  }
-
-  private latestActionReconciliation(receiptId: string): ExternalActionReconciliation | null {
-    const row = this.db.prepare(`
-      SELECT * FROM external_action_reconciliations
-      WHERE external_effect_receipt_id = ?
-      ORDER BY reconciled_at DESC, external_action_reconciliation_id DESC LIMIT 1
-    `).get(receiptId) as any;
-    return row ? rowToActionReconciliation(row) : null;
-  }
-
-  private actionForReceipt(receipt: ExternalEffectReceipt): ConnectorActionInterface {
-    const revision = this.requireBindingRevision(receipt.connector_binding_revision_id);
-    const definition = this.requireDefinitionRevision(revision.connector_definition_revision_id);
-    const action = definition.content.action_interfaces.find((item) => item.interface_id === receipt.action_interface_id);
-    if (!action) throw new ConnectorValidationError("the pinned external action interface is no longer retained");
-    return action;
   }
 
   private requireActiveSource(
@@ -1551,26 +1094,6 @@ export class ConnectorStore {
     return { binding, revision, source };
   }
 
-  private requireActiveAction(
-    bindingId: string,
-    bindingRevisionId: string,
-    owner: ConnectorOwner,
-    interfaceId: string,
-  ): { binding: ConnectorBindingRecord; revision: ConnectorBindingRevision; action: ConnectorActionInterface } {
-    const binding = this.requireBindingForOwner(bindingId, owner);
-    if (binding.status !== "enabled") throw new ConnectorLifecycleConflictError(binding.connector_binding_id, "it is not enabled");
-    if (binding.current_revision_id !== bindingRevisionId) {
-      throw new ConnectorRevisionConflictError(binding.connector_binding_id, bindingRevisionId, binding.current_revision_id);
-    }
-    const revision = this.requireBindingRevision(bindingRevisionId);
-    const definition = this.requireDefinitionRevision(revision.connector_definition_revision_id);
-    const action = definition.content.action_interfaces.find((item) => item.interface_id === interfaceId);
-    if (!action || !revision.content.enabled_action_interface_ids.includes(interfaceId)) {
-      throw new ConnectorValidationError(`action interface '${interfaceId}' is not enabled by this binding`);
-    }
-    return { binding, revision, action };
-  }
-
   private assertBindingReady(binding: ConnectorBindingRecord): void {
     const revision = this.requireBindingRevision(binding.current_revision_id);
     const definition = this.requireDefinitionRevision(revision.connector_definition_revision_id);
@@ -1580,9 +1103,7 @@ export class ConnectorStore {
     }
     const selectedSources = definition.content.source_interfaces
       .filter((item) => revision.content.enabled_source_interface_ids.includes(item.interface_id));
-    const selectedActions = definition.content.action_interfaces
-      .filter((item) => revision.content.enabled_action_interface_ids.includes(item.interface_id));
-    const usedSlots = new Set([...selectedSources, ...selectedActions].flatMap((item) => item.credential_slot_ids));
+    const usedSlots = new Set(selectedSources.flatMap((item) => item.credential_slot_ids));
     const boundSlots = new Set(revision.content.secret_bindings.map((item) => item.slot_id));
     const missingSlots = definition.content.credential_slots
       .filter((slot) => slot.required && usedSlots.has(slot.slot_id) && !boundSlots.has(slot.slot_id))
@@ -1590,7 +1111,7 @@ export class ConnectorStore {
     if (missingSlots.length > 0) {
       throw new ConnectorLifecycleConflictError(binding.connector_binding_id, `required SecretRef slots are unresolved: ${missingSlots.join(", ")}`);
     }
-    const requiredCapabilities = [...selectedSources, ...selectedActions]
+    const requiredCapabilities = selectedSources
       .flatMap((item) => item.required_capability_ids);
     if (requiredCapabilities.length > 0 && revision.content.capability_grant_ids.length === 0) {
       throw new ConnectorLifecycleConflictError(binding.connector_binding_id, "required capabilities have no CapabilityGrant reference");
@@ -1704,14 +1225,6 @@ export function connectorBindingStateRevision(binding: ConnectorBindingRecord): 
   })));
 }
 
-export function externalEffectStateRevision(receipt: ExternalEffectReceipt): string {
-  return sha256(canonicalJson(normalizeJson({
-    status: receipt.status,
-    attempt_count: receipt.attempt_count,
-    updated_at: receipt.updated_at,
-  })));
-}
-
 export function validateConnectorDefinition(content: ConnectorDefinitionContent): void {
   requireText(content.label, "definition.label");
   requireText(content.description, "definition.description", 8192);
@@ -1725,9 +1238,7 @@ export function validateConnectorDefinition(content: ConnectorDefinitionContent)
     requireText(slot.title, `credential slot '${slot.slot_id}' title`);
     requireText(slot.purpose, `credential slot '${slot.slot_id}' purpose`, 4096);
   }
-  const sourceIds = uniqueTexts(content.source_interfaces.map((item) => item.interface_id), "source interface id");
-  const actionIds = uniqueTexts(content.action_interfaces.map((item) => item.interface_id), "action interface id");
-  uniqueTexts([...sourceIds, ...actionIds], "Connector interface id");
+  uniqueTexts(content.source_interfaces.map((item) => item.interface_id), "source interface id");
   const slots = new Set(slotIds);
   for (const source of content.source_interfaces) {
     requireText(source.title, `source '${source.interface_id}' title`);
@@ -1750,30 +1261,6 @@ export function validateConnectorDefinition(content: ConnectorDefinitionContent)
     uniqueTexts(source.required_capability_ids, `source '${source.interface_id}' capability id`);
     if (source.checkpoint_schema_ref !== null) requireText(source.checkpoint_schema_ref, "checkpoint_schema_ref");
   }
-  const actionsById = new Map(content.action_interfaces.map((item) => [item.interface_id, item]));
-  for (const action of content.action_interfaces) {
-    requireText(action.title, `action '${action.interface_id}' title`);
-    requireText(action.action_kind, `action '${action.interface_id}' kind`);
-    requireText(action.input_schema_ref, `action '${action.interface_id}' input_schema_ref`);
-    requireText(action.result_schema_ref, `action '${action.interface_id}' result_schema_ref`);
-    if (action.retry === "safe" && !["required", "provider_guaranteed"].includes(action.idempotency)) {
-      throw new ConnectorValidationError(`safely retried action '${action.interface_id}' must require idempotency`);
-    }
-    if (action.compensation_action_interface_id !== null) {
-      const compensation = actionsById.get(action.compensation_action_interface_id);
-      if (!compensation || compensation.interface_id === action.interface_id) {
-        throw new ConnectorValidationError(`action '${action.interface_id}' names an invalid compensation action`);
-      }
-    }
-    if (action.approval.required && !action.approval.policy_ref) {
-      throw new ConnectorValidationError(`action '${action.interface_id}' requires an approval policy reference`);
-    }
-    if (!action.approval.required && action.approval.policy_ref !== null) {
-      throw new ConnectorValidationError(`action '${action.interface_id}' cannot name approval policy when approval is disabled`);
-    }
-    verifySlots(action.credential_slot_ids, slots, `action '${action.interface_id}'`);
-    uniqueTexts(action.required_capability_ids, `action '${action.interface_id}' capability id`);
-  }
   requireText(content.health.check_capability_id, "definition.health.check_capability_id");
   if (content.health.evidence_schema_ref !== null) requireText(content.health.evidence_schema_ref, "health.evidence_schema_ref");
   if (content.rate_limit_policy_ref !== null) requireText(content.rate_limit_policy_ref, "rate_limit_policy_ref");
@@ -1791,12 +1278,8 @@ export function validateConnectorBinding(
   normalizeJson(content.configuration);
   rejectSecretMaterial(content.configuration, "binding.configuration");
   const sourceIds = new Set(definition.source_interfaces.map((item) => item.interface_id));
-  const actionIds = new Set(definition.action_interfaces.map((item) => item.interface_id));
   for (const id of uniqueTexts(content.enabled_source_interface_ids, "enabled source interface id")) {
     if (!sourceIds.has(id)) throw new ConnectorValidationError(`unknown source interface '${id}'`);
-  }
-  for (const id of uniqueTexts(content.enabled_action_interface_ids, "enabled action interface id")) {
-    if (!actionIds.has(id)) throw new ConnectorValidationError(`unknown action interface '${id}'`);
   }
   const slots = new Set(definition.credential_slots.map((item) => item.slot_id));
   const usedSlots = new Set<string>();
@@ -1909,37 +1392,6 @@ function uniqueTexts(values: readonly string[], label: string): string[] {
     result.push(value);
   }
   return result;
-}
-
-function normalizeInvocationProvenance(value: unknown): OperationInvocationProvenance {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new ConnectorValidationError("invocation_provenance must contain authenticated operation provenance");
-  }
-  const candidate = value as Record<string, unknown>;
-  const expected = [
-    "cause_event_id",
-    "delivery_ids",
-    "execution_attempt_id",
-    "node_execution_id",
-    "scope_execution_id",
-  ];
-  if (Object.keys(candidate).some((key) => !expected.includes(key))) {
-    throw new ConnectorValidationError("invocation_provenance contains an unknown field");
-  }
-  if (!Array.isArray(candidate.delivery_ids)) {
-    throw new ConnectorValidationError("invocation_provenance.delivery_ids must be an array");
-  }
-  const nullableRef = (field: string): string | null => {
-    const item = candidate[field];
-    return item == null ? null : requireText(item, `invocation_provenance.${field}`);
-  };
-  return {
-    cause_event_id: nullableRef("cause_event_id"),
-    delivery_ids: uniqueTexts(candidate.delivery_ids, "invocation_provenance.delivery_id"),
-    execution_attempt_id: nullableRef("execution_attempt_id"),
-    node_execution_id: nullableRef("node_execution_id"),
-    scope_execution_id: nullableRef("scope_execution_id"),
-  };
 }
 
 function requireTimestamp(value: unknown, label: string): string {
@@ -2133,61 +1585,5 @@ function rowToIngressObservation(row: any): ConnectorIngressObservation {
     evidence_refs: JSON.parse(String(row.evidence_refs_json)) as ConnectorEvidenceRef[],
     observed_at: String(row.observed_at),
     recorded_at: String(row.recorded_at),
-  };
-}
-
-function rowToExternalEffect(row: any): ExternalEffectReceipt {
-  return {
-    external_effect_receipt_id: String(row.external_effect_receipt_id),
-    connector_binding_id: String(row.connector_binding_id),
-    connector_binding_revision_id: String(row.connector_binding_revision_id),
-    owner: rowOwner(row),
-    action_interface_id: String(row.action_interface_id),
-    idempotency_key: String(row.idempotency_key),
-    input_digest: String(row.input_digest),
-    input_refs: JSON.parse(String(row.input_refs_json)) as VersionedResourceRef[],
-    secret_ref_ids: JSON.parse(String(row.secret_ref_ids_json)) as string[],
-    capability_grant_ids: JSON.parse(String(row.capability_grant_ids_json)) as string[],
-    approval_receipt_ids: JSON.parse(String(row.approval_receipt_ids_json)) as string[],
-    requested_by_principal_id: String(row.requested_by_principal_id),
-    invocation_provenance: normalizeInvocationProvenance(
-      JSON.parse(String(row.invocation_provenance_json)),
-    ),
-    status: row.status,
-    attempt_count: Number(row.attempt_count),
-    requested_at: String(row.requested_at),
-    updated_at: String(row.updated_at),
-    completed_at: row.completed_at == null ? null : String(row.completed_at),
-  };
-}
-
-function rowToActionAttempt(row: any): ExternalActionAttempt {
-  return {
-    external_action_attempt_id: String(row.external_action_attempt_id),
-    external_effect_receipt_id: String(row.external_effect_receipt_id),
-    attempt_number: Number(row.attempt_number),
-    status: row.status,
-    request_evidence_ref: JSON.parse(String(row.request_evidence_ref_json)) as ConnectorEvidenceRef,
-    provider_response_ref: row.provider_response_ref_json == null
-      ? null
-      : JSON.parse(String(row.provider_response_ref_json)) as ConnectorEvidenceRef,
-    observed_result_ref: row.observed_result_ref_json == null
-      ? null
-      : JSON.parse(String(row.observed_result_ref_json)) as ConnectorEvidenceRef,
-    error_code: row.error_code == null ? null : String(row.error_code),
-    error_message: row.error_message == null ? null : String(row.error_message),
-    started_at: String(row.started_at),
-    completed_at: row.completed_at == null ? null : String(row.completed_at),
-  };
-}
-
-function rowToActionReconciliation(row: any): ExternalActionReconciliation {
-  return {
-    external_action_reconciliation_id: String(row.external_action_reconciliation_id),
-    external_effect_receipt_id: String(row.external_effect_receipt_id),
-    outcome: row.outcome,
-    evidence_ref: JSON.parse(String(row.evidence_ref_json)) as ConnectorEvidenceRef,
-    reconciled_by_principal_id: String(row.reconciled_by_principal_id),
-    reconciled_at: String(row.reconciled_at),
   };
 }

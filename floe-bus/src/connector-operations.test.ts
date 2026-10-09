@@ -9,9 +9,7 @@ import {
   ENABLE_CONNECTOR_BINDING_OPERATION_ID,
   INGEST_CONNECTOR_OBSERVATION_OPERATION_ID,
   INSPECT_CONNECTOR_OPERATION_ID,
-  RECONCILE_CONNECTOR_ACTION_OPERATION_ID,
   RECORD_CONNECTOR_HEALTH_OPERATION_ID,
-  REQUEST_CONNECTOR_ACTION_OPERATION_ID,
   ROTATE_CONNECTOR_BINDING_OPERATION_ID,
   connectorOperationDefinitions,
   registerConnectorOperations,
@@ -25,7 +23,6 @@ import {
   type ConnectorDefinitionContent,
   type ConnectorOwner,
 } from "./connectors.js";
-import { ApprovalStore, applyApprovalSchema, type ApprovalAction } from "./approvals.js";
 import { AjvOperationSchemaValidator } from "./operation-schema-validator-ajv.js";
 import { createTestOperationRegistry } from "./operation-test-fixtures.js";
 import {
@@ -47,8 +44,6 @@ const OPERATION_IDS = [
   ROTATE_CONNECTOR_BINDING_OPERATION_ID,
   RECORD_CONNECTOR_HEALTH_OPERATION_ID,
   INGEST_CONNECTOR_OBSERVATION_OPERATION_ID,
-  REQUEST_CONNECTOR_ACTION_OPERATION_ID,
-  RECONCILE_CONNECTOR_ACTION_OPERATION_ID,
 ] as const;
 
 const WORKSPACE_ONE: ConnectorOwner = { kind: "workspace", id: "workspace:one" };
@@ -56,57 +51,6 @@ const WORKSPACE_TWO: ConnectorOwner = { kind: "workspace", id: "workspace:two" }
 const HOST_ONE: ConnectorOwner = { kind: "host", id: "host:one" };
 const DIGEST_A = "a".repeat(64);
 const EVIDENCE = { kind: "artefact_version", id: "artefact-version:evidence", revision: DIGEST_A } as const;
-const INVOCATION_PROVENANCE = {
-  cause_event_id: null,
-  delivery_ids: [] as string[],
-  execution_attempt_id: null,
-  node_execution_id: null,
-  scope_execution_id: null,
-} as const;
-
-function issuedApprovalReceipt(approvals: ApprovalStore): string {
-  const action: ApprovalAction = {
-    operation_id: "connector.worker.action.execute",
-    authorized_principal_id: "principal:connector-worker",
-    target: { kind: "connector_action", id: "publish", revision: "binding-revision:test" },
-    input_digest: DIGEST_A,
-    artefact_version_ids: [EVIDENCE.id],
-    composition_revision_id: null,
-    node_placement_id: null,
-    scope_execution_id: null,
-    node_execution_id: null,
-    connector_binding_revision_id: "binding-revision:test",
-    extension_package_version_id: "extension:example",
-    approval_policy_ref: { kind: "approval_policy", id: "policy:external-publish", revision: null },
-    capability_grant_ids: ["capgrant:connector"],
-    expected_effect: {
-      summary: "Publish the exact reviewed result.",
-      external: true,
-      reversibility: "irreversible",
-      resource_refs: [EVIDENCE],
-    },
-  };
-  const request = approvals.createRequest({
-    workspace_id: WORKSPACE_ONE.id,
-    action,
-    context_id: "context:approval",
-    requested_by_principal_id: "principal:operator",
-    reason: "Approve the exact external result.",
-    expires_at: "2026-09-04T06:00:00.000Z",
-    maximum_uses: 1,
-    idempotency_key: "connector-action-approval-request",
-  });
-  return approvals.decideRequest({
-    workspace_id: WORKSPACE_ONE.id,
-    approval_request_id: request.approval_request_id,
-    expected_state_revision: request.state_revision,
-    decision: "approved",
-    decided_by_principal_id: "principal:operator",
-    decision_event_id: `event:${request.approval_request_id}`,
-    decision_reason: "Approved.",
-  }).receipt!.approval_receipt_id;
-}
-
 function definition(label = "External work"): ConnectorDefinitionContent {
   return {
     label,
@@ -134,20 +78,6 @@ function definition(label = "External work"): ConnectorDefinitionContent {
       required_capability_ids: ["external.observe"],
       checkpoint_schema_ref: null,
     }],
-    action_interfaces: [{
-      interface_id: "publish",
-      title: "Publish result",
-      action_kind: "core:api-action",
-      input_schema_ref: "schema:publish-input@1",
-      result_schema_ref: "schema:publish-result@1",
-      effect: "irreversible",
-      idempotency: "required",
-      retry: "after_reconcile",
-      compensation_action_interface_id: null,
-      approval: { required: true, policy_ref: "policy:external-publish" },
-      credential_slot_ids: ["account"],
-      required_capability_ids: ["external.publish"],
-    }],
     health: {
       check_capability_id: "connector.health.inspect",
       evidence_schema_ref: "schema:connector-health@1",
@@ -161,7 +91,6 @@ function bindingContent(secretRef = "secretref:account:v1"): ConnectorBindingCon
     external_resource: { kind: "account", id: "account:example", display_name: "Example account" },
     configuration: { project: "project-one" },
     enabled_source_interface_ids: ["webhook"],
-    enabled_action_interface_ids: ["publish"],
     secret_bindings: [{ slot_id: "account", secret_ref_id: secretRef }],
     capability_grant_ids: ["capgrant:connector"],
   };
@@ -258,30 +187,24 @@ function seed(store: ConnectorStore, owner: ConnectorOwner = WORKSPACE_ONE, enab
 describe("Connector semantic operations", () => {
   let db: DatabaseSync;
   let store: ConnectorStore;
-  let approvals: ApprovalStore;
   let registry: ReturnType<typeof createTestOperationRegistry>;
   let tick: number;
 
   beforeEach(() => {
     db = new DatabaseSync(":memory:");
-    db.exec("CREATE TABLE contexts (context_id TEXT PRIMARY KEY)");
-    db.exec("INSERT INTO contexts (context_id) VALUES ('context:approval')");
     db.exec("PRAGMA foreign_keys = ON");
     tick = 0;
     store = new ConnectorStore(db, () => `2026-09-04T04:00:${String(tick++).padStart(2, "0")}.000Z`);
-    applyApprovalSchema(db);
-    approvals = new ApprovalStore(db, { now: () => "2026-09-04T04:00:00.000Z" });
     registry = registerConnectorOperations(
       createTestOperationRegistry(new AjvOperationSchemaValidator()),
       store,
-      approvals,
     );
   });
 
   afterEach(() => db.close());
 
   it("publishes one provider-neutral contract for Workspace and host authority", async () => {
-    const definitions = connectorOperationDefinitions(store, approvals);
+    const definitions = connectorOperationDefinitions(store);
     expect(definitions.map((item) => item.operation_id)).toEqual(OPERATION_IDS);
     expect(definitions.every((item) =>
       item.authority_boundary_kinds.join(",") === "workspace,host"
@@ -497,124 +420,5 @@ describe("Connector semantic operations", () => {
       },
       observation: { classification: "duplicate" },
     });
-  });
-
-  it("requires exact confirmation and approval before requesting an external effect", async () => {
-    const seeded = seed(store);
-    const target = { kind: "connector_binding", id: seeded.binding.connector_binding_id };
-    const input = { action_interface_id: "publish", input_digest: DIGEST_A, input_refs: [EVIDENCE] };
-    const noConfirmation = receipt(await registry.invoke(
-      environment(store),
-      request(REQUEST_CONNECTOR_ACTION_OPERATION_ID, input, "action-no-confirm", {
-        target,
-        expected_revision: connectorBindingStateRevision(seeded.binding),
-      }),
-    ));
-    expect(noConfirmation).toMatchObject({ state: "refused", refusal: { code: "operation_confirmation_required" } });
-
-    const confirmed = authority(WORKSPACE_ONE, "interactive", {
-      confirmed_prompts: new Set(["connector.external-action.confirm"]),
-    });
-    const noApproval = receipt(await registry.invoke(
-      environment(store, confirmed),
-      request(REQUEST_CONNECTOR_ACTION_OPERATION_ID, input, "action-no-approval", {
-        target,
-        expected_revision: connectorBindingStateRevision(seeded.binding),
-      }),
-    ));
-    expect(noApproval).toMatchObject({
-      state: "refused",
-      refusal: { code: "connector_action_approval_required", details: { policy_ref: "policy:external-publish" } },
-    });
-
-    const unknownApproval = receipt(await registry.invoke(
-      environment(store, confirmed),
-      request(REQUEST_CONNECTOR_ACTION_OPERATION_ID, {
-        ...input,
-        approval_receipt_ids: ["approvalreceipt:not-retained"],
-      }, "action-unknown-approval", {
-        target,
-        expected_revision: connectorBindingStateRevision(seeded.binding),
-      }),
-    ));
-    expect(unknownApproval).toMatchObject({
-      state: "refused",
-      refusal: { code: "connector_input_invalid" },
-    });
-
-    const approvalReceiptId = issuedApprovalReceipt(approvals);
-    const approved = authority(WORKSPACE_ONE, "interactive", {
-      confirmed_prompts: new Set(["connector.external-action.confirm"]),
-    });
-    const requested = receipt(await registry.invoke(
-      environment(store, approved),
-      request(REQUEST_CONNECTOR_ACTION_OPERATION_ID, {
-        ...input,
-        approval_receipt_ids: [approvalReceiptId],
-      }, "action-approved", {
-        target,
-        expected_revision: connectorBindingStateRevision(seeded.binding),
-      }),
-    ));
-    expect(requested).toMatchObject({
-      state: "accepted",
-      result: {
-        external_effect: {
-          status: "requested",
-          approval_receipt_ids: [approvalReceiptId],
-          invocation_provenance: INVOCATION_PROVENANCE,
-        },
-      },
-    });
-  });
-
-  it("reconciles uncertain effects before a retry can be considered", async () => {
-    const seeded = seed(store);
-    const requested = store.requestExternalAction({
-      connector_binding_id: seeded.binding.connector_binding_id,
-      connector_binding_revision_id: seeded.binding.current_revision_id,
-      owner: WORKSPACE_ONE,
-      action_interface_id: "publish",
-      idempotency_key: "external-effect:one",
-      input_digest: DIGEST_A,
-      approval_receipt_ids: ["approval:one"],
-      requested_by_principal_id: "principal:operator",
-      invocation_provenance: INVOCATION_PROVENANCE,
-    });
-    const attempt = store.beginExternalActionAttempt({
-      external_effect_receipt_id: requested.receipt.external_effect_receipt_id,
-      owner: WORKSPACE_ONE,
-      request_evidence_ref: EVIDENCE,
-    });
-    const uncertain = store.completeExternalActionAttempt({
-      external_action_attempt_id: attempt.external_action_attempt_id,
-      owner: WORKSPACE_ONE,
-      outcome: "outcome_unknown",
-      provider_response_ref: EVIDENCE,
-      error_code: "connection_lost",
-      error_message: "The request left Floe before the connection closed.",
-    });
-    expect(() => store.beginExternalActionAttempt({
-      external_effect_receipt_id: uncertain.receipt.external_effect_receipt_id,
-      owner: WORKSPACE_ONE,
-      request_evidence_ref: EVIDENCE,
-    })).toThrow(/reconcile the uncertain effect/);
-
-    const reconciled = receipt(await registry.invoke(
-      environment(store),
-      request(RECONCILE_CONNECTOR_ACTION_OPERATION_ID, {
-        outcome: "failed",
-        evidence_ref: { kind: "external_observation", id: "provider:no-effect", revision: "1" },
-      }, "reconcile", {
-        target: { kind: "external_effect_receipt", id: uncertain.receipt.external_effect_receipt_id },
-        expected_revision: externalEffectStateRevision(uncertain.receipt),
-      }),
-    ));
-    expect(reconciled).toMatchObject({ state: "completed", result: { external_effect: { status: "failed" } } });
-    expect(store.beginExternalActionAttempt({
-      external_effect_receipt_id: uncertain.receipt.external_effect_receipt_id,
-      owner: WORKSPACE_ONE,
-      request_evidence_ref: EVIDENCE,
-    }).attempt_number).toBe(2);
   });
 });

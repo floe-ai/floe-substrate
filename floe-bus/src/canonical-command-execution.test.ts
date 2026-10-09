@@ -245,7 +245,6 @@ describe("native canonical Command execution", () => {
     expect(attempt.resource_use).toEqual({ invocations: 1 });
     expect(attempt.result).toMatchObject({
       output_port_ids: ["done"],
-      external_effect_receipt_ids: [],
     });
     expect(worker.worker_endpoint_id).not.toBe(fixture.commandId);
     expect(worker.worker_principal_id).not.toBe(fixture.commandId);

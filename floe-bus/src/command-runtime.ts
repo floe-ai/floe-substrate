@@ -87,8 +87,6 @@ export type CommandHostResult = Readonly<{
   outputs: Readonly<Record<string, readonly CommandOutputValue[]>>;
   resource_use?: Readonly<Record<string, number>>;
   evidence_refs?: readonly Readonly<{ kind: string; id: string; revision?: string | null }>[];
-  /** Exact canonical ExternalEffectReceipt refs returned by brokered operations. */
-  external_effect_receipt_ids?: readonly string[];
 }>;
 
 export type ResolvedCommandImplementation = Readonly<{

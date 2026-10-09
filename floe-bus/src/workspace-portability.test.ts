@@ -134,11 +134,6 @@ describe("canonical portable Workspace package", { timeout: 0 }, () => {
       pending_id: "pending_1",
       status: "pending",
     }));
-    expect(row(target, "SELECT * FROM external_effect_receipts")).toEqual(expect.objectContaining({
-      external_effect_receipt_id: "external_effect_1",
-      status: "succeeded",
-      idempotency_key: "external-once",
-    }));
     expect(row(target, "SELECT * FROM artefact_lineage")).toEqual(expect.objectContaining({
       subject_version_id: "artefact_version_result",
       object_version_id: "artefact_version_source",
@@ -175,7 +170,6 @@ describe("canonical portable Workspace package", { timeout: 0 }, () => {
       workspace_locator: targetRoot,
     });
     expect(replay.inserted_record_count).toBe(0);
-    expect(Number(row(target, "SELECT COUNT(*) AS count FROM external_effect_receipts").count)).toBe(1);
     expect(Number(row(target, "SELECT COUNT(*) AS count FROM event_queue").count)).toBe(1);
     expect(Number(row(target, "SELECT COUNT(*) AS count FROM operation_invocation_ledger").count)).toBe(1);
   });
@@ -637,16 +631,6 @@ function fixtureDatabase(path: string): DatabaseSync {
       code TEXT, message TEXT NOT NULL, evidence_refs_json TEXT NOT NULL,
       observed_at TEXT NOT NULL, recorded_at TEXT NOT NULL
     );
-    CREATE TABLE external_effect_receipts (
-      external_effect_receipt_id TEXT PRIMARY KEY, connector_binding_id TEXT NOT NULL,
-      connector_binding_revision_id TEXT NOT NULL, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL,
-      action_interface_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, input_digest TEXT NOT NULL,
-      input_refs_json TEXT NOT NULL, secret_ref_ids_json TEXT NOT NULL,
-      capability_grant_ids_json TEXT NOT NULL, approval_receipt_ids_json TEXT NOT NULL,
-      requested_by_principal_id TEXT NOT NULL, invocation_provenance_json TEXT NOT NULL,
-      status TEXT NOT NULL, attempt_count INTEGER NOT NULL, requested_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL, completed_at TEXT
-    );
     CREATE TABLE secret_refs (
       secret_ref_id TEXT PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL,
       resource_kind TEXT NOT NULL, resource_id TEXT NOT NULL, secret_kind TEXT NOT NULL,
@@ -857,11 +841,6 @@ function seedCompleteWorkspace(
   db.prepare("INSERT INTO connector_binding_revisions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
     "connector_binding_revision_1", "connector_binding_source", "connector_definition_revision_1", 1,
     null, "f".repeat(64), "{}", "principal_operator", at, at,
-  );
-  db.prepare("INSERT INTO external_effect_receipts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
-    "external_effect_1", "connector_binding_source", "connector_binding_revision_1", "workspace",
-    "workspace_alpha", "publish", "external-once", "1".repeat(64), "[]", '["secret_openai"]',
-    '["grant_workspace"]', "[]", "principal_operator", "{}", "succeeded", 1, at, at, at,
   );
   db.prepare("INSERT INTO secret_refs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
     "secret_openai", "workspace", "workspace_alpha", "provider_account", "account_openai",

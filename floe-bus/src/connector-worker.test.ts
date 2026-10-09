@@ -17,28 +17,17 @@ import {
   normalizeWatchedFolderArrival,
 } from "./connector-source-adapters.js";
 import {
-  CONNECTOR_WORKER_ACTION_OPERATION_ID,
   CONNECTOR_WORKER_HEALTH_OPERATION_ID,
-  CONNECTOR_WORKER_RECONCILE_OPERATION_ID,
   CONNECTOR_WORKER_SOURCE_OPERATION_ID,
   ConnectorWorkerCheckpointStore,
   ConnectorWorkerError,
   ConnectorWorkerHost,
   planDurableSchedule,
-  type ConnectorWorkerActionResult,
   type ConnectorWorkerDependencies,
-  type ConnectorWorkerReconciliationResult,
   type ConnectorWorkerRunner,
 } from "./connector-worker.js";
 
 const OWNER: ConnectorOwner = { kind: "workspace", id: "workspace:connector-worker" };
-const INVOCATION_PROVENANCE = {
-  cause_event_id: null,
-  delivery_ids: [] as string[],
-  execution_attempt_id: null,
-  node_execution_id: null,
-  scope_execution_id: null,
-} as const;
 const IMPLEMENTATION = { kind: "extension_package_version", id: "extension:connector-test", revision: "1.0.0" } as const;
 const RAW_SECRET = "subscription-secret-value-5299";
 const SECRET_REF = "secretref:connector-account";
@@ -50,7 +39,7 @@ const DIGEST_TWO = createHash("sha256").update("two").digest("hex");
 function definition(): ConnectorDefinitionContent {
   return {
     label: "Connector worker fixture",
-    description: "Exercises canonical source and action patterns.",
+    description: "Exercises canonical source patterns.",
     implementation_ref: IMPLEMENTATION,
     configuration_schema_ref: "schema:connector-worker@1",
     configuration_ui_schema_ref: null,
@@ -118,20 +107,6 @@ function definition(): ConnectorDefinitionContent {
         checkpoint_schema_ref: "schema:schedule-state@1",
       },
     ],
-    action_interfaces: [{
-      interface_id: "publish",
-      title: "Publish through API",
-      action_kind: "extension:api-action",
-      input_schema_ref: "schema:publish-input@1",
-      result_schema_ref: "schema:publish-result@1",
-      effect: "irreversible",
-      idempotency: "provider_guaranteed",
-      retry: "after_reconcile",
-      compensation_action_interface_id: null,
-      approval: { required: true, policy_ref: "policy:publish-exact-input" },
-      credential_slot_ids: ["account"],
-      required_capability_ids: [CONNECTOR_WORKER_ACTION_OPERATION_ID, CONNECTOR_WORKER_RECONCILE_OPERATION_ID],
-    }],
     health: {
       check_capability_id: CONNECTOR_WORKER_HEALTH_OPERATION_ID,
       evidence_schema_ref: "schema:connector-health@1",
@@ -156,7 +131,6 @@ function bindingContent(): ConnectorBindingContent {
       },
     },
     enabled_source_interface_ids: ["folder", "webhook", "poll", "schedule"],
-    enabled_action_interface_ids: ["publish"],
     secret_bindings: [{ slot_id: "account", secret_ref_id: SECRET_REF }],
     capability_grant_ids: [GRANT_ID],
   };
@@ -214,18 +188,8 @@ function makeHarness() {
   let materializeFailures = 0;
   const evidenceFacts: unknown[] = [];
   let evidenceSequence = 0;
-  let approvalValid = true;
   let workspaceEffectsAllowed = true;
-  const approvalChecks: unknown[] = [];
   const scheduleWakes: unknown[] = [];
-  let actionResult: ConnectorWorkerActionResult = {
-    outcome: "succeeded",
-    provider_response_ref: { kind: "provider_receipt", id: "provider:publish:one", revision: "1" },
-  };
-  let reconciliationResult: ConnectorWorkerReconciliationResult = {
-    outcome: "failed",
-    evidence_ref: { kind: "external_observation", id: "provider:not-applied", revision: "1" },
-  };
   let pollNumber = 0;
   const pollCheckpoints: Array<ConnectorEvidenceRef | null> = [];
 
@@ -268,18 +232,6 @@ function makeHarness() {
         observed_at: `2026-09-04T03:${String(10 + pollNumber).padStart(2, "0")}:00.000Z`,
       };
     },
-    executeAction: async ({ credentials }) => {
-      await credentials.withSecret("account", CONNECTOR_WORKER_ACTION_OPERATION_ID, async (material) => {
-        expect(new TextDecoder().decode(material)).toBe(RAW_SECRET);
-      });
-      return actionResult;
-    },
-    reconcileAction: async ({ credentials }) => {
-      await credentials.withSecret("account", CONNECTOR_WORKER_RECONCILE_OPERATION_ID, async (material) => {
-        expect(new TextDecoder().decode(material)).toBe(RAW_SECRET);
-      });
-      return reconciliationResult;
-    },
   };
 
   const dependencies: ConnectorWorkerDependencies = {
@@ -290,17 +242,6 @@ function makeHarness() {
     workspace_effects_allowed: () => workspaceEffectsAllowed,
     resolve_runner: (implementation) => JSON.stringify(implementation) === JSON.stringify(IMPLEMENTATION) ? runner : null,
     resolve_secret_grant: (input) => input.candidate_grant_ids.includes(GRANT_ID) ? GRANT_ID : null,
-    begin_action_attempt: async (input) => {
-      approvalChecks.push(input);
-      if (input.action.approval.required && !approvalValid) {
-        throw new ConnectorWorkerError("the required ApprovalReceipt is unavailable or invalid (approval_expired)");
-      }
-      return connectorStore.beginExternalActionAttempt({
-        external_effect_receipt_id: input.external_effect.external_effect_receipt_id,
-        owner: input.pin.owner,
-        request_evidence_ref: input.request_evidence_ref,
-      });
-    },
     materialize_ingress: async ({ ingress }) => {
       if (materializeFailures > 0) {
         materializeFailures -= 1;
@@ -334,14 +275,10 @@ function makeHarness() {
     secretRequests,
     materialized,
     evidenceFacts,
-    approvalChecks,
     scheduleWakes,
     pollCheckpoints,
-    setApprovalValid: (value: boolean) => { approvalValid = value; },
     setWorkspaceEffectsAllowed: (value: boolean) => { workspaceEffectsAllowed = value; },
     failNextMaterializations: (count: number) => { materializeFailures = count; },
-    setActionResult: (value: ConnectorWorkerActionResult) => { actionResult = value; },
-    setReconciliationResult: (value: ConnectorWorkerReconciliationResult) => { reconciliationResult = value; },
   };
 }
 
@@ -394,7 +331,7 @@ describe("canonical Connector worker", () => {
       .toThrow(/relative workspace path/);
   });
 
-  it("fails closed before Connector ingress, actions, or reconciliation while its Workspace is held", async () => {
+  it("fails closed before Connector ingress while its Workspace is held", async () => {
     const arrival = {
       relative_path: "concepts/held.png",
       content_sha256: DIGEST_ONE,
@@ -402,30 +339,6 @@ describe("canonical Connector worker", () => {
       observed_at: "2026-09-04T05:00:00.000Z",
       evidence_ref: { kind: "artefact_version", id: "artefactversion:held", revision: DIGEST_ONE },
     };
-    const requested = harness.connectorStore.requestExternalAction({
-      connector_binding_id: harness.enabled.connector_binding_id,
-      connector_binding_revision_id: harness.enabled.current_revision_id,
-      owner: OWNER,
-      action_interface_id: "publish",
-      idempotency_key: "publish:held",
-      input_digest: DIGEST_ONE,
-      input_refs: [EVIDENCE],
-      approval_receipt_ids: ["approval:held"],
-      requested_by_principal_id: "principal:operator",
-      invocation_provenance: INVOCATION_PROVENANCE,
-    }).receipt;
-    const attempt = harness.connectorStore.beginExternalActionAttempt({
-      external_effect_receipt_id: requested.external_effect_receipt_id,
-      owner: OWNER,
-      request_evidence_ref: EVIDENCE,
-    });
-    harness.connectorStore.completeExternalActionAttempt({
-      external_action_attempt_id: attempt.external_action_attempt_id,
-      owner: OWNER,
-      outcome: "outcome_unknown",
-      error_code: "connection_lost",
-      error_message: "The prior outcome is unknown.",
-    });
     harness.setWorkspaceEffectsAllowed(false);
 
     await expect(harness.host.receivePush(
@@ -434,16 +347,10 @@ describe("canonical Connector worker", () => {
       "folder",
       arrival,
     )).rejects.toThrow(/restored Workspace is held/);
-    await expect(harness.host.executeExternalAction(requested.external_effect_receipt_id, OWNER))
-      .rejects.toThrow(/restored Workspace is held/);
-    await expect(harness.host.reconcileExternalAction(requested.external_effect_receipt_id, OWNER))
-      .rejects.toThrow(/restored Workspace is held/);
 
     expect(harness.materialized).toEqual([]);
     expect(harness.secretRequests).toEqual([]);
     expect(harness.evidenceFacts).toEqual([]);
-    expect(harness.connectorStore.requireExternalEffectReceiptForOwner(requested.external_effect_receipt_id, OWNER))
-      .toMatchObject({ status: "outcome_unknown", attempt_count: 1 });
   });
 
   it("coalesces concurrent replay while canonical Event materialization is in flight", async () => {
@@ -687,136 +594,6 @@ describe("canonical Connector worker", () => {
       expect.objectContaining({ next_due_at: "2026-09-04T06:00:00.000Z" }),
       expect.objectContaining({ next_due_at: "2026-09-04T06:00:00.000Z" }),
     ]);
-  });
-
-  it("blocks action execution until a canonical ApprovalReceipt is verified", async () => {
-    const requested = harness.connectorStore.requestExternalAction({
-      connector_binding_id: harness.enabled.connector_binding_id,
-      connector_binding_revision_id: harness.enabled.current_revision_id,
-      owner: OWNER,
-      action_interface_id: "publish",
-      idempotency_key: "publish:approval-test",
-      input_digest: DIGEST_TWO,
-      input_refs: [EVIDENCE],
-      approval_receipt_ids: ["approval:expected-id-is-not-proof"],
-      requested_by_principal_id: "principal:operator",
-      invocation_provenance: INVOCATION_PROVENANCE,
-    }).receipt;
-    harness.setApprovalValid(false);
-
-    await expect(harness.host.executeExternalAction(requested.external_effect_receipt_id, OWNER))
-      .rejects.toThrow(/ApprovalReceipt is unavailable or invalid/);
-    expect(harness.connectorStore.requireExternalEffectReceiptForOwner(requested.external_effect_receipt_id, OWNER))
-      .toMatchObject({ status: "requested", attempt_count: 0 });
-    expect(harness.approvalChecks).toEqual([
-      expect.objectContaining({
-        external_effect: expect.objectContaining({ input_digest: DIGEST_TWO }),
-        approval_receipt_ids: ["approval:expected-id-is-not-proof"],
-      }),
-    ]);
-  });
-
-  it("records runner loss as outcome_unknown, requires reconciliation, then retries the same effect identity", async () => {
-    const firstRequest = harness.connectorStore.requestExternalAction({
-      connector_binding_id: harness.enabled.connector_binding_id,
-      connector_binding_revision_id: harness.enabled.current_revision_id,
-      owner: OWNER,
-      action_interface_id: "publish",
-      idempotency_key: "publish:one",
-      input_digest: DIGEST_ONE,
-      input_refs: [EVIDENCE],
-      approval_receipt_ids: ["approval:publish:one"],
-      requested_by_principal_id: "principal:operator",
-      invocation_provenance: INVOCATION_PROVENANCE,
-    });
-    const replay = harness.connectorStore.requestExternalAction({
-      connector_binding_id: harness.enabled.connector_binding_id,
-      connector_binding_revision_id: harness.enabled.current_revision_id,
-      owner: OWNER,
-      action_interface_id: "publish",
-      idempotency_key: "publish:one",
-      input_digest: DIGEST_ONE,
-      input_refs: [EVIDENCE],
-      approval_receipt_ids: ["approval:publish:one"],
-      requested_by_principal_id: "principal:operator",
-      invocation_provenance: INVOCATION_PROVENANCE,
-    });
-    expect(replay).toMatchObject({ replayed: true, receipt: { external_effect_receipt_id: firstRequest.receipt.external_effect_receipt_id } });
-
-    harness.runner.executeAction = async ({ credentials }) => {
-      await credentials.withSecret("account", CONNECTOR_WORKER_ACTION_OPERATION_ID, () => undefined);
-      throw new Error(`${RAW_SECRET}: connection closed after send`);
-    };
-    const uncertain = await harness.host.executeExternalAction(firstRequest.receipt.external_effect_receipt_id, OWNER);
-    expect(uncertain.receipt).toMatchObject({ status: "outcome_unknown", attempt_count: 1 });
-    expect(JSON.stringify(harness.connectorStore.listExternalActionAttempts(uncertain.receipt.external_effect_receipt_id, OWNER)))
-      .not.toContain(RAW_SECRET);
-    await expect(harness.host.executeExternalAction(uncertain.receipt.external_effect_receipt_id, OWNER))
-      .rejects.toThrow(/reconcile the uncertain effect/);
-
-    harness.setReconciliationResult({
-      outcome: "failed",
-      evidence_ref: { kind: "external_observation", id: "provider:not-applied", revision: "2" },
-    });
-    const reconciled = await harness.host.reconcileExternalAction(uncertain.receipt.external_effect_receipt_id, OWNER);
-    expect(reconciled.status).toBe("failed");
-
-    harness.runner.executeAction = async ({ credentials }) => {
-      await credentials.withSecret("account", CONNECTOR_WORKER_ACTION_OPERATION_ID, () => undefined);
-      return {
-        outcome: "succeeded",
-        provider_response_ref: { kind: "provider_receipt", id: "provider:publish:one", revision: "confirmed" },
-      };
-    };
-    const succeeded = await harness.host.executeExternalAction(uncertain.receipt.external_effect_receipt_id, OWNER);
-    expect(succeeded.receipt).toMatchObject({
-      external_effect_receipt_id: firstRequest.receipt.external_effect_receipt_id,
-      idempotency_key: "publish:one",
-      status: "succeeded",
-      attempt_count: 2,
-    });
-  });
-
-  it("keeps outstanding action receipts discoverable across a worker-host restart", () => {
-    const requested = harness.connectorStore.requestExternalAction({
-      connector_binding_id: harness.enabled.connector_binding_id,
-      connector_binding_revision_id: harness.enabled.current_revision_id,
-      owner: OWNER,
-      action_interface_id: "publish",
-      idempotency_key: "publish:restart",
-      input_digest: DIGEST_TWO,
-      approval_receipt_ids: ["approval:publish:restart"],
-      requested_by_principal_id: "principal:operator",
-      invocation_provenance: INVOCATION_PROVENANCE,
-    }).receipt;
-    const attempt = harness.connectorStore.beginExternalActionAttempt({
-      external_effect_receipt_id: requested.external_effect_receipt_id,
-      owner: OWNER,
-      request_evidence_ref: EVIDENCE,
-    });
-
-    const restartedStore = new ConnectorStore(harness.db);
-    expect(restartedStore.listExternalEffectReceipts(OWNER, { statuses: ["requested"] }))
-      .toEqual([]);
-    expect(restartedStore.listExternalEffectReceipts(OWNER, {
-      statuses: ["running", "outcome_unknown"],
-      connector_binding_id: harness.enabled.connector_binding_id,
-    })).toEqual([
-      expect.objectContaining({
-        external_effect_receipt_id: requested.external_effect_receipt_id,
-        connector_binding_revision_id: harness.enabled.current_revision_id,
-        status: "running",
-      }),
-    ]);
-    expect(restartedStore.listExternalEffectReceipts(
-      { kind: "workspace", id: "workspace:other" },
-      { statuses: ["running", "outcome_unknown"] },
-    )).toEqual([]);
-    expect(restartedStore.listExternalActionAttempts(requested.external_effect_receipt_id, OWNER))
-      .toEqual([expect.objectContaining({
-        external_action_attempt_id: attempt.external_action_attempt_id,
-        status: "started",
-      })]);
   });
 
   it("never persists a worker response that echoes brokered credential material", async () => {

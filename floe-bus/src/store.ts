@@ -177,7 +177,7 @@ import {
   type RuntimeProcessingContract,
 } from "./runtime-processing-contract.js";
 import { runDatabaseUpgrade } from "./database-upgrade.js";
-import { dropRetiredExtensionTables } from "./retired-extension-tables.js";
+import { dropRetiredTables } from "./retired-tables.js";
 import { SemanticOperationRegistry, type OperationInvocationReceipt } from "./operations.js";
 import { BusOperationGovernanceControlPlane } from "./operation-governance-control-plane.js";
 import { AjvOperationSchemaValidator } from "./operation-schema-validator-ajv.js";
@@ -862,7 +862,7 @@ export class BusStore {
       migrate: () => this.migrate(),
       rebuild: () => {
         rebuildCapabilityGrantsForUntilRevoked(this.db);
-        dropRetiredExtensionTables(this.db);
+        dropRetiredTables(this.db);
       },
     });
     this.localHostId = getOrCreateLocalHostIdentity(this.db).host_id;
@@ -1069,7 +1069,7 @@ export class BusStore {
       binding_changed: (ref, principalId) => this.reconcileCredentialBinding(ref, principalId),
     });
     for (const operation of runtimeCredentialAccessOperations({ actors: this.actorDefinitionStore, grants: this.capabilityGrantStore, refs: this.secretRefStore, access_revoked: (ref, principalId) => this.reconcileCredentialBinding(ref, principalId) })) operationRegistry.register(operation);
-    operationRegistry = registerConnectorOperations(operationRegistry, this.connectorStore, this.approvalStore);
+    operationRegistry = registerConnectorOperations(operationRegistry, this.connectorStore);
     this.approvalOperationBackend = new BusApprovalOperationBackend(this);
     operationRegistry = registerApprovalOperations(operationRegistry, this.approvalOperationBackend);
     operationRegistry = registerPolicyOperations(operationRegistry, this.policyStore);
@@ -8779,7 +8779,6 @@ export class BusStore {
         resource_use: { ...(result.resource_use ?? {}) },
         result: {
           output_port_ids: Object.keys(result.outputs).sort(),
-          external_effect_receipt_ids: [...(result.external_effect_receipt_ids ?? [])],
           evidence_refs: [...(result.evidence_refs ?? [])],
         },
       });
@@ -8963,9 +8962,6 @@ export class BusStore {
         `output did not match Command definition '${input.definition.command_definition_revision_id}'`,
       );
     }
-    this.validateCommandExternalReceipts(input.definition, input.result, input.scope_execution.workspace_id,
-      input.node_execution.node_execution_id, input.contract.execution_attempt.attempt_id);
-
     for (let index = 0; index < publications.length; index += 1) {
       const publication = publications[index]!;
       const currentNode = this.scopeExecutionStore.getNodeExecution(input.node_execution.node_execution_id);
@@ -9026,34 +9022,6 @@ export class BusStore {
       }
       this.scopeExecutionStore.setNodeExecutionStatus(input.node_execution.node_execution_id, "completed");
       this.reconcileScopeExecutionStatus(input.scope_execution.execution_id);
-    }
-  }
-
-  private validateCommandExternalReceipts(
-    definition: CommandDefinitionRevision,
-    result: CommandHostResult,
-    workspaceId: string,
-    nodeExecutionId: string,
-    attemptId: string,
-  ): void {
-    const externalEffects = definition.content.side_effects.filter((effect) => effect.external);
-    const receiptIds = [...new Set(result.external_effect_receipt_ids ?? [])];
-    if (externalEffects.length === 0 && receiptIds.length > 0) {
-      throw new CommandRuntimeContractError("a Command with no declared external effect returned an external receipt");
-    }
-    if (externalEffects.length > 0 && receiptIds.length < externalEffects.length) {
-      throw new CommandRuntimeContractError("the Command did not return exact receipts for every external effect");
-    }
-    for (const receiptId of receiptIds) {
-      const receipt = this.connectorStore.getExternalEffectReceipt(receiptId);
-      if (!receipt || receipt.owner.kind !== "workspace" || receipt.owner.id !== workspaceId
-        || receipt.status !== "succeeded"
-        || receipt.invocation_provenance.node_execution_id !== nodeExecutionId
-        || receipt.invocation_provenance.execution_attempt_id !== attemptId) {
-        throw new CommandRuntimeContractError(
-          `external effect receipt '${receiptId}' is not a proven result of this exact attempt`,
-        );
-      }
     }
   }
 
