@@ -14,6 +14,14 @@ sources](../event/source/source.md) and [Commands](../command/command.md) that
 support it use it: a Slack Event source listens through the Slack Connector; a
 "post to Slack" Command posts through it.
 
+## Where the name came from
+
+The end-state handoff the operator endorsed on 3 Sep defined a Connector as an
+outside-system integration that is "not graph topology". It also allowed
+"external-action" nodes; code merged those into a `connector` node kind. Such a
+node is a Command that uses a Connector. "Connector" is not a node's inputs and
+outputs: those are [Ports](../scope/port.md) and [Edges](../scope/edge.md).
+
 ## Open
 
 - Code still models a Connector as a definition plus binding with its own

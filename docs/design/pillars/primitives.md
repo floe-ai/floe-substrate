@@ -10,10 +10,10 @@ of. This document owns the list. Each primitive's own document owns its detail.
 
 ## The primitive test
 
-_Resolution: direction_
+_Resolution: settled_
 _Built: yes_
-_Authority: agent-provisional_
-_Authored by: agent_
+_Authority: operator-confirmed (9 Oct ruling)_
+_Authored by: operator_
 
 Something becomes a primitive only if it passes all of these:
 
@@ -47,13 +47,13 @@ _Authored by: operator_
 
 ## How they connect
 
-_Resolution: question_
+_Resolution: settled_
 _Built: partly_
-_Authority: agent-provisional_
-_Authored by: agent_
+_Authority: operator-confirmed (9 Oct ruling)_
+_Authored by: operator_
 
 - Actors, Commands, Contexts and Events can be placed as nodes in a Scope. An
-  Event node carries its source.
+  Event node carries its source. A Connector is never a node.
 - Connections between nodes are their own records. A Context is never the
   wiring between nodes.
 - What an Event triggers depends on its type and what it is connected to: it can
@@ -93,7 +93,3 @@ _Authored by: operator_
   (`floe-bus/src/store.ts`, `resolveExecutionContext`). Connectors still have
   their own actions ([Connector](../workspace/connector.md)).
 - **Extension** is being redesigned ([Extension](../host/extension/extension.md)).
-
-## What would settle it
-
-The operator confirms "How they connect" and the primitive test.
