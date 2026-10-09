@@ -135,6 +135,7 @@ type RuntimeActorContract = {
     content: {
       instructions: string;
       capability_grant_ids: string[];
+      extensions?: string[];
       [key: string]: unknown;
     };
     [key: string]: unknown;

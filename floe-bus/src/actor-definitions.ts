@@ -15,6 +15,7 @@ import {
 
 export {
   ActorDefinitionValidationError,
+  EXTENSION_NAME_PATTERN,
   canonicalActorScopePath,
   validateActorDefinition,
   type ActorDefinitionContent,

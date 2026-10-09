@@ -102,6 +102,21 @@ describe("Workspace configuration inventory", () => {
     expect(unscoped.actors[0]!.definition).not.toHaveProperty("scope");
   });
 
+  it("carries the Actor's Extensions list and omits it when the Actor lists none", () => {
+    const tooled = buildWorkspaceConfigurationInventory({
+      binding_id: "binding:one",
+      project: project({ agents: [{ ...project().agents[0]!, extensions: ["todo"] }] }),
+      runtimes: [{ agent_id: "floe", adapter_id: "fake", model: "gpt-5.6" }],
+    });
+    expect(tooled.actors[0]!.definition.extensions).toEqual(["todo"]);
+    const plain = buildWorkspaceConfigurationInventory({
+      binding_id: "binding:one",
+      project: project(),
+      runtimes: [{ agent_id: "floe", adapter_id: "fake", model: "gpt-5.6" }],
+    });
+    expect(plain.actors[0]!.definition).not.toHaveProperty("extensions");
+  });
+
   it("sorts Actors and set-like runtime fields so equivalent observations are stable", () => {
     const actors = [
       project().agents[0]!,

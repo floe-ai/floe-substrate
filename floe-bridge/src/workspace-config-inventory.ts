@@ -73,6 +73,7 @@ export type WorkspaceConfigurationActorInventory = Readonly<{
       target_actor_id?: string | null;
     }>[];
     scope?: Readonly<{ paths: readonly string[] }>;
+    extensions?: readonly string[];
   }>;
   runtime: Readonly<{
     label: string;
@@ -181,6 +182,8 @@ function actorInventory(
     policy_refs: parsePolicyRefs(frontmatter.policy_refs),
     escalation_rules: parseEscalationRules(frontmatter.escalation_rules),
     ...parseScope(frontmatter.scope, agent.agent_id),
+    // The Bus import owns Extension name validation and ordering.
+    ...(agent.extensions.length === 0 ? {} : { extensions: [...agent.extensions] }),
   };
   const checkpointPolicy = normalizeCheckpointPolicy(runtime.checkpoint_policy);
   const runtimeInventory = {
