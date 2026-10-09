@@ -1,9 +1,9 @@
 # Primitives
 
-_Resolution: question_
+_Resolution: settled_
 _Built: partly_
-_Authority: agent-provisional (draft from operator rulings, 8 Oct, and ADR-0008)_
-_Authored by: agent_
+_Authority: operator-confirmed (9 Oct ruling: the list, row by row)_
+_Authored by: operator_
 
 The canonical list of Floe's primitives: the few things everything else is made
 of. This document owns the list. Each primitive's own document owns its detail.
@@ -30,10 +30,10 @@ Something becomes a primitive only if it passes all of these:
 
 ## The list
 
-_Resolution: question_
+_Resolution: settled_
 _Built: partly_
-_Authority: agent-provisional_
-_Authored by: agent_
+_Authority: operator-confirmed (9 Oct ruling)_
+_Authored by: operator_
 
 | Primitive | What it is |
 |---|---|
@@ -42,7 +42,7 @@ _Authored by: agent_
 | **Command** | A fixed, repeatable step. A script plus a description Floe can read: what goes in, what comes out, what it changes outside Floe, what it may touch, how long it may run, and whether it is safe to retry. |
 | **Context** | A shared room. Actors join it, post in it and read its history; that history is what an Actor reads before it acts. Each member says which kinds of Event wake it. A Context can sit inside another, like a thread inside a channel. |
 | **Event** | Something that happened. It fires; it does not travel. It has a source: a schedule (a Pulse), a folder change, a webhook, or a person pressing go. It may carry a payload, including pointers to things kept elsewhere. |
-| **Scope** | Holds a workflow: nodes and the connections between them. Saved versions mean a running job keeps the version it started with. |
+| **Scope** | Holds nodes and the connections between them. One Scope can hold several separate chains of nodes, and other Scopes as nodes. Saved versions mean a running job keeps the version it started with. |
 | **Artefact** | A real output that can leave Floe: an image, a document, a build deployed somewhere else. |
 
 ## How they connect
@@ -68,23 +68,23 @@ _Authored by: agent_
 
 _Resolution: direction_
 _Built: partly_
-_Authority: operator-confirmed (8 Oct ruling)_
+_Authority: operator-confirmed (8 Oct and 9 Oct rulings)_
 _Authored by: operator_
 
 - **[Connector](../workspace/connector.md).** A Workspace setting: the connection to an outside system
   (account, sign-in, health). Event sources and Commands that support it use
   it. A Connector does not have actions of its own; acting on the outside world
-  is a Command.
+  is a Command. A Connector is never a node.
 - **Pulse, webhook, folder watcher.** [Sources](../event/source/source.md) of an Event
   (ADR-0008, 16 Aug).
-- **Card.** Something one Extension or surface moves through a workflow. It
+- **Card.** Something one Extension or surface moves through a Scope. It
   lives where that Extension keeps it (a Markdown file, a database row) and
   stays editable outside Floe. An Event may carry a pointer to it; Floe never
   knows what a card is.
 - **Extension.** How a Workspace gains new Commands, Event sources, Connector
   kinds, Actors, record types, hooks, screens, and know-how and actions for
   Actors. It adds kinds of things inside the primitives; it never adds a
-  primitive.
+  primitive. A text-to-voice step, for example, is a new Command.
 
 ## Open
 
@@ -93,9 +93,7 @@ _Authored by: operator_
   (`floe-bus/src/store.ts`, `resolveExecutionContext`). Connectors still have
   their own actions ([Connector](../workspace/connector.md)).
 - **Extension** is being redesigned ([Extension](../host/extension/extension.md)).
-- `AGENTS.md` and the working rules name five building blocks; this list has
-  seven. They are updated once the operator confirms this list.
 
 ## What would settle it
 
-The operator confirms or corrects each row of the list and each Open item.
+The operator confirms "How they connect" and the primitive test.

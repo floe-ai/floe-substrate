@@ -14,7 +14,9 @@ is optional: Floe works without one (see [experience](../pillars/experience.md))
 Retirement makes a Scope inert while keeping evidence. Removal is allowed only
 when no required history or active work would be destroyed.
 
-Only explicit [Edge](edge.md) traversal advances canonical graph work.
+Only explicit [Edge](edge.md) traversal advances canonical graph work. One
+Scope can hold several separate chains of nodes, and other Scopes as nodes
+(operator ruling, 9 Oct).
 
 Avoid: graph as a separate product primitive, canvas, universal fallback bucket.
 Do not introduce `Work`, `Job`, `WorkItem`, `NodeRun`, `HumanGate`, `Split`,

@@ -1,7 +1,8 @@
 # Floe — start here
 
-Floe is a local substrate: a small set of building blocks (Workspace, Actor,
-Context, Event, optional Scope) that people and AI agents share to get work done.
+Floe is a local substrate: a small set of
+[primitives](docs/design/pillars/primitives.md) (Workspace, Actor, Command,
+Context, Event, optional Scope, Artefact) that Actors share to get work done.
 Products are built on it as separate **surfaces**.
 
 ## Which job are you doing?

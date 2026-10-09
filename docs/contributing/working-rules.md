@@ -130,7 +130,7 @@ Do not add a primitive because a concept is useful to describe. Add one only whe
 
 Assume the existing core is sufficient to discover what is actually missing.
 
-Treat Workspace, Actor/Endpoint, Context, Event/emit, and optional Scope as the protected conceptual nucleus unless real operation proves otherwise.
+Treat the seven [primitives](../design/pillars/primitives.md) as the protected conceptual nucleus unless real operation proves otherwise. A new primitive must pass the primitive test there.
 
 Runtime boundaries, durable delivery/history, tools/extensions, and world ingress are enabling infrastructure.
 
