@@ -66,7 +66,14 @@ continuing source of Artefact identity.
   `extension-activation-authority.ts`, `canonical-extension-runtime.ts`,
   `isolated-extension-*.ts`, about 5,200 lines): sandboxing, permission lists,
   test evidence and a seven-stage lifecycle. The operator ruled to remove it
-  (9 Oct, Q27).
+  (9 Oct, Q27). Removed on branch `extensions/redesign`.
+- Needs review with the operator before it is built: permission, approval and
+  spending-limit rules still have places for "an Extension" and "a Connector
+  action" from the removed systems (`policies.ts`, `budgets.ts`,
+  `approvals.ts`, `approval-operations.ts`, `artefacts.ts`, Command owner and
+  implementation kinds). The operator ruled to keep them and point them at the
+  new Extensions and Commands as those are built, but not without first
+  agreeing what each place should mean (9 Oct).
 - Proof of done: an Actor repairs `examples/extensions/todo` against these
   documents and it works live (9 Oct, Q29).
 - Code may live outside the Workspace, so an export can lack it. Export should
