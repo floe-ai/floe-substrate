@@ -1047,7 +1047,8 @@ export class BridgeDaemon {
       }
       console.log("[bridge] delivery injected to runtime", { delivery_id: delivery.delivery_id, adapter: this.adapter.name });
 
-      const hookRegistry = this.workspaceHooks.get(delivery.workspace_id);
+      const hookRegistry = this.workspaceHooks.get(delivery.workspace_id)?.copy() ?? new HookRegistry();
+      this.extensions.addHooksFor(hookRegistry, delivery.workspace_id, actorExtensions);
 
       await this.adapter.handleBundle({
         bridge_id: this.bridgeId,

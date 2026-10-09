@@ -113,6 +113,31 @@ describe("Extension process", () => {
     expect((await host.call("ws1", "echo", "echo", "c", { text: "x" })).content).toEqual([{ type: "text", text: "v2:x" }]);
   });
 
+  it("runs an Extension's hook handlers in order and skips a failing one", async () => {
+    await host.load("ws1", root, [{ name: "notes", entry_path: entry("notes", `
+      export default (ctx) => {
+        ctx.hooks.on("BeforeTurn", (payload) => ({ inject: { source: "notes", content: "first for " + payload.endpoint_id } }));
+        ctx.hooks.on("BeforeTurn", () => { throw new Error("broken handler"); });
+        ctx.hooks.on("BeforeTurn", () => ({ inject: { source: "notes", content: "second" } }));
+        ctx.hooks.on("TurnEnd", () => {});
+        return [];
+      };
+    `), version: "v1" }]);
+    expect(await host.hook("ws1", "notes", "BeforeTurn", { endpoint_id: "actor:a" })).toEqual([
+      { inject: { source: "notes", content: "first for actor:a" } },
+      { inject: { source: "notes", content: "second" } },
+    ]);
+    expect(await host.hook("ws1", "notes", "TurnEnd", {})).toEqual([]);
+    expect(await host.hook("ws1", "notes", "SessionStart", {})).toEqual([]);
+  });
+
+  it("refuses a hook Floe does not offer", async () => {
+    const [result] = await host.load("ws1", root, [{ name: "hooky", entry_path: entry("hooky", `
+      export default (ctx) => { ctx.hooks.on("WebhookReceived", () => {}); return []; };
+    `), version: "v1" }]);
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/hook 'WebhookReceived' is not offered/) });
+  });
+
   it("loads the todo example as written", async () => {
     const workspace = join(root, "workspace");
     mkdirSync(workspace);

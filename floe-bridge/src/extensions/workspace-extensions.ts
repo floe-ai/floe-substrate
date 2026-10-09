@@ -5,7 +5,8 @@
 import { join, relative, isAbsolute } from "node:path";
 
 import { ExtensionHost, type ExtensionHostOptions } from "./extension-host.js";
-import type { ExtensionLoadResult, ExtensionToolResult } from "./extension-protocol.js";
+import type { HookRegistry } from "../hooks.js";
+import type { ExtensionHookName, ExtensionLoadResult, ExtensionToolResult } from "./extension-protocol.js";
 import { watchTrees, type WatchedTree } from "./extension-watch.js";
 import { checkInstalledExtensions, type ExtensionCheck, type ExtensionVersionSource } from "./install-records.js";
 
@@ -152,6 +153,22 @@ export class WorkspaceExtensions {
           this.host.call(workspaceId, name, tool.name.slice(name.length + 1), callId, params),
       }));
     });
+  }
+
+  /**
+   * Adds the hooks of the running Extensions this Actor lists to `registry`, in
+   * list order. Each handler runs in the Extension process.
+   */
+  addHooksFor(registry: HookRegistry, workspaceId: string, extensionNames: readonly string[] | undefined): void {
+    const state = this.workspaces.get(workspaceId);
+    if (!state || !extensionNames?.length) return;
+    for (const name of extensionNames) {
+      const loaded = state.loaded.get(name);
+      if (!loaded?.ok) continue;
+      for (const hook of loaded.hooks as readonly ExtensionHookName[]) {
+        registry.on(hook, name, payload => this.host.hook(workspaceId, name, hook, payload as Record<string, unknown>));
+      }
+    }
   }
 
   dispose(): void {

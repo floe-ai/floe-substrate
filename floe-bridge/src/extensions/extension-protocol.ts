@@ -19,6 +19,12 @@ export type ExtensionToolResult = Readonly<{
   details?: Record<string, unknown>;
 }>;
 
+/** The points an Extension can step in at. Anything that only reacts afterwards is an Event, not a hook. */
+export type ExtensionHookName = "SessionStart" | "BeforeTurn" | "TurnEnd" | "Error";
+
+/** What one hook handler returned: text to add to the turn, or nothing. */
+export type ExtensionHookResult = Readonly<{ inject: Record<string, unknown> }>;
+
 export type ExtensionToLoad = Readonly<{ name: string; entry_path: string; version: string }>;
 
 export type ExtensionLoadResult =
@@ -43,9 +49,18 @@ export type BridgeToExtensionProcess =
     tool: string;
     call_id: string;
     params: Record<string, unknown>;
+  }>
+  | Readonly<{
+    type: "hook";
+    request_id: number;
+    workspace_id: string;
+    extension: string;
+    hook: ExtensionHookName;
+    payload: Record<string, unknown>;
   }>;
 
 export type ExtensionProcessToBridge =
   | Readonly<{ type: "loaded"; request_id: number; workspace_id: string; results: readonly ExtensionLoadResult[] }>
   | Readonly<{ type: "result"; request_id: number; ok: true; value: ExtensionToolResult }>
-  | Readonly<{ type: "result"; request_id: number; ok: false; error: string }>;
+  | Readonly<{ type: "result"; request_id: number; ok: false; error: string }>
+  | Readonly<{ type: "hook_result"; request_id: number; results: readonly ExtensionHookResult[] }>;

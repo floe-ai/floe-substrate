@@ -10,6 +10,8 @@ import type {
   BridgeToExtensionProcess,
   ExtensionLoadResult,
   ExtensionProcessToBridge,
+  ExtensionHookName,
+  ExtensionHookResult,
   ExtensionToLoad,
   ExtensionToolResult,
 } from "./extension-protocol.js";
@@ -82,6 +84,24 @@ export class ExtensionHost {
     if (reply.type !== "result") throw new ExtensionProcessError("unexpected reply from the Extension process");
     if (!reply.ok) throw new ExtensionProcessError(reply.error);
     return reply.value;
+  }
+
+  /** Runs one Extension's handlers for a hook. While the process is restarting the hook is skipped and logged. */
+  async hook(
+    workspaceId: string,
+    extension: string,
+    hook: ExtensionHookName,
+    payload: Record<string, unknown>,
+  ): Promise<readonly ExtensionHookResult[]> {
+    if (!this.child?.connected) {
+      this.options.log?.(`Skipped ${extension}'s ${hook} hook: the Extension process is restarting`);
+      return [];
+    }
+    const reply = await this.request(id => ({
+      type: "hook", request_id: id, workspace_id: workspaceId, extension, hook, payload,
+    }));
+    if (reply.type !== "hook_result") throw new ExtensionProcessError("unexpected reply from the Extension process");
+    return reply.results;
   }
 
   dispose(): void {

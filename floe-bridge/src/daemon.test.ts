@@ -893,21 +893,24 @@ async function installAcceptedExtension(workspace: string, name: string, source:
 }
 
 describe("BridgeDaemon – Extension tools", () => {
-  it("gives a pinned Actor the tools of the running Extensions it lists, run in the Extension process", async () => {
+  it("gives a pinned Actor the tools and hooks of the running Extensions it lists, run in the Extension process", async () => {
     const made = makeConfig("fake");
     const daemon = new BridgeDaemon(made.configPath, made.config);
     try {
       const workspace = made.config.home;
       await installAcceptedExtension(workspace, "echo", `
-        export default () => [{
+        export default (ctx) => {
+          ctx.hooks.on("BeforeTurn", (payload) => ({ inject: { source: "echo", content: "for " + payload.endpoint_id } }));
+          return [{
           name: "shout",
           description: "Shout the text",
           parameters: { type: "object", properties: { text: { type: "string" } } },
           async execute(_callId, params) { return { content: [{ type: "text", text: String(params.text).toUpperCase() }] }; },
-        }];
+          }];
+        };
       `);
       const statuses = await (daemon as any).extensions.reconcile("workspace:test", workspace);
-      expect(statuses).toEqual([expect.objectContaining({ name: "echo", status: "running", tools: ["echo_shout"] })]);
+      expect(statuses).toEqual([expect.objectContaining({ name: "echo", status: "running", tools: ["echo_shout"], hooks: ["BeforeTurn"] })]);
 
       const contexts: any[] = [];
       (daemon as any).adapter = { name: "fake", async handleBundle(context: unknown) { contexts.push(context); } };
@@ -931,6 +934,11 @@ describe("BridgeDaemon – Extension tools", () => {
       expect(await contexts[0].extension_tools[0].call({ text: "hi" }, "call-1"))
         .toEqual({ content: [{ type: "text", text: "HI" }] });
       expect(contexts[1].extension_tools).toEqual([]);
+
+      const beforeTurn = { endpoint_id: "actor:workspace:test:floe", workspace_id: "workspace:test", delivery_id: "d", trigger_event_id: "e" };
+      expect(await contexts[0].hooks.fire("BeforeTurn", beforeTurn))
+        .toEqual([{ inject: { source: "echo", content: "for actor:workspace:test:floe" } }]);
+      expect(contexts[1].hooks.hasHandlers("BeforeTurn")).toBe(false);
     } finally {
       (daemon as any).extensions.dispose();
       made.cleanup();

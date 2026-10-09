@@ -9,6 +9,8 @@ import { pathToFileURL } from "node:url";
 
 import type {
   BridgeToExtensionProcess,
+  ExtensionHookName,
+  ExtensionHookResult,
   ExtensionLoadResult,
   ExtensionProcessToBridge,
   ExtensionToLoad,
@@ -17,6 +19,9 @@ import type {
 } from "./extension-protocol.js";
 
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+const HOOK_NAMES: ReadonlySet<ExtensionHookName> = new Set<ExtensionHookName>(["SessionStart", "BeforeTurn", "TurnEnd", "Error"]);
+/** A handler that has not settled by then is logged and skipped, so a hung hook cannot hold a turn forever. */
+const HOOK_TIMEOUT_MS = 30_000;
 
 type LoadedTool = { spec: ExtensionToolSpec; execute: (callId: string, params: Record<string, unknown>) => unknown };
 type LoadedExtension = { tools: Map<string, LoadedTool>; hooks: Map<string, Array<(payload: Record<string, unknown>) => unknown>> };
@@ -46,6 +51,9 @@ async function loadOne(workspaceId: string, workspacePath: string, extension: Ex
         on(hook: string, handler: (payload: Record<string, unknown>) => unknown): void {
           if (typeof hook !== "string" || typeof handler !== "function") {
             throw new Error("hooks.on needs a hook name and a handler function");
+          }
+          if (!HOOK_NAMES.has(hook as ExtensionHookName)) {
+            throw new Error(`hook '${hook}' is not offered; use one of ${[...HOOK_NAMES].join(", ")}`);
           }
           hooks.set(hook, [...(hooks.get(hook) ?? []), handler]);
         },
@@ -106,6 +114,30 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+async function runHook(extension: string, hook: string, handlers: ReadonlyArray<(payload: Record<string, unknown>) => unknown>, payload: Record<string, unknown>): Promise<ExtensionHookResult[]> {
+  const results: ExtensionHookResult[] = [];
+  for (const handler of handlers) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const value = await Promise.race([
+        Promise.resolve().then(() => handler(payload)),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`did not finish within ${HOOK_TIMEOUT_MS / 1000}s`)), HOOK_TIMEOUT_MS);
+        }),
+      ]);
+      const inject = (value as { inject?: unknown } | null | undefined)?.inject;
+      if (inject && typeof inject === "object" && !Array.isArray(inject)) {
+        results.push({ inject: JSON.parse(JSON.stringify(inject)) as Record<string, unknown> });
+      }
+    } catch (error) {
+      console.error(`[extension:${extension}] ${hook} hook failed: ${message(error)}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return results;
+}
+
 async function handle(request: BridgeToExtensionProcess): Promise<void> {
   if (request.type === "load") {
     const outcomes = await Promise.all(
@@ -126,6 +158,12 @@ async function handle(request: BridgeToExtensionProcess): Promise<void> {
   }
   if (request.type === "unload") {
     workspaces.delete(request.workspace_id);
+    return;
+  }
+  if (request.type === "hook") {
+    const handlers = workspaces.get(request.workspace_id)?.get(request.extension)?.hooks.get(request.hook) ?? [];
+    const results = await runHook(request.extension, request.hook, handlers, request.payload);
+    send({ type: "hook_result", request_id: request.request_id, results });
     return;
   }
   const tool = workspaces.get(request.workspace_id)?.get(request.extension)?.tools.get(`${request.extension}_${request.tool}`);

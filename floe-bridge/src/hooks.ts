@@ -146,8 +146,9 @@ export type HookResult = {
   inject?: Record<string, unknown>;
 };
 
-// Handler can return void (fire-and-forget) or an object with inject data
-export type HookHandler<Name extends HookName = HookName> = (payload: HookPayload<Name>) => void | HookResult | Promise<HookResult | void>;
+// Handler can return void (fire-and-forget), an object with inject data, or several (one per Extension handler)
+type HookReturn = void | HookResult | readonly HookResult[];
+export type HookHandler<Name extends HookName = HookName> = (payload: HookPayload<Name>) => HookReturn | Promise<HookReturn>;
 
 export class HookRegistry {
   private handlers = new Map<HookName, Array<{ extensionName: string; handler: HookHandler<any> }>>();
@@ -158,6 +159,13 @@ export class HookRegistry {
       this.handlers.set(hook, []);
     }
     this.handlers.get(hook)!.push({ extensionName, handler });
+  }
+
+  /** A new registry holding the same handlers; adding to it leaves this one unchanged. */
+  copy(): HookRegistry {
+    const copy = new HookRegistry();
+    for (const [hook, handlers] of this.handlers) copy.handlers.set(hook, [...handlers]);
+    return copy;
   }
 
   /** Remove all handlers registered by an extension. */
@@ -176,9 +184,9 @@ export class HookRegistry {
     const results: HookResult[] = [];
     for (const { extensionName, handler } of handlers) {
       try {
-        const result = await handler(payload);
-        if (result && typeof result === "object" && "inject" in result) {
-          results.push(result);
+        const returned = await handler(payload);
+        for (const result of Array.isArray(returned) ? returned : [returned]) {
+          if (result && typeof result === "object" && "inject" in result) results.push(result);
         }
       } catch (error) {
         console.error(`[hooks] ${hook} handler from extension '${extensionName}' failed`, error);

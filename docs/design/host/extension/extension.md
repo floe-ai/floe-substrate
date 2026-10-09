@@ -1,7 +1,7 @@
 # Extension
 
 _Resolution: direction_
-_Built: partly (loading, versions and tools; see Open)_
+_Built: partly (loading, versions, tools and hooks; see Open)_
 _Authority: operator-confirmed (8 Oct and 9 Oct rulings)_
 _Authored by: operator_
 
@@ -123,10 +123,14 @@ continuing source of Artefact identity.
 ## Open
 
 - Built so far: install records, versions, the Extension process, status
-  reports, watching, and tools for listing Actors. Not built yet: hooks reach
-  the Extension process and are reported, but nothing calls them; skills,
-  Commands, event sources, Connector kinds, Actor definitions, record types
-  and screens.
+  reports, watching, and tools and [hooks](hook.md) for listing Actors. Not
+  built yet: `BeforeToolUse` (waiting on floe-runtime), skills, Commands, event
+  sources, Connector kinds, Actor definitions, record types and screens.
+- Skills do not reach the runtime at all today, not even an Actor's own
+  `skills:` list: floe-runtime turns skills off (`enableSkills: false`, no
+  skill folders). The Copilot SDK supports skill folders
+  (`skillDirectories`). Planned as one floe-runtime change after this branch
+  is reviewed (9 Oct, O32).
 - There is no Floe action to accept a version or turn an Extension on or
   off; an Actor edits `installed.json`. Whether Floe should offer one is open.
 - The September package system (sandboxing, permission lists, a seven-stage
