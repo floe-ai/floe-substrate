@@ -47,3 +47,18 @@ version is installed than the one running.
 Machine configuration lives in the Floe configuration file under the Floe home
 (see the no-environment-variables law in [pillars](../pillars/pillars.md)).
 Workspace configuration is owned by [Workspace](../workspace/workspace.md).
+
+## Direction: first run without traps
+
+_Resolution: direction_
+_Built: no_
+_Authority: agent-provisional_
+_Authored by: agent_
+
+- A configuration file that is named but missing is an error. Floe never falls
+  back to the default home or port 5377 in its place.
+- `floe setup` never turns the current folder into a Workspace without saying
+  so and offering a choice.
+- Setup tells the person when an engine needs signing in, and offers to do it
+  from the command line ([Engine](engine.md#open)). `floe status` shows each
+  engine's sign-in state, and whether work is waiting on it.

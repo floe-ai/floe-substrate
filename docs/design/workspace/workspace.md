@@ -33,12 +33,13 @@ _Authored by: operator_
 Avoid: path-derived Workspace IDs, path as identity, locators in remote
 projections.
 
-## Legacy
-
-Old path-derived Workspace identifiers are kept as opaque identities during
-migration; new identities are opaque and path-independent.
-
 ## Open
 
 - Safe file editing from a remote surface is unsolved (ADR-0005).
 - Not checked: whether engine file tools are held to the Workspace folder.
+- [Workspace access](../capability/access.md) (13 Oct) starts unrestricted, but
+  the Files rule above (ADR-0005, which the operator ruled still stands on
+  9 Oct) keeps an Actor's writes inside the Workspace's folders. Should the list
+  start at the Workspace's own folders, with more added on purpose, or start
+  unrestricted like tools? Today an Actor that needs another folder is refused
+  until it is added with `workspace.folder.add`.

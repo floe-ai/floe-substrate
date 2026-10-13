@@ -72,6 +72,42 @@ Stopping: while connected work is active, the operator can stop it from the
 same place. Stopping is durable: queued work, active turns, folder sources and
 scheduled pulses for that operation do not resume on restart. History remains.
 
+Stopping spend: to stop model spend, the operator pauses or stops Scope runs.
+Pausing an Actor, or every Actor in a Workspace, is deferred until a real need
+shows (operator, 13 Oct).
+
+## Spend
+
+_Resolution: settled_
+_Built: partly_
+_Authority: operator-confirmed (13 Oct, SP1)_
+_Authored by: operator_
+
+The operator can see what work is costing: tokens for every engine, and AI
+credits (AIC) for Copilot, by Actor and by Workspace. Seeing spend is how they
+judge whether it is turning into progress ([pillars](pillars.md), efficient
+intelligence). Floe sets no spending limits.
+
+Built: each turn records its token use
+([Turn](../event/delivery/turn/turn.md#usage)). Not built: AIC, and any view of
+spend.
+
+## Direction: talk and watch without a surface
+
+_Resolution: direction_
+_Built: no_
+_Authority: agent-provisional_
+_Authored by: agent_
+
+Floe's own command line is enough to use Floe. An Actor or person can send the
+Floe Actor a message, and see its replies, questions and progress as they are
+pushed, with no surface installed. This also serves Actors that never open a
+screen (Actor-generality test, [pillars](pillars.md)).
+
+Today the only route is `floe operations invoke` with hand-built JSON. The first
+message is refused unless it carries `--expected-revision 1`, and nothing shows
+replies except the Actor's work log. Seen in live runs, 13 Oct.
+
 ## Self-describing representation
 
 Prefer substrate objects, relationships, references, state and actions that

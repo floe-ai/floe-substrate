@@ -115,11 +115,6 @@ names prefixed with the Extension's name, trusted code, no separate state store,
 Pulses and hooks declared by the Extension, source outside the Floe repository.
 The 8 and 9 Oct rulings keep that shape and widen what an Extension can add.
 
-## Legacy
-
-Old Extension lineage JSON may be imported once as evidence; it is never a
-continuing source of Artefact identity.
-
 ## Open
 
 - Built so far: install records, versions, the Extension process, status
@@ -135,13 +130,12 @@ continuing source of Artefact identity.
   off; an Actor edits `installed.json`. Whether Floe should offer one is open.
 - The September package system (sandboxing, permission lists, a seven-stage
   lifecycle) was removed on branch `extensions/redesign` (9 Oct, Q27).
-- Needs review with the operator before it is built: permission, approval and
-  spending-limit rules still have places for "an Extension" and "a Connector
-  action" from the removed systems (`policies.ts`, `budgets.ts`,
-  `approvals.ts`, `approval-operations.ts`, `artefacts.ts`, Command owner and
-  implementation kinds). The operator ruled to keep them and point them at the
-  new Extensions and Commands as those are built, but not without first
-  agreeing what each place should mean (9 Oct).
+- The permission, approval and spending-limit systems that still had places for
+  "an Extension" and "a Connector action" (`policies.ts`, `budgets.ts`,
+  `approvals.ts`, `approval-operations.ts`) are removed, not repointed
+  (13 Oct governance calls, [Workspace access](../../capability/access.md)).
+  This replaces the 9 Oct ruling to keep them. `artefacts.ts` and the Command
+  owner and implementation kinds still need the same review.
 - Proof of done: an Actor repairs `examples/extensions/todo` against these
   documents and it works live (9 Oct, Q29).
 - Code may live outside the Workspace, so an export can lack it. Export should

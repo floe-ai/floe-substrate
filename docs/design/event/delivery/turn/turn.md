@@ -37,6 +37,9 @@ counts (`measurement_scope: turn`). Raw per-call usage is kept beside it. A
 runtime that does not report a call count is labelled `last_model_call`; a turn
 with no usage is `unmeasured`. Neither is ever shown as a whole-turn figure.
 
+Usage records are what the spend view reads
+([experience](../../../pillars/experience.md#spend)).
+
 ## Required outputs
 
 _Resolution: direction_
@@ -67,3 +70,9 @@ A local Markdown audit projection of a turn, kept in the Workspace's git-ignored
 `.floe/state`. A turn never changes tracked files by writing it. It is evidence,
 not execution state, topology, an Artefact ledger, or what makes a response
 visible.
+
+## Open
+
+- Copilot bills in AI credits (AIC), and Floe records no AIC today. Does the
+  Copilot SDK report AIC or premium-request cost per turn? Read its
+  documentation before building.

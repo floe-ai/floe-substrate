@@ -16,8 +16,8 @@ unless a technical property is itself part of the design.
   approval.
 - **P2. Below that, a thing lives inside the one thing it cannot exist without.**
 - **P3. A file becomes a folder only when a part of it needs its own document.**
-  `budget.md` became part of `capability/policy/` because a budget only exists
-  as a Policy limit.
+  `extension.md` became `host/extension/` because hooks needed their own
+  document.
 - **P4. If a document could fit in two places, the structure is wrong.**
   Restructure and ask the operator; never just pick one.
 - **D1. One owner.** A rule has exactly one home. Every other document links to
@@ -78,8 +78,7 @@ scope/        scope, revision, placement, port, edge, activation,
               execution/ (scope-execution, node-execution, attempt)
 command/      command
 artefact/     artefact, version, content-ref
-capability/   capability, grant, secret, receipt, audit,
-              policy/ (policy, budget, approval)
+capability/   capability, access, secret, receipt
 ```
 
 ## Naming

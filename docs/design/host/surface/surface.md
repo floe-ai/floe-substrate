@@ -64,3 +64,8 @@ _Authored by: operator_
 - Under the installed-Floe ruling, where do the Node helpers (`floe/identity`,
   `floe/engines`, `floe/actors`) and their "start Floe if needed" step come from?
 - Does `switchToThisVersion` survive once surfaces no longer carry Floe?
+- **A launched surface must reach the Floe that launched it.**
+  `floe --config <file> console` started the surface's own bundled Floe against
+  the default home (`~/.floe`) instead of the named one. A test or second Floe
+  must never touch another Floe's home. Floe passes only `--launched-by=floe`, so
+  how does a surface learn which Floe home and configuration launched it?

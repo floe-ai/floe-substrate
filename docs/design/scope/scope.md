@@ -5,12 +5,12 @@ _Built: yes_
 _Authority: agent-provisional_
 _Authored by: unknown_
 
-The durable outcome, organisation, lifecycle and governance boundary that any
+The durable outcome, organisation and lifecycle boundary that any
 [Actor](../actor/actor.md) names, opens and works in. Its nodes and their
 connections are the Scope's contents, not a separate object (operator ruling,
 9 Oct). A Scope owns draft and published
 [revisions](revision.md), [executions](execution/scope-execution.md), related
-Contexts and Artefacts, policies, budgets, attention state and history. A Scope
+Contexts and Artefacts, attention state and history. A Scope
 is optional: Floe works without one (see [experience](../pillars/experience.md)).
 
 Retirement makes a Scope inert while keeping evidence. Removal is allowed only

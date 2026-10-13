@@ -18,7 +18,8 @@ with; every retry keeps those pins even if the Command changes or retires.
 The Bus stores the exact processing contract for each attempt and dispatches it
 to an isolated Command host. Implementations are exact core or Extension version
 references. Filesystem, network, secret and external access goes only through
-granted operations and brokers. Command output advances Edges only through a
+Floe operations and brokers, within [Workspace access](../capability/access.md).
+Command output advances Edges only through a
 named Port using `scope.node-output.publish`.
 
 ## Direction: repeated work becomes a Command
