@@ -24,12 +24,12 @@ Handlers run in registration order. A failing handler is caught and logged and
 never crashes the turn. A handler that has not finished after 30 seconds is
 treated as failed.
 
-Floe's own permission check decides first. A hook can block a tool call Floe
-allowed, but never allow one Floe blocked (9 Oct, Q38). The runtime owns the
+A hook can block a tool call that [Workspace access](../../capability/access.md)
+allows, but never allow one it blocks (9 Oct, Q38). The runtime owns the
 "before a tool runs" point for every tool, so there is one place a call is
-checked: floe-runtime calls it after the permission check, and the Bridge
-passes it to the listing Extensions' `BeforeToolUse` handlers. When a handler
-changes a built-in tool's input, the permission check runs again on the new
+checked: floe-runtime applies Workspace access first, then the Bridge passes the
+call to the listing Extensions' `BeforeToolUse` handlers. When a handler
+changes a built-in tool's input, Workspace access is applied again to the new
 input.
 
 ## Hooks an Extension can register
@@ -42,7 +42,7 @@ the Extension loading, with the reason in its status.
 | `SessionStart` | A new runtime session starts for the Actor | React |
 | `BeforeTurn` | Before a Turn starts | Return `{ inject: { source, content } }` to add text to the Turn's input |
 | `TurnEnd` | After a Turn finishes | React |
-| `BeforeToolUse` | A tool call Floe allowed is about to run. The handler gets `tool_call_id`, `tool_name`, `source` (`builtin` or `custom`), `args` and `cwd` | Return nothing or `{ decision: "allow" }`, `{ decision: "block", reason }`, or `{ decision: "change", args }` |
+| `BeforeToolUse` | A tool call Workspace access allows is about to run. The handler gets `tool_call_id`, `tool_name`, `source` (`builtin` or `custom`), `args` and `cwd` | Return nothing or `{ decision: "allow" }`, `{ decision: "block", reason }`, or `{ decision: "change", args }` |
 | `Error` | A Turn fails | React |
 
 `BeforeToolUse` handlers run in order across the Actor's listed Extensions,

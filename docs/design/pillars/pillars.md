@@ -75,7 +75,7 @@ These apply everywhere. Each is owned here; other documents link here.
 ### Push, never poll
 
 _Resolution: settled_
-_Built: yes_
+_Built: partly_
 _Authority: operator-confirmed ("Ban Polling for everything please")_
 _Authored by: operator_
 
@@ -83,6 +83,11 @@ State and progress flow as pushed events. No recurring polling, reconcile
 intervals or liveness loops, in Floe or in surfaces. Request/response is for
 actions only. A Connector may poll an outside source only where that source
 offers nothing else.
+
+Still in code: an unused Bridge liveness route (`reportBridgeLiveness`), its
+unused 90-second constant, and a 60-second timer that does nothing, all in
+`floe-bus/src/server.ts`. The Bus already treats an open connection as proof
+the Bridge is alive.
 
 ### No environment-variable switches
 
@@ -94,8 +99,10 @@ _Authored by: operator_
 Behaviour is configured in Floe's configuration file, never by environment
 variables. This includes test switches.
 
-Still in code: the live test tier is switched off with `FLOE_LIVE_RUNTIME_TIER`
-(`floe-bridge/src/test-support/machine-copilot-login.ts`).
+Still in code:
+- The live test tier is switched off with `FLOE_LIVE_RUNTIME_TIER`
+  (`floe-bridge/src/test-support/machine-copilot-login.ts`).
+- The Bus reads `FLOE_HOST_CONTROL_TOKEN` at start-up (`floe-bus/src/index.ts`).
 
 ### Local-first
 
@@ -115,14 +122,37 @@ _Authority: agent-provisional_
 _Authored by: unknown_
 
 Nothing external depends on Floe yet. Prefer replacement over compatibility and
-migration machinery. Preserve credentials and genuinely valuable user state.
+migration machinery. Model credentials stay with the vendor
+([engine](../host/engine.md#use-the-machines-existing-sign-in)), so replacing a Floe home loses no
+sign-in.
+
+### No migration code
+
+_Resolution: settled_
+_Built: no_
+_Authority: operator-confirmed (13 Oct, D23; 14 Oct: existing homes may be "archive/rename/delete, doesnt matter")_
+_Authored by: operator_
+
+Floe carries no code that upgrades data layouts that were never released: no
+column patching, backfills, table rebuilds, old-shape imports or compatibility
+routes. A changed layout replaces the old one. A Floe home in an older layout,
+including the operator's own, is archived, renamed or deleted; none of its data
+is carried forward.
 
 Still in code (operator decision, 14 Jun: collapse the schema to one
 authoritative set of tables and recreate local databases instead of migrating):
-`floe-bus/src/store.ts` keeps `relaxEventScopeColumn()` with its table rebuild,
-`addColumnIfMissing()` and `backfill*` methods, reserved-id cleanup paths and the
-`is_default` index cleanup, plus the legacy `thread_id` columns
-([Context](../context/context.md)).
+- `floe-bus/src/store.ts`: `migrate()` with its `addColumnIfMissing()` and
+  `backfill*` calls, `relaxEventScopeColumn()` and `relaxPulseScopeColumn()`
+  table rebuilds, the Workspace identity, identity authority and Actor access
+  migrations, the schema 12 Event reference freeze, reserved-id and `is_default`
+  cleanup, the retired-table drop, and the legacy `thread_id` columns
+  ([Context](../context/context.md)).
+- Upgrade code in `capability-grants`, `actor-role-authority`, `approvals`,
+  `budgets`, `policies`, `delivery-operation-authority`, `client-identity-store`,
+  `credential-broker`, `credential-operations`, `artefacts`,
+  `workspace-identities` and `actor-authority-adoption`.
+- `server.ts` compatibility routes that mint `legacy-http:` idempotency keys.
+- The old `auth.json` import ([SecretRef](../capability/secret.md)).
 
 ## Tests every change must pass
 

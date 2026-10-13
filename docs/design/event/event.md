@@ -30,9 +30,3 @@ current state, authority or approval, and not an instruction to run anything.
 Clients keep the selected Workspace boundary and discover current actions when
 opened. Model input keeps references beside the message text. A named reference
 does not create an Artefact association.
-
-## Legacy
-
-Event references frozen during schema 12's upgrade keep their then-visible
-projection with explicit provenance; that snapshot is not evidence of which
-versions were present at original emission.

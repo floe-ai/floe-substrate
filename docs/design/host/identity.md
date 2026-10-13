@@ -1,7 +1,7 @@
 # Identity
 
 _Resolution: settled_
-_Built: yes_
+_Built: partly_
 _Authority: agent-provisional_
 _Authored by: unknown_
 
@@ -11,7 +11,9 @@ signature. A surface asks Floe's identity agent to act, and the agent pushes
 back state and short-lived bearers.
 
 Clients authenticate as themselves and receive an unprivileged Workspace
-credential; authority comes from grants, never from being a particular client.
+credential. It says who is acting and in which Workspace; access comes from
+[Workspace access](../capability/access.md), never from being a particular
+client.
 
 ## Connection credentials
 
@@ -23,6 +25,12 @@ in its first frame and receives nothing before that succeeds.
 Origin: agent ADR-0015 (14 Sep), ADR-0016 (28 Sep).
 Contract: `docs/reference/identity-agent-protocol.md`,
 `docs/reference/client-identity-protocol.md`.
+
+Still in code: the Bus server accepts an in-process option that skips
+authentication for tests (`unsafe_in_process_test_auth_bypass`,
+`floe-bus/src/server.ts`). The shipped product must not carry it. The browser
+pass, which pairs another browser by code, is also still in code; remote access
+waits for the Local-first direction ([pillars](../pillars/pillars.md)).
 
 ## Sign-in screens
 

@@ -216,10 +216,11 @@ Surface contradictions. Do not silently choose the convenient side.
 Nothing external depends on this repository yet.
 
 - Do not preserve backward compatibility for its own sake.
-- Do not add migration machinery for schemas/config that can simply be replaced.
+- Do not add migration code: a changed layout replaces the old one, and an
+  older Floe home is archived, renamed or deleted
+  ([pillars](../design/pillars/pillars.md#no-migration-code)).
 - Prefer deletion and replacement when an approach is wrong.
 - Do not knowingly accumulate tech debt "for later".
-- Preserve credentials and other genuinely valuable user state when maintenance requires resets.
 
 Pre-release status licenses correction, not sloppiness.
 
