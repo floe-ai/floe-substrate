@@ -122,18 +122,22 @@ _Authority: agent-provisional_
 _Authored by: unknown_
 
 Nothing external depends on Floe yet. Prefer replacement over compatibility and
-migration machinery. Preserve credentials and genuinely valuable user state.
+migration machinery. Model credentials stay with the vendor
+([engine](../host/engine.md#use-the-machines-existing-sign-in)), so replacing a Floe home loses no
+sign-in.
 
 ### No migration code
 
 _Resolution: settled_
 _Built: no_
-_Authority: operator-confirmed (13 Oct, D23)_
+_Authority: operator-confirmed (13 Oct, D23; 14 Oct: existing homes may be "archive/rename/delete, doesnt matter")_
 _Authored by: operator_
 
 Floe carries no code that upgrades data layouts that were never released: no
 column patching, backfills, table rebuilds, old-shape imports or compatibility
-routes. A changed layout replaces the old one.
+routes. A changed layout replaces the old one. A Floe home in an older layout,
+including the operator's own, is archived, renamed or deleted; none of its data
+is carried forward.
 
 Still in code (operator decision, 14 Jun: collapse the schema to one
 authoritative set of tables and recreate local databases instead of migrating):
@@ -148,9 +152,7 @@ authoritative set of tables and recreate local databases instead of migrating):
   `credential-broker`, `credential-operations`, `artefacts`,
   `workspace-identities` and `actor-authority-adoption`.
 - `server.ts` compatibility routes that mint `legacy-http:` idempotency keys.
-
-Before deleting it, decide what happens to Floe homes that already hold
-data, including the operator's own.
+- The old `auth.json` import ([SecretRef](../capability/secret.md)).
 
 ## Tests every change must pass
 

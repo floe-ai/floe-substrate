@@ -28,4 +28,5 @@ A definition may list Extensions by name (`extensions: [todo]`). Only a listed
 Extension's tools are offered to the Actor, and only while that Extension is
 running in the Workspace ([Extension](../host/extension/extension.md)). The
 list is part of the revision, so a Delivery uses the list that was pinned
-with it.
+with it. The list is for context, not security
+([Workspace access](../capability/access.md#extensions-are-context-not-access)).

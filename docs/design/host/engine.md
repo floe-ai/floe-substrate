@@ -20,6 +20,32 @@ reads, copies or refreshes model credentials. A surface sees readiness, an
 account label and sign-in progress, never credentials
 (`docs/reference/engine-control-protocol.md`).
 
+## Use the machine's existing sign-in
+
+_Resolution: settled_
+_Built: no_
+_Authority: operator-confirmed (14 Oct: "do what official SDK docs says, if you can use local copilot go for it")_
+_Authored by: operator_
+
+If this machine is already signed in to Copilot, Floe uses that sign-in, so
+nobody signs in twice. This is the SDK's documented default: the client uses the
+logged-in user, whose token the official sign-in keeps in the operating
+system's credential store
+([SDK authentication](https://github.com/github/copilot-sdk/blob/main/docs/auth/authenticate.md)).
+
+Floe keeps its own Copilot folder (`<home>\bridge\copilot`), so the person's own
+Copilot settings, agents, MCP servers and skills never reach an Actor's turn.
+Floe copies into that folder only the pointer to which account is signed in on
+which host (`lastLoggedInUser` in the vendor folder's `config.json`), never the
+token. A machine with no sign-in falls back to the vendor's sign-in flow.
+
+The SDK documentation names the credential store but not the account pointer.
+That the runtime finds the token through the pointer is observed behaviour, so
+the live proof must show a fresh Floe home turning without a new sign-in.
+
+Still in code: only the live test support copies the pointer
+(`floe-bridge/src/test-support/machine-copilot-login.ts`).
+
 ## Use the Copilot SDK, not a bundled CLI
 
 _Resolution: direction_
@@ -90,10 +116,3 @@ Windows.
 
 - Which mechanism makes the Copilot SDK's shell tool use bash on Windows? Read
   the SDK documentation before building it.
-- **Reuse the machine's sign-in.** Floe keeps its own Copilot folder
-  (`<home>\bridge\copilot`), so someone already signed in to Copilot on this
-  machine must sign in again, and only through a surface. Should Floe use the
-  vendor's normal sign-in on this machine instead? That still keeps the
-  credential with the vendor. The answer depends on whether sharing the vendor
-  folder would bring the person's own Copilot settings (agents, MCP servers,
-  skills) into Actors' turns.

@@ -16,18 +16,9 @@ there, within the credential's own purpose limits; there is no per-Actor grant
 SecretRef metadata. Missing credentials stay unresolved.
 
 Model credentials are not Floe secrets; they belong to the vendor
-([Engine](../host/engine.md)).
+([Engine](../host/engine.md#use-the-machines-existing-sign-in)).
 
 Origin: agent ADR-0012 (4 Sep).
 
-## Legacy
-
-Old `auth.json` is migration input. Secret material moves only through an
-explicit trusted broker action, is verified, and is kept until separately
-approved cleanup.
-
-## Open
-
-- Migration code is being removed (Pre-release, [pillars](../pillars/pillars.md)),
-  but the same law says to preserve credentials. Does the `auth.json` import
-  stay, or does anything still depend on it?
+Still in code: the old `auth.json` import, removed with the rest of the
+migration code ([pillars](../pillars/pillars.md#no-migration-code)).
