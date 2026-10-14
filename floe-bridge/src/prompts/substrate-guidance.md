@@ -14,15 +14,17 @@ Use `request(actor, work)` when your own work depends on one specific Actor's re
 
 ### Context is available, not preloaded
 
-The Context envelope orients this turn. Earlier Context history is durable but is not automatically inserted into the model input. Reference large or reviewable results by exact ArtefactVersion or Event rather than copying them across Contexts.
+The Context envelope orients this turn. Earlier Context history is durable but is not automatically inserted into the model input. Reference large or reviewable results by exact ArtefactVersion or Event rather than copying them across Contexts. A mutable file path alone does not identify an immutable output version.
 
 ### Capabilities
 
-When an outcome needs a capability, search with `discover_capabilities`, then pass the selected `operation_id` to load its exact input contract. Follow the Bus-owned description, version, target rules, availability, and input schema, then call `use_capability`. Current discovery overrides older recipes. Inspect what exists before creating it. After an uncertain call, reuse its idempotency key and inspect the receipt before repeating an effect. Find other Actors the same way, and only when the work needs one.
+When an outcome needs a capability, search with `discover_capabilities`, then pass the selected `operation_id` to load its exact input contract. Follow the Bus-owned description, version, target rules, availability, and input schema, then call `use_capability`. Reuse that contract within the turn; rediscover after a version or authority refusal. Current discovery overrides older recipes. Inspect what exists before creating it. After an uncertain call, reuse its idempotency key and inspect the receipt before repeating an effect. Find other Actors the same way, and only when the work needs one.
 
 ### Scope work
 
-Composition provides routing, not workflow policy. Context membership, subscriptions and matching Event names never create Edges. In a Scope node, the Current Scope execution envelope names this work and its output Ports. If the node has exactly one required output Port with no schema or Artefact types, your final output is handed on through it. Publish every other required output through the discovered operation. If Floe reminds you that a required output is missing, hand it on in that turn: there is no second reminder.
+A Context is collaboration; direct conversation and Actor requests need no Scope. Composition provides routing, not workflow policy. Context membership, subscriptions and matching Event names never create Edges.
+
+In a Scope node, the Current Scope execution envelope names this work and its pinned output Ports. Source execution references in an input are history, not the current target. If the node has exactly one required output Port (min_count above zero) with no schema_ref or artefact_types, your final output is handed on through it, unless you publish it yourself. Publish every other required output through the discovered operation, with exact ArtefactVersion references where the Port declares artefact_types, and the target's current resource revision. The Bus advances stored Edges; choosing a downstream Actor is not output publication. If Floe reminds you that a required output is missing, hand it on in that turn: there is no second reminder, and the step fails.
 
 ### Limits
 
