@@ -39,6 +39,22 @@ until the folder is added with `workspace.folder.add`.
 Avoid: path-derived Workspace IDs, path as identity, locators in remote
 projections.
 
+## Removing a Workspace
+
+_Resolution: direction_
+_Built: partly_
+_Authority: agent-provisional_
+_Authored by: agent_
+
+Removing a Workspace ends its records on this machine. Asking to remove its
+folder too first stops everything Floe runs in that folder (turns, Extensions),
+then deletes the folder. If the folder still cannot be deleted, Floe says which
+file is held instead of failing silently.
+
+Still in code: on Windows, deleting the folder while Floe still holds it open
+fails with an unexplained server error (`floe-bus/src/store.ts`,
+`deleteWorkspaceLocator`).
+
 ## Open
 
 - Safe file editing from a remote surface is unsolved (ADR-0005).

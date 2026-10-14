@@ -47,6 +47,7 @@ New knowledge goes where it will be found next time, not into a new file.
 |---|---|
 | An unanswered question about Floe | `## Open` in the design document it concerns |
 | Something about how Floe should behave | the design document, as `question` or `direction` |
+| A defect: Floe does not do what its design says | a `Still in code:` line in the design section it breaks |
 | A better way to build any surface | a drafted edit, via [surface lessons](surfaces/lessons.md) |
 | Floe lacks something a surface needs | [surface gaps](surfaces/gaps.md), then [Floe's side](contributing/surface-gaps.md) |
 | A better way to work on Floe | a drafted edit to [working rules](contributing/working-rules.md) |
