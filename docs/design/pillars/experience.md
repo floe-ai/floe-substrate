@@ -37,7 +37,7 @@ problem. Using Floe never requires creating or managing a Scope.
 6. continue across time and interruptions;
 7. adapt when reality requires it;
 8. keep the operator informed enough to trust and redirect the work;
-9. ask for human involvement only when it is valuable.
+9. ask for the operator only when it is valuable.
 
 Floe does not ask the operator implementation questions it could resolve by
 inspecting, testing or experimenting.
