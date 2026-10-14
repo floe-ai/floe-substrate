@@ -17,6 +17,8 @@ _Resolution: settled_
 _Built: no_
 _Authority: operator-confirmed (13 Oct: "we should then take snapshots")_
 _Authored by: operator_
+_Priority: P2_
+_Release: 1.0_
 
 A client that connects first receives one snapshot of the current state inside
 its boundary, with the cursor it was taken at, and then only the changes after

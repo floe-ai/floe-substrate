@@ -45,6 +45,8 @@ _Resolution: settled_
 _Built: partly_
 _Authority: operator-confirmed (9 Oct ruling)_
 _Authored by: operator_
+_Priority: P2_
+_Release: 1.0_
 
 A Context exists only when it is meant to have
 [participants](participant.md). An Event or Command run with nobody to take

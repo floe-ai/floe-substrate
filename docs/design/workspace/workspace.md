@@ -25,6 +25,8 @@ _Resolution: settled_
 _Built: partly_
 _Authority: operator-confirmed (ADR-0005, Jun; 14 Oct: Actors get "full access", replacing ADR-0005's folder limit)_
 _Authored by: operator_
+_Priority: P1_
+_Release: 1.0_
 
 - An Actor may read and write anywhere [Workspace access](../capability/access.md)
   allows, and a new Workspace allows everything. The Workspace's folders say
@@ -45,6 +47,8 @@ _Resolution: direction_
 _Built: partly_
 _Authority: agent-provisional_
 _Authored by: agent_
+_Priority: P2_
+_Release: 1.0_
 
 Removing a Workspace ends its records on this machine. Asking to remove its
 folder too first stops everything Floe runs in that folder (turns, Extensions),

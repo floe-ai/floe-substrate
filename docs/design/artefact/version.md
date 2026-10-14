@@ -21,6 +21,8 @@ _Resolution: direction_
 _Built: partly_
 _Authority: operator-confirmed (9 Oct ruling, D18)_
 _Authored by: operator_
+_Priority: P3_
+_Release: later_
 
 - Floe must know the exact version used, for approvals, retry, redo, fork and
   lineage. It needs a pin, not its own history.

@@ -26,6 +26,8 @@ _Resolution: settled_
 _Built: no_
 _Authority: operator-confirmed (14 Oct: "do what official SDK docs says, if you can use local copilot go for it")_
 _Authored by: operator_
+_Priority: P1_
+_Release: 1.0_
 
 If this machine is already signed in to Copilot, Floe uses that sign-in, so
 nobody signs in twice. This is the SDK's documented default: the client uses the
@@ -52,6 +54,8 @@ _Resolution: direction_
 _Built: partly_
 _Authority: operator-confirmed (8 Oct: Floe should use the Copilot SDK, not bundle the CLI directly)_
 _Authored by: operator_
+_Priority: P2_
+_Release: 1.0_
 
 Turns already run through the Copilot SDK, which brings its own runtime. Floe
 also bundles the full Copilot CLI, used only to run engine sign-in.
@@ -67,6 +71,8 @@ _Resolution: settled_
 _Built: no_
 _Authority: operator-confirmed (13 Oct governance calls; 14 Oct: governance frozen, not removed)_
 _Authored by: operator_
+_Priority: P1_
+_Release: 1.0_
 
 When a turn starts, Floe hands the engine the Workspace's
 [access list](../capability/access.md). The engine applies it to every tool call.
@@ -108,6 +114,8 @@ _Resolution: settled_
 _Built: no_
 _Authority: operator-confirmed (13 Oct: "lets do bash on windows")_
 _Authored by: operator_
+_Priority: P2_
+_Release: 1.0_
 
 Actors use bash on every operating system. On Windows that is Git Bash. One
 shell means one set of instructions for every Actor and every machine. The

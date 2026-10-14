@@ -52,7 +52,8 @@ operator's review list.
 
 Work not yet built carries two more markers: how much it matters and which
 release it is for. A section puts them under its four facts; a single item, such
-as a `Still in code:` line or a list entry, ends with them.
+as a `Still in code:` line or a list entry, ends with them. An item inside a
+marked section takes the section's markers unless it carries its own.
 
 ```markdown
 _Priority: P1_

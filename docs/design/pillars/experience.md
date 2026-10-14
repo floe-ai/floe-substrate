@@ -83,6 +83,8 @@ _Resolution: settled_
 _Built: no_
 _Authority: operator-confirmed (14 Oct, D29, red-team findings RT4 and RT5)_
 _Authored by: operator_
+_Priority: P1_
+_Release: 1.0_
 
 One switch holds all work in a Workspace until an Actor lifts it: waiting
 work, running turns, direct requests between Actors and scheduled
@@ -98,6 +100,8 @@ _Resolution: settled_
 _Built: partly_
 _Authority: operator-confirmed (13 Oct, SP1)_
 _Authored by: operator_
+_Priority: P1_
+_Release: 1.0_
 
 Any Actor can see what work is costing: tokens for every engine, and AI
 credits (AIC) for Copilot, by Actor and by Workspace. Seeing spend is how it can
@@ -115,6 +119,8 @@ _Resolution: direction_
 _Built: no_
 _Authority: agent-provisional_
 _Authored by: agent_
+_Priority: P2_
+_Release: 1.0_
 
 Floe's own command line is enough to use Floe. Any Actor can send the Floe Actor
 a message, and see its replies, questions and progress as they are
@@ -144,6 +150,8 @@ _Resolution: direction_
 _Built: no_
 _Authority: agent-provisional_
 _Authored by: operator (thought log, June)_
+_Priority: P3_
+_Release: later_
 
 Before a meaningful change, Floe proposes its shape in terms of impact: what new
 capability or module, where it attaches, what the system looks like after, and
@@ -157,6 +165,8 @@ _Resolution: direction_
 _Built: partly_
 _Authority: agent-provisional_
 _Authored by: operator (thought log, June)_
+_Priority: P3_
+_Release: later_
 
 Records are rich enough for any surface or Actor to follow the chain from
 request to actions, decisions, results and evaluation, and to review it through
@@ -183,6 +193,8 @@ _Resolution: settled_
 _Built: partly_
 _Authority: agent-provisional_
 _Authored by: unknown_
+_Priority: P3_
+_Release: later_
 
 Any Actor can create a local support report from an affected conversation.
 Floe may add a tentative explanation; system facts come from supported APIs. The

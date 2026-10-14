@@ -1,7 +1,7 @@
 # Workspace access
 
 _Resolution: settled_
-_Built: no_
+_Built: partly_
 _Authority: operator-confirmed (13 Oct: "we should just have 'here is what LLM backed actors can do in this workspace' thats it")_
 _Authored by: operator_
 
@@ -31,6 +31,8 @@ _Resolution: settled_
 _Built: partly_
 _Authority: operator-confirmed (29 Sep ruling; 13 Oct: restrictions are per Workspace, not per Actor; 14 Oct: "full access", folders included)_
 _Authored by: operator_
+_Priority: P1_
+_Release: 1.0_
 
 A new Workspace starts unrestricted: every tool and every folder. Narrowing the
 list is opt-in, for the whole Workspace. "Ask before acting" is never a
@@ -73,6 +75,8 @@ _Resolution: settled_
 _Built: partly_
 _Authority: operator-confirmed (14 Oct, D28, red-team finding RT1)_
 _Authored by: operator_
+_Priority: P2_
+_Release: 1.0_
 
 Equal access starts after someone is let in. Only a member allowed to answer
 [requests to join](#asking-to-join), or the machine owner's own Floe, admits a
@@ -93,6 +97,8 @@ _Resolution: settled_
 _Built: no_
 _Authority: operator-confirmed (14 Oct: "a new user should be able to 'request' access to a listed workspace, and the owner should able to see pending requests"; on who answers: "O64 and O65, and it is a workspace setting")_
 _Authored by: operator_
+_Priority: P2_
+_Release: 1.0_
 
 Letting someone in works from any surface, not only the terminal.
 
@@ -145,6 +151,8 @@ _Resolution: settled_
 _Built: partly_
 _Authority: operator-confirmed (14 Oct: "MY gut feel is to literally keep all the goverenence", freeze option O63 approved)_
 _Authored by: operator_
+_Priority: P1_
+_Release: 1.0_
 
 The September governance system stays in the code, frozen. It is open by
 default, kept working and tested, and nothing new is built on it. A team that

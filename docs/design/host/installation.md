@@ -54,6 +54,8 @@ _Resolution: direction_
 _Built: no_
 _Authority: agent-provisional_
 _Authored by: agent_
+_Priority: P1_
+_Release: 1.0_
 
 - A configuration file that is named but missing is an error. Floe never falls
   back to the default home or port 5377 in its place.

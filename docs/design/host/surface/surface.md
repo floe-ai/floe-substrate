@@ -35,6 +35,8 @@ _Resolution: settled_
 _Built: no_
 _Authority: operator-confirmed (8 Oct)_
 _Authored by: operator_
+_Priority: P2_
+_Release: 1.0_
 
 - A surface uses the machine's installed Floe, like an app uses installed Node.
 - It declares the Floe version range it needs. Missing Floe: offer to install.
@@ -51,6 +53,8 @@ _Resolution: settled_
 _Built: partly_
 _Authority: operator-confirmed (8 Oct)_
 _Authored by: operator_
+_Priority: P2_
+_Release: 1.0_
 
 - The surface-building guide lives in Floe and ships with it. Built:
   `docs/surfaces/` exists; it is not yet in the release package.

@@ -20,6 +20,8 @@ _Resolution: settled_
 _Built: partly_
 _Authority: operator-confirmed ("An Actor is no different if Human or LLM")_
 _Authored by: operator_
+_Priority: P1_
+_Release: 1.0_
 
 Nothing in code or docs distinguishes a person from a model: no human backing
 kind, no "waiting for a human" state. An Actor waits on another Actor's

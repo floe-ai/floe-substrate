@@ -23,3 +23,4 @@ Origin: agent ADR-0012 (4 Sep).
 
 Still in code: the old `auth.json` import, removed with the rest of the
 migration code ([pillars](../pillars/pillars.md#no-migration-code)).
+_Priority: P1_ _Release: 1.0_

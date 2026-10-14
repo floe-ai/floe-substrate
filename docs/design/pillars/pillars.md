@@ -78,6 +78,8 @@ _Resolution: settled_
 _Built: partly_
 _Authority: operator-confirmed ("Ban Polling for everything please")_
 _Authored by: operator_
+_Priority: P2_
+_Release: 1.0_
 
 State and progress flow as pushed events. No recurring polling, reconcile
 intervals or liveness loops, in Floe or in surfaces. Request/response is for
@@ -95,6 +97,8 @@ _Resolution: settled_
 _Built: partly_
 _Authority: operator-confirmed (no-globals ruling; test switches, 8 Oct ruling)_
 _Authored by: operator_
+_Priority: P2_
+_Release: 1.0_
 
 Behaviour is configured in Floe's configuration file, never by environment
 variables. This includes test switches.
@@ -132,6 +136,8 @@ _Resolution: settled_
 _Built: no_
 _Authority: operator-confirmed (13 Oct, D23; 14 Oct: existing homes may be "archive/rename/delete, doesnt matter")_
 _Authored by: operator_
+_Priority: P1_
+_Release: 1.0_
 
 Floe carries no code that upgrades data layouts that were never released: no
 column patching, backfills, table rebuilds, old-shape imports or compatibility

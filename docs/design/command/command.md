@@ -28,6 +28,8 @@ _Resolution: direction_
 _Built: partly_
 _Authority: agent-provisional_
 _Authored by: operator (thought log, June)_
+_Priority: P3_
+_Release: later_
 
 When an Actor meets a deterministic, repeatable step (a calculation, a
 transformation, a check), it builds or reuses a Command for it instead of
@@ -45,6 +47,8 @@ _Resolution: direction_
 _Built: no_
 _Authority: operator-confirmed (9 Oct ruling, Q25)_
 _Authored by: operator_
+_Priority: P3_
+_Release: later_
 
 A Command can be dropped in as a node without knowing how it works, for example
 "Send to Slack". To allow that, a Command declares:

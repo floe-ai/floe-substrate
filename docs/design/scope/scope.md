@@ -49,6 +49,8 @@ _Resolution: direction_
 _Built: no_
 _Authority: operator-confirmed (9 Oct ruling, Q24)_
 _Authored by: operator_
+_Priority: P3_
+_Release: later_
 
 - A Scope placed inside another Scope has its own input and output
   [Ports](port.md).

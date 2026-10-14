@@ -51,6 +51,8 @@ _Resolution: settled_
 _Built: partly_
 _Authority: operator-confirmed (9 Oct ruling)_
 _Authored by: operator_
+_Priority: P3_
+_Release: later_
 
 - Actors, Commands, Contexts and Events can be placed as nodes in a Scope. An
   Event node carries its source. A Connector is never a node.
@@ -70,6 +72,8 @@ _Resolution: direction_
 _Built: partly_
 _Authority: operator-confirmed (8 Oct and 9 Oct rulings)_
 _Authored by: operator_
+_Priority: P3_
+_Release: later_
 
 - **[Connector](../workspace/connector.md).** A Workspace setting: the connection to an outside system
   (account, sign-in, health). Event sources and Commands that support it use

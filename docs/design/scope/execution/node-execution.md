@@ -17,6 +17,8 @@ _Resolution: settled_
 _Built: no_
 _Authority: operator-confirmed (9 Oct ruling)_
 _Authored by: operator_
+_Priority: P2_
+_Release: 1.0_
 
 A Context exists only when it is meant to have members
 ([primitives](../../pillars/primitives.md)). A run with Actors uses a Context:

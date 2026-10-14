@@ -29,9 +29,12 @@ Contract: `docs/reference/identity-agent-protocol.md`,
 
 Still in code: the Bus server accepts an in-process option that skips
 authentication for tests (`unsafe_in_process_test_auth_bypass`,
-`floe-bus/src/server.ts`). The shipped product must not carry it. The browser
-pass, which pairs another browser by code, is also still in code; remote access
-waits for the Local-first direction ([pillars](../pillars/pillars.md)).
+`floe-bus/src/server.ts`). The shipped product must not carry it.
+_Priority: P1_ _Release: 1.0_
+
+Still in code: the browser pass, which pairs another browser by code; remote
+access waits for the Local-first direction ([pillars](../pillars/pillars.md)).
+_Priority: P3_ _Release: later_
 
 ## Sign-in screens
 
