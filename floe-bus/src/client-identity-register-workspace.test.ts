@@ -213,7 +213,7 @@ describe("Register-and-join first run (docs/reference/client-identity-protocol.m
     expect(acted.statusCode).toBe(200);
   });
 
-  it("imports an already-registered folder rather than minting a new identity", async () => {
+  it("an existing Workspace refuses a key its owner has not admitted", async () => {
     // A folder that is already a project on disk, with content the bus must not
     // clobber (the on-disk .floe template belongs to the bridge, not the bus).
     const locator = mkdtempSync(join(tmpdir(), "floe-ws-existing-"));
@@ -227,20 +227,78 @@ describe("Register-and-join first run (docs/reference/client-identity-protocol.m
     expect(first.statusCode).toBe(202);
     const workspaceId = first.json().workspace_id as string;
 
-    // A different fresh key register-and-joins the SAME locator: the existing
-    // identity is reused (import), not a second workspace, and B is admitted.
+    // Knowing the folder admits nobody: a different key is refused and is not
+    // admitted anywhere.
     const keyB = privateKeyFromSeedWords(generateSeedWords());
+    const refused = await registerAndJoin(keyB, { locator, display_name: "Joiner B" });
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json().error).toBe("workspace_admission_requires_owner");
+    expect(refused.json().workspace_id).toBe(workspaceId);
+    expect(handle.store.clientIdentityStore.getIdentityByPubkey(getPublicKey(keyB))).toBeNull();
+    expect((await authenticate(keyB)).statusCode).toBe(401);
+
+    // The owner admits B through host control; B's re-run is then idempotent.
+    const admitted = await handle.app.inject({
+      method: "POST",
+      url: "/v1/identities",
+      headers: hostAuth,
+      payload: { display_name: "Joiner B", pubkey: getPublicKey(keyB), workspace_id: workspaceId, until_revoked: true },
+    });
+    expect(admitted.statusCode).toBe(201);
     const second = await registerAndJoin(keyB, { locator, display_name: "Joiner B" });
     expect(second.statusCode).toBe(202);
     expect(second.json().workspace_id).toBe(workspaceId);
-
-    const authedB = await authenticate(keyB);
-    expect(authedB.statusCode).toBe(200);
-    expect(authedB.json().workspace_id).toBe(workspaceId);
-    expect(authedB.json().bearer_token).toBeTruthy();
+    expect((await authenticate(keyB)).json().workspace_id).toBe(workspaceId);
 
     // The bus imported the folder without rewriting the pre-existing project.
     expect(readFileSync(floeYaml, "utf8")).toContain("marker: keep-me");
+  });
+
+  it("joining again never undoes a removal; only the owner readmits", async () => {
+    const key = privateKeyFromSeedWords(generateSeedWords());
+    const locator = mkdtempSync(join(tmpdir(), "floe-ws-revoked-"));
+    const first = await registerAndJoin(key, { locator, display_name: "Removed" });
+    expect(first.statusCode).toBe(202);
+    const workspaceId = first.json().workspace_id as string;
+    const identityId = first.json().identity.identity_id as string;
+
+    const removed = await handle.app.inject({ method: "DELETE", url: `/v1/clients/${identityId}`, headers: hostAuth });
+    expect(removed.statusCode).toBe(200);
+
+    // Neither its own folder nor a brand-new one readmits a removed key.
+    const ownFolder = await registerAndJoin(key, { locator, display_name: "Removed" });
+    expect(ownFolder.statusCode).toBe(403);
+    expect(ownFolder.json().error).toBe("identity_revoked");
+    const newFolder = await registerAndJoin(key, { locator: mkdtempSync(join(tmpdir(), "floe-ws-revoked-new-")), display_name: "Removed" });
+    expect(newFolder.statusCode).toBe(403);
+    expect(handle.store.clientIdentityStore.getIdentity(identityId)?.revoked_at).not.toBeNull();
+    expect((await authenticate(key)).statusCode).toBe(401);
+
+    // The owner can readmit.
+    const readmitted = await handle.app.inject({
+      method: "POST",
+      url: "/v1/identities",
+      headers: hostAuth,
+      payload: { display_name: "Removed", pubkey: getPublicKey(key), workspace_id: workspaceId, until_revoked: true },
+    });
+    expect(readmitted.statusCode).toBe(201);
+    expect((await authenticate(key)).statusCode).toBe(200);
+  });
+
+  it("a Workspace nobody has joined is claimed by its first key, then closed to others", async () => {
+    // Opened without a person (nobody signed in on the machine).
+    const locator = mkdtempSync(join(tmpdir(), "floe-ws-ownerless-"));
+    const workspace = handle.store.workspaceOperationBackend.register({ locator, init_authorized: true });
+
+    const keyA = privateKeyFromSeedWords(generateSeedWords());
+    const claimed = await registerAndJoin(keyA, { locator, display_name: "First" });
+    expect(claimed.statusCode).toBe(202);
+    expect(claimed.json().workspace_id).toBe(workspace.workspace_id);
+
+    const keyB = privateKeyFromSeedWords(generateSeedWords());
+    const refused = await registerAndJoin(keyB, { locator, display_name: "Second" });
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json().error).toBe("workspace_admission_requires_owner");
   });
 
   it("re-running first run is idempotent: same key, same folder, same workspace", async () => {

@@ -8,7 +8,7 @@ import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, extname, resolve } from "node:path";
+import { dirname, extname, isAbsolute, resolve } from "node:path";
 import { z } from "zod";
 import type { LocalConfig } from "./config.js";
 import type { WorkspaceConfigurationPolicyProvider } from "./workspace-config-import.js";
@@ -3324,14 +3324,17 @@ export async function createBusServer(
     };
   });
 
-  // Register-and-join: the one unprivileged path from a fresh key into a
+  // Register-and-join: the one unprivileged path from a fresh key into a NEW
   // Workspace (first run). The signed NIP-42 proof is the authorisation, because
-  // no bearer exists yet — registering a folder is the act of joining it, so the
-  // registrant is admitted to the Workspace it establishes and there is nothing
-  // to approve. No credential is minted here: after a 201 the caller runs the
-  // existing challenge/authenticate path, which — the key now being admitted to
-  // exactly one Workspace — returns a single-membership bearer with no selection
-  // step. That keeps authenticate the only minting route. Admission is committed
+  // no bearer exists yet — registering an unbound folder establishes a Workspace
+  // and its registrant is the one admitted to it. A folder that is already a
+  // Workspace is different: knowing its path never admits anyone. Only a key
+  // already in that Workspace may re-run this (idempotent first run), or the
+  // first key when nobody has joined it yet; anyone else is admitted by the
+  // owner through host control (`POST /v1/identities`).
+  // A revoked key is never readmitted here (docs/design/capability/access.md,
+  // "Joining a Workspace"). No credential is minted here: after a 201 the caller
+  // runs the existing challenge/authenticate path. Admission is committed
   // synchronously before the 201 so an immediate follow-up authenticate cannot
   // race the roster.
   app.post("/v1/identity/register-workspace", async (request, reply) => {
@@ -3356,17 +3359,39 @@ export async function createBusServer(
     });
     if (!verification.ok) return sendIdentityAuthFailed(reply);
 
-    // 2. The substrate's own host owner performs the register and stands behind
+    // 2. A revoked key stays revoked: only the owner readmits it.
+    const known = store.clientIdentityStore.getIdentityByPubkey(verification.pubkey_hex);
+    if (known && known.revoked_at !== null) {
+      return reply.code(403).send({ error: "identity_revoked" });
+    }
+
+    // 3. An existing Workspace admits only keys already in it. A Workspace
+    //    nobody has joined (opened while no one was signed in) has no owner
+    //    to ask, so its first key may claim it.
+    if (isAbsolute(body.data.locator)) {
+      const existing = store.findWorkspaceByLocator(resolve(body.data.locator));
+      const member = existing && known
+        && store.clientIdentityStore.isMemberOfWorkspace(known.identity_id, existing.workspace_id);
+      if (existing && !member && store.clientIdentityStore.hasWorkspaceMembers(existing.workspace_id)) {
+        return reply.code(403).send({
+          error: "workspace_admission_requires_owner",
+          message: "This folder is already a Workspace. Its owner must admit you.",
+          workspace_id: existing.workspace_id,
+        });
+      }
+    }
+
+    // 4. The substrate's own host owner performs the register and stands behind
     //    the admission; the caller supplies no host authority of its own.
     const host = transportAuthenticator.authenticateHostControl(localControlToken);
     if (!host.verified || host.authority.audience !== "host_control") {
       return reply.code(503).send({ error: "identity_admission_unavailable" });
     }
 
-    // 3. Register or import the folder. A locator problem is a client error
-    //    (400) and must stay distinct from an authentication failure (401).
-    //    Reusing an already-bound locator returns its existing identity, which
-    //    is what makes re-running first run idempotent.
+    // 5. Register the folder. A locator problem is a client error (400) and
+    //    must stay distinct from an authentication failure (401). Reusing an
+    //    already-bound locator (allowed only for its members, above) returns
+    //    its existing identity, which makes re-running first run idempotent.
     let workspace;
     try {
       workspace = store.workspaceOperationBackend.register({
@@ -3385,12 +3410,12 @@ export async function createBusServer(
       throw error;
     }
 
-    // 4. Registering is joining: admit the caller's key to the Workspace it just
-    //    established, under the required display name. Both writes are durable
-    //    and synchronous, so admission is committed before the 201 returns and
-    //    an immediate authenticate cannot race the roster. admitIdentity is
-    //    idempotent per key and addWorkspaceMembership per (identity, workspace),
-    //    so an already-admitted key re-registering an already-bound folder
+    // 6. Registering a new folder is joining it: admit the caller's key to the
+    //    Workspace it just established, under the required display name. Both
+    //    writes are durable and synchronous, so admission is committed before
+    //    the 201 returns and an immediate authenticate cannot race the roster.
+    //    admitIdentity is idempotent per key and addWorkspaceMembership per
+    //    (identity, workspace), so a member re-registering its own folder
     //    succeeds and returns the same workspace_id.
     const identity = store.clientIdentityStore.admitIdentity({
       pubkey_hex: verification.pubkey_hex,
@@ -3412,7 +3437,7 @@ export async function createBusServer(
       evidence: [{ kind: "client_identity_workspace_registration", ref: workspace.workspace_id }],
     });
 
-    // 5. Registration and admission are now durable. But choosing a folder is
+    // 7. Registration and admission are now durable. But choosing a folder is
     //    the first thing a person does at first run, so the on-disk `.floe` has
     //    to actually exist when we answer — and that materialisation is done by
     //    the bridge in a separate process, reacting to the broadcast register
@@ -3468,8 +3493,8 @@ export async function createBusServer(
   // Folder lookup: which Workspace, if any, a folder already is — so a surface
   // launched from a folder can open it rather than guess. Read-only: it never
   // registers or admits. Like register-workspace it needs only a signed proof
-  // (a first-run key is not admitted yet), and it reveals nothing that route
-  // would not: on this host any proven key may join a folder by registering it.
+  // (a first-run key is not admitted yet). It tells a non-member which
+  // Workspace the folder is, so its owner can be asked to admit them.
   app.post("/v1/identity/workspace-for-folder", async (request, reply) => {
     const body = z.object({
       auth_event: z.record(z.unknown()),

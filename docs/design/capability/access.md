@@ -70,7 +70,7 @@ What happened is recorded as [Events](../event/event.md), operation
 ## Joining a Workspace
 
 _Resolution: settled_
-_Built: no_
+_Built: yes_
 _Authority: operator-confirmed (14 Oct, D28, red-team finding RT1)_
 _Authored by: operator_
 
@@ -79,14 +79,15 @@ machine owner's own Floe, admits a new identity to a Workspace. Knowing a
 Workspace's folder never admits anyone. Joining again never undoes a removal;
 only the owner can readmit a removed identity.
 
-Still in code: the public registration route admits any new identity that
-names an existing Workspace's folder, and readmission clears a removal
-(`floe-bus/src/server.ts`, `client-identity-store.ts`).
+The first identity to choose a new folder becomes its first member. A folder
+Floe opened while nobody was signed in has no member yet, so the first identity
+to join it does the same. Anyone else is admitted by the owner with
+`floe identity add`.
 
 ## One trust level per machine
 
 _Resolution: settled_
-_Built: partly_
+_Built: yes_
 _Authority: operator-confirmed (14 Oct, D27, red-team finding RT2)_
 _Authored by: operator_
 
@@ -99,10 +100,8 @@ machines or user accounts.
 
 [Extensions](../host/extension/extension.md) are trusted code that runs with the
 machine user's rights. An Extension never receives Floe's own service
-credentials, so it cannot act as Floe.
-
-Still in code: an Extension's process inherits the Bridge's environment,
-including its service credential (`floe-bridge/src/extensions/extension-host.ts`).
+credentials, so it cannot act as Floe. Floe's services remove their credentials
+from their own environment at start, so no process they launch inherits them.
 
 ## Frozen governance
 

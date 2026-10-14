@@ -200,6 +200,14 @@ export class SqliteClientIdentityStore {
     return row !== undefined;
   }
 
+  /** Whether anyone (removed identities included) is recorded in the workspace. */
+  hasWorkspaceMembers(workspaceId: string): boolean {
+    const row = this.db.prepare(
+      "SELECT 1 FROM client_identity_workspaces WHERE workspace_id = ? LIMIT 1",
+    ).get(workspaceId);
+    return row !== undefined;
+  }
+
   getIdentity(identityId: string): ClientIdentityRecord | null {
     const row = this.db.prepare(
       "SELECT * FROM client_identities WHERE identity_id = ?",

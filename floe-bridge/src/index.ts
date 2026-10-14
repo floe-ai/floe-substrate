@@ -18,7 +18,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const { configPath, config } = ensureConfig(getArgValue("--config"));
-  const daemon = new BridgeDaemon(configPath, config);
+  // The trusted native owner supplies this secret out-of-band. Remove it from
+  // the inherited environment before any child process (Extensions, engines,
+  // their shell tools) can observe it.
+  const bridgeServiceToken = process.env.FLOE_BRIDGE_SERVICE_TOKEN?.trim() ?? "";
+  delete process.env.FLOE_BRIDGE_SERVICE_TOKEN;
+  const daemon = new BridgeDaemon(configPath, config, {
+    transport_authority: bridgeServiceToken ? { audience: "bridge_service", bearer_token: bridgeServiceToken } : null,
+  });
   // Surfaces reach engine readiness and sign-in here, even before the Bus is up.
   const engineChannel = await serveChannel(ENGINES_CHANNEL, daemon.engines, {
     home: canonicalHome(resolveLocalPath(configPath, config.home, ".")),

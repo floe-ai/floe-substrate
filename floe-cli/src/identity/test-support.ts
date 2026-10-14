@@ -78,6 +78,11 @@ export class FakeBus {
       const pubkey = signer();
       if (!pubkey) return json(401, { error: "invalid_auth_event" });
       const workspace = { workspace_id: `workspace:${body.locator}`, name: String(body.locator).split(/[\\/]/).pop()!, folder_path: String(body.locator) };
+      if ([...this.identities.values()].some((entry) => entry.pubkey_hex === pubkey && entry.revoked_at)) return json(403, { error: "identity_revoked" });
+      const members = [...this.identities.values()].filter((entry) => entry.workspaces.some((w) => w.workspace_id === workspace.workspace_id));
+      if (members.length > 0 && !members.some((entry) => entry.pubkey_hex === pubkey)) {
+        return json(403, { error: "workspace_admission_requires_owner", workspace_id: workspace.workspace_id });
+      }
       this.admit(pubkey, body.display_name, workspace);
       return json(201, { workspace_id: workspace.workspace_id });
     }
