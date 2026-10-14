@@ -38,10 +38,10 @@ and the digest-derived package identity.
 - rebuildable push-stream indexes and local presentation state.
 
 The manifest's `host_access_left_behind` names the extra folders, by folder
-name only, and says whether System access was on. Restore records that as an
-`access_left_behind` notice on the Workspace, so whoever restores it can add
-the folders again and choose System access for their own machine. Restoring the
-same package again does not repeat the notice.
+name only. Restore records that as an `access_left_behind` notice on the
+Workspace, so whoever restores it can add the folders again. A restored
+Workspace starts with System access on. Restoring the same package again does
+not repeat the notice.
 
 SecretRef metadata retains its identity but restores unresolved. A host-local
 Command worker identity remains origin evidence only; it is never imported as

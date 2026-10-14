@@ -11,7 +11,7 @@ ScopeExecution.
 
 | Concept | One-line definition |
 |---|---|
-| [[Workspace]] | Portable identity and isolation boundary for one body of work. |
+| [[Workspace]] | Where one body of work lives; Actors reach any folder unless System access is off. |
 | [[Scope]] | Durable outcome, organisation, lifecycle, and governance boundary. |
 | [[Actor]] | An entity permitted to perceive, decide, communicate, and act. |
 | [[Context]] | The durable place where participants understand, discuss, and record work. |

@@ -1,6 +1,7 @@
 # Workspace
 
-**A Workspace is the portable identity and isolation boundary for one body of work.**
+**A Workspace is where one body of work lives.** Actors can reach any folder
+by default, unless the Workspace's System access is turned off.
 
 It owns Actors, Contexts, Scopes, Artefacts, authority, and history. Its stable
 opaque `workspace_id` is independent of a directory, host, repository URL,

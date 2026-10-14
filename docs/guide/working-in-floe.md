@@ -101,8 +101,10 @@ See [[Node]] and [[Command]].
 
 ## Approvals, grants and budgets
 
-Floe keeps approvals, Policies, grants and budgets working, but they do not
-restrict a Workspace unless it turns them on. When an operation returns an
+Floe keeps grants and budgets, but they restrict Actors only while the
+Workspace's governance is on; it is off by default, so every Actor may use
+every operation and tool. Chosen Policies, such as approval rules, apply
+either way. When an operation returns an
 approval request, reuse it unchanged; its evidence and action fields bind what
 will run. A message cannot stand in for an approval request. If a required
 operation is unavailable, say so and name what is missing.

@@ -88,14 +88,18 @@ segment, whether output is redirected to a file, and any literal URLs. Anything
 it cannot name with certainty (a variable, a subexpression, a script block, an
 escape) is counted as unclassified, never guessed.
 
-Every Actor may use every engine tool by default, without prompts. File tools
-(view, grep, glob, create, edit, apply_patch) stay inside the Workspace's
-folders; see [Workspace folders and System access](#workspace-folders-and-system-access).
+Every Actor may use every engine tool by default, without prompts, and reach
+any folder on the machine. File tools (view, grep, glob, create, edit,
+apply_patch) stay inside the Workspace's folders only when System access is
+turned off; see [Workspace folders and System access](#workspace-folders-and-system-access).
 **Shell commands are not confined**: a command can read, change or delete any
-file the signed-in user can, inside or outside the Workspace's folders. Other
-restrictions are opt-in: an Actor chooses them for another Actor or a Workspace.
-Each call is decided before it runs, and checked against the Workspace's
-folders and the limits that were chosen:
+file the signed-in user can, inside or outside the Workspace's folders.
+
+Per-Actor limits apply only when the Workspace's **governance** is on. It is
+off by default: every Actor may use every operation and tool, and grants and
+`scope.paths` are kept but ignored. Chosen Policies, such as approval rules,
+apply either way. With governance on, each call is decided before it runs,
+and checked against the Workspace's folders and these limits:
 
 1. the Actor's live grants for that operation. An Actor is offered only the
    built-in tools its grants cover. A grant with no targets is unrestricted;
@@ -123,26 +127,28 @@ decision.
 
 A Workspace has one or more folders. Its own folder, where `.floe` lives, is
 always one of them and cannot be removed. An Actor may add other folders on
-the same machine, by full path. File tools may use any path that resolves,
-after symlinks, inside one of those folders. A path outside them is refused
-with `tool_path_outside_workspace`, and the reason says to add the folder or
-turn on System access. A file tool whose path cannot be resolved, or which
-names no path, is refused, because it cannot be shown to stay inside.
+the same machine, by full path.
 
-**System access** is a Workspace setting, off by default. When on, file tools
+**System access** is a Workspace setting, on by default. When on, file tools
 may reach any path on the machine, and an engine's request to run outside its
-own sandbox may be allowed. When off, such a request is always refused
+own sandbox may be allowed. When off, file tools may use only paths that
+resolve, after symlinks, inside one of the Workspace's folders. A path outside
+them is refused with `tool_path_outside_workspace`, and the reason says to add
+the folder or turn System access back on. A file tool whose path cannot be
+resolved, or which names no path, is refused, because it cannot be shown to
+stay inside. A request to run outside the engine's sandbox is always refused
 (`tool_sandbox_bypass`).
 
-These operations change and show the setting. The three that change it are
-interactive only, so an Actor cannot widen its own boundary:
+These operations change and show the settings. Those that change them are
+interactive only, so a running turn cannot widen its own boundary:
 
 | Operation | What it does |
 |---|---|
-| `workspace.access.inspect` | Lists the folders, whether System access is on, and recent changes and notices, each marked `seen` or not by you. |
+| `workspace.access.inspect` | Lists the folders, whether System access and governance are on, and recent changes and notices, each marked `seen` or not by you. |
 | `workspace.folder.add` | Adds a folder by full path. Refuses a relative path, a missing folder, a file, or a folder already inside the Workspace's folders. |
 | `workspace.folder.remove` | Removes an added folder. The Workspace's own folder stays. |
 | `workspace.system_access.set` | Turns System access on or off. |
+| `workspace.governance.set` | Turns governance on or off. |
 | `workspace.notice.acknowledge` | Marks one change or notice (`record_id`) as seen by you. |
 
 Every change is recorded with who made it and is pushed as
@@ -162,17 +168,19 @@ Workspace on the same machine keeps both exactly, and the copy records an
 `access_carried` notice saying what came across. A
 [portable package](../setup/workspace-transfer.md) carries neither, because it
 may be handed to someone else: the restored Workspace has only its own folder
-and System access off, and records an `access_left_behind` notice naming the
-folders (by name, never by path) and saying whether System access was on.
+and System access on, and records an `access_left_behind` notice naming the
+extra folders (by name, never by path). Governance belongs to the Workspace,
+so a copy or a package keeps it.
 
 **Commands are not confined by any of this.** Floe decides which commands an
 Actor may run, not which files they touch. The engine's own sandbox does not
 confine them on Windows. An Actor that must not reach outside its folders
-needs a `scope.paths` limit, which refuses every shell call.
+needs governance on and a `scope.paths` limit, which refuses every shell call.
 
 ### Default tool access
 
-The default Floe Actor of a new local Workspace holds all four engine tool
+These grants decide what an Actor may do only while the Workspace's governance
+is on. The default Floe Actor of a new local Workspace holds all four engine tool
 operations with no targets and no folder limit. `actor.create` (and
 `actor.setup`) gives a new
 Actor every engine tool its creator holds, as delegated copies with the

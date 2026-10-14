@@ -210,9 +210,10 @@ configuration, execution state, topology, or communication.
 
 ## Workspace
 
-The portable identity and isolation boundary for Actors, Contexts, Scopes,
-Artefacts, authority, and history. A filesystem path is a host-local locator
-binding, never Workspace identity. See [[Workspace]].
+Where one body of work lives: its Actors, Contexts, Scopes, Artefacts,
+authority and history, under one portable identity. Actors can reach any
+folder by default, unless System access is turned off. A filesystem path is a
+host-local locator binding, never Workspace identity. See [[Workspace]].
 
 ## Workspace locator binding
 
