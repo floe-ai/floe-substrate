@@ -25,6 +25,8 @@ async function fixture(mode: "interactive" | "unattended" = "unattended", publis
   const locator = join(dir, "workspace"); mkdirSync(locator);
   const workspace = handle.store.registerWorkspace({ locator, name: "Delegation proof" }, handle.broadcast) as { workspace_id: string };
   const store = handle.store, workspaceId = workspace.workspace_id;
+  // Revoked grants stop new sessions only with governance on.
+  store.workspaceAccessStore.setGovernance({ workspace_id: workspaceId, enabled: true, principal_id: "principal:test-governance" });
   const boundary = { kind: "workspace" as const, workspace_id: workspaceId };
   const principal = "principal:organiser";
   const grant = store.capabilityGrantStore.issueGrant({ principal_id: principal, boundary,

@@ -363,6 +363,32 @@ describe("native canonical Command execution", () => {
     }, fixture.broadcast)).toThrow(/Ports must exactly match/);
   });
 
+  it("publishes a Command that declares an operation with no grant unless governance is on", () => {
+    const declared = { ...definition(), permissions: [{
+      permission_id: "publish-output",
+      operation_id: "scope.node-output.publish",
+      purpose: "Publish the declared output.",
+    }] };
+    const fixture = makeFixture(new PlannedCommandHost([]), declared);
+    fixture.store.workspaceAccessStore.setGovernance({ workspace_id: fixture.workspaceId, enabled: true, principal_id: "principal:test-governance" });
+    fixture.store.createScope({ workspace_id: fixture.workspaceId, scope_id: "governed", title: "Governed" }, fixture.broadcast);
+    const contextId = fixture.store.contextStore.createContext({
+      workspace_id: fixture.workspaceId,
+      scope_id: "governed",
+      created_by_endpoint_id: null,
+      participants: [],
+    });
+    const draft = fixture.store.createScopeCompositionDraft({
+      workspace_id: fixture.workspaceId,
+      scope_id: "governed",
+      content: composition(contextId, fixture.commandId, fixture.actorEndpoint),
+    }, fixture.broadcast);
+    expect(() => fixture.store.publishScopeComposition({
+      revision_id: draft.revision_id,
+      expected_published_revision_id: null,
+    }, fixture.broadcast)).toThrow(/no active CapabilityGrant for 'scope.node-output.publish'/);
+  });
+
   it("records timeout as a failed attempt for a Command with no external effects", async () => {
     const host = new PlannedCommandHost([
       new CommandRuntimeHostError("command_timeout", "declared timeout"),

@@ -1,7 +1,9 @@
 /**
  * @invariant A Workspace's folders and its System access setting are the
- * default boundary for Floe-enforced file tools on this host. The home folder
- * (where `.floe` lives) is always one of them. Every change, and every time
+ * boundary for Floe-enforced file tools on this host. System access is on
+ * unless turned off, so tools reach every folder by default. The home folder
+ * (where `.floe` lives) is always one of them. Frozen governance (per-Actor
+ * grants and limits) is off unless turned on for the Workspace. Every change, and every time
  * Floe itself gives existing Actors tool access, is recorded here so a surface
  * can show it. Nothing here decides a tool call; tool-policy does.
  */
@@ -28,6 +30,8 @@ export type WorkspaceAccessRecordKind =
   | "folder_removed"
   | "system_access_turned_on"
   | "system_access_turned_off"
+  | "governance_turned_on"
+  | "governance_turned_off"
   | "tool_access_given"
   | "actor_access_moved"
   | "actor_access_lapsing"
@@ -49,15 +53,18 @@ export type WorkspaceAccess = Readonly<{
   workspace_id: string;
   folders: readonly WorkspaceFolder[];
   system_access: boolean;
+  /** When on, per-Actor grants and limits decide what each Actor may do. Off by default. */
+  governance: boolean;
   /** Newest first. */
   records: readonly WorkspaceAccessRecord[];
 }>;
 
-/** What a tool decision needs: canonical real folders and the System access setting. */
+/** What a tool decision needs: canonical real folders, System access and governance. */
 export type WorkspaceToolBoundary = Readonly<{
   home: string | null;
   folders: readonly string[];
   system_access: boolean;
+  governance: boolean;
 }>;
 
 export class WorkspaceFolderError extends Error {
@@ -87,6 +94,12 @@ export function applyWorkspaceAccessSchema(db: DatabaseSync): void {
       changed_at TEXT NOT NULL,
       changed_by_principal_id TEXT NOT NULL,
       PRIMARY KEY (workspace_id, host_id)
+    );
+    CREATE TABLE IF NOT EXISTS workspace_governance (
+      workspace_id TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+      changed_at TEXT NOT NULL,
+      changed_by_principal_id TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS workspace_access_records (
       record_id TEXT PRIMARY KEY,
@@ -162,7 +175,8 @@ export class WorkspaceAccessStore {
       ORDER BY recorded_at DESC, record_id DESC LIMIT ?`)
       .all(workspaceId, this.dependencies.host_id, RECORD_LIMIT) as Omit<WorkspaceAccessRecord, "seen_by">[])
       .map(row => ({ ...row, seen_by: seen.get(row.record_id) ?? [] }));
-    return { workspace_id: workspaceId, folders, system_access: this.systemAccess(workspaceId), records };
+    return { workspace_id: workspaceId, folders, system_access: this.systemAccess(workspaceId),
+      governance: this.governance(workspaceId), records };
   }
 
   toolBoundary(workspaceId: string): WorkspaceToolBoundary {
@@ -170,6 +184,7 @@ export class WorkspaceAccessStore {
       home: realFolder(this.dependencies.home_locator(workspaceId)),
       folders: this.folderRows(workspaceId).map(row => realFolder(row.locator)).filter((value): value is string => value !== null),
       system_access: this.systemAccess(workspaceId),
+      governance: this.governance(workspaceId),
     };
   }
 
@@ -221,10 +236,38 @@ export class WorkspaceAccessStore {
     return this.inspect(input.workspace_id);
   }
 
+  /** Returns null when the setting already had this value, so nothing changed. */
+  setGovernance(input: Readonly<{ workspace_id: string; enabled: boolean; principal_id: string }>): WorkspaceAccess | null {
+    if (this.governance(input.workspace_id) === input.enabled) return null;
+    const at = this.now();
+    this.db.prepare(`INSERT INTO workspace_governance (workspace_id, enabled, changed_at, changed_by_principal_id)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(workspace_id) DO UPDATE SET enabled = excluded.enabled,
+        changed_at = excluded.changed_at, changed_by_principal_id = excluded.changed_by_principal_id`)
+      .run(input.workspace_id, input.enabled ? 1 : 0, at, input.principal_id);
+    this.record(input.workspace_id,
+      input.enabled ? "governance_turned_on" : "governance_turned_off",
+      input.enabled
+        ? "Governance turned on: each Actor may do only what its grants allow."
+        : "Governance turned off: every Actor may use every operation and tool in this Workspace.",
+      null, input.principal_id, at);
+    return this.inspect(input.workspace_id);
+  }
+
   /**
-   * Gives a new Workspace the extra folders and System access of the
-   * Workspace it was copied or forked from on this machine, keeping who
-   * first chose each one, and records a notice saying what came across.
+   * Whether frozen governance decides this Workspace's access. Off unless
+   * turned on. Unlike folders, it belongs to the Workspace and travels with it.
+   */
+  governance(workspaceId: string): boolean {
+    const row = this.db.prepare("SELECT enabled FROM workspace_governance WHERE workspace_id = ?")
+      .get(workspaceId) as { enabled: number } | undefined;
+    return row?.enabled === 1;
+  }
+
+  /**
+   * Gives a new Workspace the extra folders, System access and governance
+   * of the Workspace it was copied or forked from on this machine, keeping
+   * who first chose each one, and records a notice saying what came across.
    */
   carryAccess(input: Readonly<{
     source_workspace_id: string;
@@ -237,8 +280,15 @@ export class WorkspaceAccessStore {
       WHERE workspace_id = ? AND host_id = ? ORDER BY added_at, folder_id`)
       .all(input.source_workspace_id, host) as Array<{ locator: string; added_at: string; added_by_principal_id: string }>;
     const system = this.db.prepare(`SELECT changed_at, changed_by_principal_id FROM workspace_system_access
-      WHERE workspace_id = ? AND host_id = ? AND enabled = 1`)
+      WHERE workspace_id = ? AND host_id = ? AND enabled = 0`)
       .get(input.source_workspace_id, host) as { changed_at: string; changed_by_principal_id: string } | undefined;
+    const governance = this.db.prepare(`SELECT enabled, changed_at, changed_by_principal_id FROM workspace_governance
+      WHERE workspace_id = ?`).get(input.source_workspace_id) as
+      { enabled: number; changed_at: string; changed_by_principal_id: string } | undefined;
+    if (governance) {
+      this.db.prepare(`INSERT INTO workspace_governance (workspace_id, enabled, changed_at, changed_by_principal_id)
+        VALUES (?, ?, ?, ?)`).run(input.workspace_id, governance.enabled, governance.changed_at, governance.changed_by_principal_id);
+    }
     if (folders.length === 0 && !system) return;
     for (const folder of folders) {
       this.db.prepare(`INSERT INTO workspace_folders (folder_id, workspace_id, host_id, locator, added_at, added_by_principal_id)
@@ -247,7 +297,7 @@ export class WorkspaceAccessStore {
     }
     if (system) {
       this.db.prepare(`INSERT INTO workspace_system_access (workspace_id, host_id, enabled, changed_at, changed_by_principal_id)
-        VALUES (?, ?, 1, ?, ?)`).run(input.workspace_id, host, system.changed_at, system.changed_by_principal_id);
+        VALUES (?, ?, 0, ?, ?)`).run(input.workspace_id, host, system.changed_at, system.changed_by_principal_id);
     }
     this.record(input.workspace_id, "access_carried",
       carriedSummary(input.how, folders.map(folder => folder.locator), Boolean(system)),
@@ -260,21 +310,19 @@ export class WorkspaceAccessStore {
   }
 
   /**
-   * Tells a restored Workspace what its package left behind. Restoring the
-   * same package again changes nothing.
+   * Tells a restored Workspace which extra folders its package left behind.
+   * System access needs no notice: a restored Workspace starts with it on.
+   * Restoring the same package again changes nothing.
    */
-  recordLeftBehind(workspaceId: string, leftBehind: Readonly<{ folder_names: readonly string[]; system_access: boolean }>): boolean {
-    const parts = [
-      ...(leftBehind.folder_names.length > 0
-        ? [`${leftBehind.folder_names.length === 1 ? "the folder" : `${leftBehind.folder_names.length} folders`} ${leftBehind.folder_names.join(", ")}, which you can add again`]
-        : []),
-      ...(leftBehind.system_access ? ["System access, which was on where it came from and is off here until you turn it on"] : []),
-    ];
+  recordLeftBehind(workspaceId: string, leftBehind: Readonly<{ folder_names: readonly string[] }>): boolean {
+    const names = leftBehind.folder_names;
+    if (names.length === 0) return false;
     return this.recordStandingNotice({
       record_id: `notice:left-behind:${workspaceId}`,
       workspace_id: workspaceId,
       kind: "access_left_behind",
-      summary: `This Workspace was restored from a package, which does not carry machine access. Left behind: ${parts.join("; ")}.`,
+      summary: "This Workspace was restored from a package, which does not carry machine access. Left behind: "
+        + `${names.length === 1 ? "the folder" : `${names.length} folders`} ${names.join(", ")}, which you can add again.`,
       principal_id: "system:workspace-restore",
     });
   }
@@ -343,7 +391,8 @@ export class WorkspaceAccessStore {
 
   /** Removes everything held for a deleted Workspace. */
   forgetWorkspace(workspaceId: string): void {
-    for (const table of ["workspace_folders", "workspace_system_access", "workspace_access_records", "workspace_notice_acknowledgements"]) {
+    for (const table of ["workspace_folders", "workspace_system_access", "workspace_governance", "workspace_access_records",
+      "workspace_notice_acknowledgements"]) {
       this.db.prepare(`DELETE FROM ${table} WHERE workspace_id = ?`).run(workspaceId);
     }
   }
@@ -351,7 +400,7 @@ export class WorkspaceAccessStore {
   private systemAccess(workspaceId: string): boolean {
     const row = this.db.prepare("SELECT enabled FROM workspace_system_access WHERE workspace_id = ? AND host_id = ?")
       .get(workspaceId, this.dependencies.host_id) as { enabled: number } | undefined;
-    return row?.enabled === 1;
+    return row === undefined || row.enabled === 1;
   }
 
   private folderRows(workspaceId: string): Array<{ folder_id: string; locator: string; added_at: string }> {
@@ -367,10 +416,10 @@ export class WorkspaceAccessStore {
   }
 }
 
-function carriedSummary(how: "copied" | "forked", folders: readonly string[], systemAccess: boolean): string {
+function carriedSummary(how: "copied" | "forked", folders: readonly string[], systemAccessOff: boolean): string {
   const parts = [
     ...(folders.length > 0 ? [`the folder${folders.length === 1 ? "" : "s"} ${folders.join(", ")}`] : []),
-    ...(systemAccess ? ["System access (file tools may reach anywhere on this machine)"] : []),
+    ...(systemAccessOff ? ["System access off (file tools limited to the Workspace's folders)"] : []),
   ];
   return `This Workspace was ${how} with ${parts.join(" and ")}.`;
 }

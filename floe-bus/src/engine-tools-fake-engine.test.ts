@@ -200,13 +200,19 @@ describe.runIf(process.platform === "win32")("engine tools, Floe's side with a f
     return { decision: row.decision, facts: JSON.parse(row.facts_json), denials: JSON.parse(row.denial_reasons_json) as string[] };
   }
 
-  it("offers every built-in and runs any call inside the Workspace by default, recording each decision (proofs 2, 8)", async () => {
+  it("offers every built-in and runs any call anywhere by default, recording each decision (proofs 2, 8)", async () => {
     const outside = join(root, "outside", "secret.txt");
+    // A new Workspace is open: every tool and every folder.
+    expect(await turn({ name: "view", args: { path: outside } })).toContain("outside-secret");
+    const offered = model.offered();
+    expect(offered).toEqual(expect.arrayContaining(["view", "grep", "glob", "create", "edit", "powershell", "web_fetch"]));
+    expect(lastDecision("engine.tool.filesystem.read")).toMatchObject({ decision: "allow" });
+
+    // With System access off, file tools stay inside the Workspace's folders.
+    handle.store.workspaceAccessStore.setSystemAccess({ workspace_id: WS, enabled: false, principal_id: "principal:operator" });
     const blocked = await turn({ name: "view", args: { path: outside } });
     expect(blocked).toContain("authority.tool_path_outside_workspace");
     expect(blocked).not.toContain("outside-secret");
-    const offered = model.offered();
-    expect(offered).toEqual(expect.arrayContaining(["view", "grep", "glob", "create", "edit", "powershell", "web_fetch"]));
     expect(lastDecision("engine.tool.filesystem.read")).toMatchObject({ decision: "deny", facts: { tool: { paths: [], outside_path_count: 1 } } });
 
     expect(await turn({ name: "view", args: { path: join(workspace, "src", "a.txt") } })).toContain("inside-content");
@@ -219,7 +225,6 @@ describe.runIf(process.platform === "win32")("engine tools, Floe's side with a f
     // System access reaches anywhere.
     handle.store.workspaceAccessStore.setSystemAccess({ workspace_id: WS, enabled: true, principal_id: "principal:operator" });
     expect(await turn({ name: "view", args: { path: outside } })).toContain("outside-secret");
-    handle.store.workspaceAccessStore.setSystemAccess({ workspace_id: WS, enabled: false, principal_id: "principal:operator" });
 
     const marker = join(workspace, "made-by-shell.txt");
     await turn({ name: "powershell", args: { command: `Set-Content -Path '${marker}' -Value made`, description: "write a marker" } });
@@ -234,6 +239,9 @@ describe.runIf(process.platform === "win32")("engine tools, Floe's side with a f
   }, 240_000);
 
   it("enforces chosen limits before any side effect, and refuses what the evidence cannot show (proofs 1, 4)", async () => {
+    // An Actor's own folder limit and shell confinement are governance, so they apply only with it on.
+    handle.store.workspaceAccessStore.setGovernance({ workspace_id: WS, enabled: true, principal_id: "principal:operator" });
+    handle.store.workspaceAccessStore.setSystemAccess({ workspace_id: WS, enabled: false, principal_id: "principal:operator" });
     republish({ scope: { paths: ["src"] } });
 
     const inside = await turn({ name: "view", args: { path: join(workspace, "src", "a.txt") } });
@@ -271,6 +279,8 @@ describe.runIf(process.platform === "win32")("engine tools, Floe's side with a f
     expect(fetch).toContain("This Workspace does not fetch.");
     expect(pages.hits.length).toBe(hits);
     expect(lastDecision("engine.tool.network.fetch").decision).toBe("deny");
+    handle.store.workspaceAccessStore.setGovernance({ workspace_id: WS, enabled: false, principal_id: "principal:operator" });
+    handle.store.workspaceAccessStore.setSystemAccess({ workspace_id: WS, enabled: true, principal_id: "principal:operator" });
   }, 240_000);
 
   it("asks a person only under a chosen rule, and runs the same call once on approval (proof 3)", async () => {
@@ -305,5 +315,23 @@ describe.runIf(process.platform === "win32")("engine tools, Floe's side with a f
     expect((await import("node:fs")).readFileSync(marker, "utf8").trim()).toBe("once");
     const receipt = handle.store.approvalStore.getReceiptForRequest(requestId)!;
     expect(handle.store.approvalStore.getReceipt(receipt.approval_receipt_id)!.use_count).toBe(1);
+  }, 240_000);
+
+  it("gives an Actor with no grants every tool while governance is off, and none once it is on", async () => {
+    const boundary = { kind: "workspace" as const, workspace_id: WS };
+    republish({ capability_grant_ids: [], policy_refs: { budget: null, trust: null, approval: null } } as any);
+    for (const grant of handle.store.capabilityGrantStore.listActiveGrantsForPrincipalBoundary(actorId, boundary)) {
+      handle.store.capabilityGrantStore.revokeGrant(grant.grant_id);
+    }
+    expect(handle.store.capabilityGrantStore.listActiveGrantsForPrincipalBoundary(actorId, boundary)).toEqual([]);
+    const outside = join(root, "outside", "secret.txt");
+    expect(await turn({ name: "view", args: { path: outside } })).toContain("outside-secret");
+    expect(model.offered()).toEqual(expect.arrayContaining(["view", "powershell", "web_fetch"]));
+
+    handle.store.workspaceAccessStore.setGovernance({ workspace_id: WS, enabled: true, principal_id: "principal:operator" });
+    const refused = await turn({ name: "view", args: { path: join(workspace, "src", "a.txt") } });
+    expect(refused).not.toContain("inside-content");
+    expect(model.offered()).not.toContain("view");
+    handle.store.workspaceAccessStore.setGovernance({ workspace_id: WS, enabled: false, principal_id: "principal:operator" });
   }, 240_000);
 });

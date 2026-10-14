@@ -18,7 +18,8 @@ export const TOOL_APPROVAL_TARGET_KIND = "runtime_delivery";
 export function toolApprovalAction(input: Readonly<{
   evaluation: PolicyEvaluationRecord;
   delivery_id: string;
-  grant_id: string;
+  /** Null when governance is off and the call needed no grant. */
+  grant_id: string | null;
   scope_execution_id: string | null;
   node_execution_id: string | null;
 }>): ApprovalAction {
@@ -42,7 +43,7 @@ export function toolApprovalAction(input: Readonly<{
       id: input.evaluation.evaluation_id,
       revision: input.evaluation.facts_digest,
     },
-    capability_grant_ids: [input.grant_id],
+    capability_grant_ids: input.grant_id === null ? [] : [input.grant_id],
     expected_effect: {
       summary: toolCallSummary(facts.operation_id, tool),
       external: facts.effects.external,

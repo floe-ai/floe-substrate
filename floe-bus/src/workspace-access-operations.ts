@@ -1,7 +1,7 @@
 /**
- * @invariant Workspace folders and System access are changed only by an
- * interactive surface, never by an unattended Actor, so an Actor cannot widen
- * its own file boundary. Every change is recorded and pushed.
+ * @invariant Workspace folders, System access and governance are changed only
+ * in an interactive session, never in an unattended turn, so a running turn
+ * cannot widen its own boundary. Every change is recorded and pushed.
  */
 import {
   refusal,
@@ -17,6 +17,7 @@ export const INSPECT_WORKSPACE_ACCESS_OPERATION_ID = "workspace.access.inspect";
 export const ADD_WORKSPACE_FOLDER_OPERATION_ID = "workspace.folder.add";
 export const REMOVE_WORKSPACE_FOLDER_OPERATION_ID = "workspace.folder.remove";
 export const SET_WORKSPACE_SYSTEM_ACCESS_OPERATION_ID = "workspace.system_access.set";
+export const SET_WORKSPACE_GOVERNANCE_OPERATION_ID = "workspace.governance.set";
 export const ACKNOWLEDGE_WORKSPACE_NOTICE_OPERATION_ID = "workspace.notice.acknowledge";
 
 const nonEmptyString: JsonSchema = { type: "string", minLength: 1 };
@@ -24,7 +25,7 @@ const nullableString: JsonSchema = { oneOf: [nonEmptyString, { type: "null" }] }
 const accessSchema: JsonSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["workspace_id", "folders", "system_access", "records"],
+  required: ["workspace_id", "folders", "system_access", "governance", "records"],
   properties: {
     workspace_id: nonEmptyString,
     folders: {
@@ -43,6 +44,7 @@ const accessSchema: JsonSchema = {
       },
     },
     system_access: { type: "boolean" },
+    governance: { type: "boolean" },
     records: {
       type: "array",
       items: {
@@ -117,8 +119,8 @@ export function workspaceAccessOperationDefinitions(
       operation_version: "1",
       authority_boundary_kinds: ["workspace"],
       category: "workspace",
-      title: "Show Workspace folders and System access",
-      description: "List the folders Floe Actors' file tools may use in this Workspace, whether System access is on, and recent changes and notices, each marked seen or not by you.",
+      title: "Show Workspace folders, System access and governance",
+      description: "List the folders Floe Actors' file tools may use in this Workspace, whether System access and governance are on, and recent changes and notices, each marked seen or not by you.",
       effects: { mode: "read", reversibility: "none", external: false, secret_access: "none" },
       required_grants: [INSPECT_WORKSPACE_ACCESS_OPERATION_ID],
       interaction_constraints: { allowed_modes: ["interactive", "unattended"] },
@@ -177,7 +179,7 @@ export function workspaceAccessOperationDefinitions(
       category: "workspace",
       title: "Turn System access on or off",
       description: "When on, Floe Actors' file tools may reach anywhere on this machine, and an engine may be allowed to"
-        + " bypass its sandbox. Off by default.",
+        + " bypass its sandbox. When off, file tools stay inside the Workspace's folders. On by default.",
       effects: writeEffects,
       required_grants: [SET_WORKSPACE_SYSTEM_ACCESS_OPERATION_ID],
       interaction_constraints: interactiveOnly,
@@ -185,6 +187,26 @@ export function workspaceAccessOperationDefinitions(
       input: { version: "1", schema: { type: "object", additionalProperties: false, required: ["enabled"], properties: { enabled: { type: "boolean" } } } },
       result: { version: "1", schema: accessSchema },
       handler: (context, input: { enabled: boolean }) => change(dependencies, context, () => dependencies.access.setSystemAccess({
+        workspace_id: requireWorkspaceAuthorityId(context.authority),
+        enabled: input.enabled,
+        principal_id: context.authority.principal_id,
+      })),
+    },
+    {
+      operation_id: SET_WORKSPACE_GOVERNANCE_OPERATION_ID,
+      operation_version: "1",
+      authority_boundary_kinds: ["workspace"],
+      category: "workspace",
+      title: "Turn governance on or off",
+      description: "When off, every Actor in this Workspace may use every operation and tool. When on, each Actor may do"
+        + " only what its grants allow. Off by default.",
+      effects: writeEffects,
+      required_grants: [SET_WORKSPACE_GOVERNANCE_OPERATION_ID],
+      interaction_constraints: interactiveOnly,
+      target: noTarget,
+      input: { version: "1", schema: { type: "object", additionalProperties: false, required: ["enabled"], properties: { enabled: { type: "boolean" } } } },
+      result: { version: "1", schema: accessSchema },
+      handler: (context, input: { enabled: boolean }) => change(dependencies, context, () => dependencies.access.setGovernance({
         workspace_id: requireWorkspaceAuthorityId(context.authority),
         enabled: input.enabled,
         principal_id: context.authority.principal_id,

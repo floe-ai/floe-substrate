@@ -28,14 +28,15 @@ Actor uses the same list, whoever or whatever backs it.
 ## Unrestricted by default
 
 _Resolution: settled_
-_Built: partly_
+_Built: yes_
 _Authority: operator-confirmed (29 Sep ruling; 13 Oct: restrictions are per Workspace, not per Actor; 14 Oct: "full access", folders included)_
 _Authored by: operator_
 _Priority: P1_
 _Release: 1.0_
 
 A new Workspace starts unrestricted: every tool and every folder. Narrowing the
-list is opt-in, for the whole Workspace. "Ask before acting" is never a
+list is opt-in, for the whole Workspace: turning System access off limits
+Actors to the Workspace folder and the folders added to it. "Ask before acting" is never a
 default. One Actor asking another before acting is an ordinary message in a
 [Context](../context/context.md); it needs no approval mechanism.
 
@@ -169,12 +170,37 @@ replaces the 13 Oct call to remove it.
 - the separate audit record
 - the operation authority that ends with each Delivery
 
-Not built: open defaults. Today an Actor needs grants for each operation; new
-Actors copy their creator's access, or get a default list only in a Workspace
-with exactly one person; Floe-issued Actor access lapses on a set date unless a
-person adopts the Actor; and the Bridge refuses the shell and folders outside
-the Workspace ([Workspace](../workspace/workspace.md#files)). Each of these
-becomes open by default.
+### The governance switch
+
+_Resolution: settled_
+_Built: yes_
+_Authority: operator-confirmed (14 Oct, O66: one Workspace switch, off by default)_
+_Authored by: operator_
+_Priority: P1_
+_Release: 1.0_
+
+Each Workspace has one governance switch, off by default. It is changed with
+the `workspace.governance.set` operation, only by someone acting directly, never
+from an Actor's own turn.
+
+- **Off:** every Actor may use every operation, tool and folder in the
+  Workspace. Grants, roles and an Actor's own folder and shell limits are kept
+  but ignored. A Command in a [Scope](../scope/scope.md) runs the operations it
+  declares without grants.
+- **On:** the frozen governance applies again, using the grants already kept.
+- Chosen policies, such as approval rules, apply whether the switch is on or
+  off; each is turned on separately.
+- The switch travels with the Workspace: a copy or a package keeps it.
+
+Still in code:
+
+- New Actors still receive grants (their creator's access, or the
+  one-person default). Harmless while the switch is off.
+- Floe-issued Actor access still lapses on a set date unless someone adopts
+  the Actor. Harmless while the switch is off.
+- Using a stored engine credential ([SecretRef](secret.md)) still needs a
+  grant naming that credential.
+- The cost of checking every tool call when the switch is off is not measured.
 
 ## Open
 

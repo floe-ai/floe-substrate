@@ -190,8 +190,15 @@ declareLive("vertical slice exact Copilot SDK tools [live-copilot]", () => {
     return { workspaceId, agentEndpointId, humanEndpointId };
   }
 
-  async function runToolCase(caseName: LiveToolCase, prompt: string): Promise<void> {
+  async function runToolCase(caseName: LiveToolCase, prompt: string, options: { governance?: boolean } = {}): Promise<void> {
     const { workspaceId, agentEndpointId, humanEndpointId } = await prepareCase();
+    if (options.governance) {
+      const turnedOn = await h.post<{ receipt: { state: string } }>(`/v1/workspaces/${encodeURIComponent(workspaceId)}/operations/invoke`, {
+        operation_id: "workspace.governance.set", operation_version: "1", input_schema_version: "1",
+        input: { enabled: true }, target: null, expected_resource_revision: null, idempotency_key: `${caseName}:governance`,
+      });
+      expect(turnedOn.receipt.state).toBe("completed");
+    }
     let triggerEventId: string | null = null;
     let evidenceError: unknown;
     try {
@@ -274,8 +281,32 @@ declareLive("vertical slice exact Copilot SDK tools [live-copilot]", () => {
         "{\"operation_id\":\"command.list\",\"operation_version\":\"1\",",
         "\"input_schema_version\":\"1\",\"input\":{}}.",
         "Do not call any other tool. After the denial, reply exactly: denial observed.",
-      ].join(" ")
+      ].join(" "),
+      // Only governance refuses an operation the Actor holds no grant for.
+      { governance: true },
     );
+  }, 180_000);
+
+  it("lets a new Workspace's Actor read a file outside the Workspace with nothing set up", async () => {
+    const { workspaceId, agentEndpointId, humanEndpointId } = await prepareCase();
+    const outside = join(h.temp, "outside");
+    mkdirSync(outside, { recursive: true });
+    const secret = `open-by-default-${Date.now()}`;
+    const file = join(outside, "note.txt");
+    writeFileSync(file, secret, "utf8");
+    await h.post("/v1/events/emit", {
+      type: "message", workspace_id: workspaceId, source_endpoint_id: humanEndpointId,
+      destination: { kind: "endpoint", endpoint_id: agentEndpointId }, thread_id: "thread:open-by-default",
+      correlation_id: null, response: { expected: false }, metadata: {},
+      content: { text: `Read the file ${file} with your file viewing tool and reply with its exact contents only.`, data: {} },
+    });
+    await waitFor(async () => h.runtimeResults(workspaceId, agentEndpointId).then(events => events.length === 1),
+      "open-by-default runtime result", 120_000);
+    const [result] = await h.runtimeResults(workspaceId, agentEndpointId);
+    const decisions = h.busMessages.filter(message => message.type === "policy_decision").map(message => message.payload);
+    const { records } = await h.get<{ records: any[] }>(`/v1/runtime/telemetry?workspace_id=${encodeURIComponent(workspaceId)}&limit=500`);
+    const tools = records.filter(record => record.kind === "sdk_tool_evidence");
+    expect(result.content?.text, JSON.stringify({ file, reply: result.content?.text, decisions, tools })).toContain(secret);
   }, 180_000);
 });
 

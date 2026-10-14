@@ -327,6 +327,7 @@ export const PORTABLE_WORKSPACE_TABLES = new Set([
   "workspace_configuration_import_policies",
   "workspace_configuration_import_receipts",
   "workspace_configuration_import_resources",
+  "workspace_governance",
   "workspaces",
 ]);
 

@@ -88,6 +88,8 @@ describe("actor.setup: create, bind, give access and publish as one unit", () =>
 
   it("requires every step's permission and no new one", async () => {
     const f = await fixture([...CAPABILITY_GRANT_OPERATION_IDS, "actor.create", "actor.definition.publish"]);
+    // Missing permissions refuse only with governance on.
+    f.store.workspaceAccessStore.setGovernance({ workspace_id: f.workspaceId, enabled: true, principal_id: "principal:test-governance" });
     const receipt = await f.setup({});
     expect(receipt).toMatchObject({ state: "refused", refusal: { code: "operation_grant_required",
       details: { missing_grants: ["actor.runtime-binding.create"] } } });

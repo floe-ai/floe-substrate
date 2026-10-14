@@ -31,6 +31,8 @@ async function fixture() {
   cleanup.push(async () => { await handle.app.close(); rmSync(dir, { recursive: true, force: true }); });
   const locator = join(dir, "workspace"); mkdirSync(locator);
   const workspaceId = (handle.store.registerWorkspace({ locator, name: "Authority proof" }, handle.broadcast) as { workspace_id: string }).workspace_id;
+  // Narrowed authority limits what a person may do only with governance on.
+  handle.store.workspaceAccessStore.setGovernance({ workspace_id: workspaceId, enabled: true, principal_id: "principal:test-governance" });
 
   const person = (name: string) => {
     const secret = generateSecretKey();
@@ -302,9 +304,10 @@ describe("durable identity authority (A1)", () => {
       definition: { ...current.content, capability_grant_ids: [old.grant_id] } });
     store().actorDefinitionStore.publishDraft({ actor_definition_revision_id: draft.actor_definition_revision_id,
       expected_current_revision_id: current.actor_definition_revision_id, changed_by_principal_id: "principal:test" });
-    const kinds = () => store().workspaceAccessStore.inspect(f.workspaceId).records.map(record => record.kind);
+    const notices = () => store().workspaceAccessStore.inspect(f.workspaceId).records.filter(record => !record.kind.startsWith("governance_"));
+    const kinds = () => notices().map(record => record.kind);
     expect(kinds()).toEqual(["actor_access_lapsing"]);
-    expect(store().workspaceAccessStore.inspect(f.workspaceId).records[0]!.summary)
+    expect(notices()[0]!.summary)
       .toBe("Helper loses its access to this workspace on 2099-01-01, unless a person here adopts it.");
 
     await f.person("Ada").admit();

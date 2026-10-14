@@ -200,6 +200,8 @@ describe("exact ArtefactVersion content transport", () => {
     const unauthorised = await handle.app.inject({ method: "GET", url: contentUrl(image.artefact_version_id) });
     expect(unauthorised.statusCode).toBe(401);
 
+    // An unrelated grant is refused only with governance on.
+    handle.store.workspaceAccessStore.setGovernance({ workspace_id: workspaceId, enabled: true, principal_id: "principal:test-governance" });
     const unrelatedGrant = handle.store.capabilityGrantStore.issueGrant({
       principal_id: "principal:unrelated-reader",
       boundary: { kind: "workspace", workspace_id: workspaceId },

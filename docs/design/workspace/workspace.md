@@ -35,9 +35,6 @@ _Release: 1.0_
   never travel over network ports. A surface writes local configuration through
   its own native layer.
 
-Still in code: an Actor's writes outside the Workspace's folders are refused
-until the folder is added with `workspace.folder.add`.
-
 Avoid: path-derived Workspace IDs, path as identity, locators in remote
 projections.
 

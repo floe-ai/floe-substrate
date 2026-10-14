@@ -99,7 +99,18 @@ export type OperationAuthoritySessionDependencies = Readonly<{
   session_id_factory?: () => string;
   /** Told after a session is revoked, so live connections using it can close. */
   on_revoked?: (authoritySessionId: string) => void;
+  /**
+   * Whether governance decides this Workspace's access. When off, a session
+   * may be issued with no live grant, because grants do not limit it.
+   */
+  governance?: (workspaceId: string) => boolean;
 }>;
+
+/** Every current Workspace operation for an interaction mode, used while governance is off. */
+export type OpenWorkspaceOperations = (
+  workspaceId: string,
+  mode: OperationInteractionMode,
+) => ReadonlySet<string> | null;
 
 /** Installs the authentication state used to derive operation authority. */
 export function applyOperationAuthoritySessionSchema(db: DatabaseSync): void {
@@ -163,12 +174,13 @@ export class SqliteOperationAuthoritySessionStore {
   private readonly tokenFactory: () => string;
   private readonly sessionIdFactory: () => string;
   private readonly onRevoked: ((authoritySessionId: string) => void) | null;
+  private readonly governance: (workspaceId: string) => boolean;
 
   constructor(
     readonly db: DatabaseSync,
     private readonly capabilityGrants: Pick<
       SqliteCapabilityGrantStore,
-      "requireActiveSessionGrantIds"
+      "requireActiveSessionGrantIds" | "inspectSessionGrantIds"
     >,
     dependencies: OperationAuthoritySessionDependencies = {},
   ) {
@@ -176,6 +188,7 @@ export class SqliteOperationAuthoritySessionStore {
     this.tokenFactory = dependencies.token_factory ?? createBearerToken;
     this.sessionIdFactory = dependencies.session_id_factory ?? (() => `authsession_${randomUUID()}`);
     this.onRevoked = dependencies.on_revoked ?? null;
+    this.governance = dependencies.governance ?? (() => true);
   }
 
   issueSession(input: IssueOperationAuthoritySession): IssuedOperationAuthoritySession {
@@ -195,11 +208,19 @@ export class SqliteOperationAuthoritySessionStore {
       throw new Error("Operation authority bearer tokens must contain at least 32 characters.");
     }
 
-    const grantIds = this.capabilityGrants.requireActiveSessionGrantIds({
+    const binding = {
       principal_id: input.principal_id,
-      boundary: { kind: "workspace", workspace_id: input.workspace_id },
+      boundary: { kind: "workspace" as const, workspace_id: input.workspace_id },
       grant_ids: input.grant_ids,
-    });
+    };
+    let grantIds: readonly string[];
+    if (this.governance(input.workspace_id)) {
+      grantIds = this.capabilityGrants.requireActiveSessionGrantIds(binding);
+    } else {
+      const inspection = this.capabilityGrants.inspectSessionGrantIds(binding);
+      const live = new Set([...inspection.active_grants, ...inspection.delegable_grants].map((grant) => grant.grant_id));
+      grantIds = [...new Set(input.grant_ids)].filter((id) => live.has(id));
+    }
     const session: OperationAuthoritySessionRecord = {
       authority_session_id: this.sessionIdFactory(),
       principal_id: input.principal_id,
@@ -304,6 +325,7 @@ export class OperationAuthorityVerifier {
     private readonly sessions: Pick<SqliteOperationAuthoritySessionStore, "findByTokenHash">,
     private readonly capabilityGrants: Pick<SqliteCapabilityGrantStore, "resolveSessionAuthority">,
     private readonly now: () => string = isoNow,
+    private readonly openOperations: OpenWorkspaceOperations = () => null,
   ) {}
 
   verifyBearerToken(
@@ -334,11 +356,13 @@ export class OperationAuthorityVerifier {
       sessionGrantBinding(session),
       transport.target ?? null,
     );
+    // With governance off, every Actor may use every Workspace operation; its grants do not narrow that.
+    const open = this.openOperations(session.workspace_id, session.interaction_mode);
     return {
       verified: true,
       authority_session_id: session.authority_session_id,
       expires_at: session.expires_at,
-      authority: resolved.authority,
+      authority: open ? { ...resolved.authority, grants: open } : resolved.authority,
       active_grant_ids: resolved.active_grant_ids,
       applicable_grant_ids: resolved.applicable_grant_ids,
       unavailable_grants: resolved.unavailable_grants,

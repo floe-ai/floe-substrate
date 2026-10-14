@@ -17,6 +17,7 @@ import { runtimeCredentialAccessOperations } from "./credential-runtime-access-o
 import { capabilityGrantOperations } from "./capability-grant-operations.js";
 import { resolveActorApprovalPolicy } from "./actor-approval-policy.js";
 import { decideToolAuthority, ENGINE_TOOL_OPERATIONS, isEngineToolOperation, type ToolAuthorityDecision } from "./tool-policy.js";
+import { ALL_ENGINE_TOOL_OPERATION_IDS } from "./actor-tool-access.js";
 import { ActorAccessAdoption, type ActorAccessMove } from "./actor-authority-adoption.js";
 import { DEFAULT_ACTOR_OPERATIONS_V1 } from "./local-product-policy.js";
 import type { ToolCallPolicyFacts } from "./tool-policy-facts.js";
@@ -995,11 +996,17 @@ export class BusStore {
     this.operationAuthoritySessions = new SqliteOperationAuthoritySessionStore(
       this.db,
       this.capabilityGrantStore,
-      { on_revoked: (authoritySessionId) => this.authorityLost(authoritySessionId) },
+      {
+        on_revoked: (authoritySessionId) => this.authorityLost(authoritySessionId),
+        governance: (workspaceId) => this.workspaceAccessStore.governance(workspaceId),
+      },
     );
     this.operationAuthorityVerifier = new OperationAuthorityVerifier(
       this.operationAuthoritySessions,
       this.capabilityGrantStore,
+      undefined,
+      (workspaceId, mode) => this.workspaceAccessStore.governance(workspaceId) ? null
+        : new Set(this.operationRegistry.listCurrentOperationIds({ interaction_mode: mode, boundary_kind: "workspace" })),
     );
     this.clientIdentityStore = new SqliteClientIdentityStore(this.db);
     this.identityWorkspaceAuthorityStore = new IdentityWorkspaceAuthorityStore(this.db, {
@@ -4190,6 +4197,7 @@ export class BusStore {
       interaction_mode: "brokered",
       boundary_kind: "workspace",
     }));
+    const governance = this.workspaceAccessStore.governance(revision.workspace_id);
     for (const node of revision.nodes.filter((candidate) => candidate.kind === "command")) {
       if (!node.resource_id) {
         throw new ScopeExecutionInvalidError(`Command node '${node.node_id}' has no stable Command identity`);
@@ -4242,7 +4250,7 @@ export class BusStore {
             `Command permission '${permission.permission_id}' references unavailable operation '${permission.operation_id}'`,
           );
         }
-        if (!inspection.active_grants.some((grant) => grant.operation_ids.includes(permission.operation_id))) {
+        if (governance && !inspection.active_grants.some((grant) => grant.operation_ids.includes(permission.operation_id))) {
           throw new ScopeExecutionInvalidError(
             `Command node '${node.node_id}' has no active CapabilityGrant for '${permission.operation_id}'`,
           );
@@ -6594,8 +6602,10 @@ export class BusStore {
       if (canonical.operation_authority_session_id) {
         this.operationAuthoritySessions.revokeSession(canonical.operation_authority_session_id);
       }
-      // An Actor always takes its turn. Revoked or expired grants simply stop
-      // contributing; with none live it runs without operations or engine tools.
+      // An Actor always takes its turn. With governance off it may use every
+      // operation and engine tool. With governance on, revoked or expired grants
+      // stop contributing; with none live it runs without operations or engine tools.
+      const governance = this.workspaceAccessStore.governance(processingContract.workspace_id);
       const inspected = this.capabilityGrantStore.inspectSessionGrantIds({
         principal_id: processingContract.operation_authority.principal_id,
         boundary: { kind: "workspace", workspace_id: processingContract.workspace_id },
@@ -6603,7 +6613,8 @@ export class BusStore {
       });
       const liveGrantIds = [...inspected.active_grants, ...inspected.delegable_grants].map((grant) => grant.grant_id);
       // A turn that started without authority never gains it mid-turn.
-      const mayIssue = liveGrantIds.length > 0 && (isInitialPreparation || canonical.operation_authority_session_id !== null);
+      const mayIssue = (liveGrantIds.length > 0 || !governance)
+        && (isInitialPreparation || canonical.operation_authority_session_id !== null);
       const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
       const issued = !mayIssue ? null : this.operationAuthoritySessions.issueSession({
         principal_id: processingContract.operation_authority.principal_id,
@@ -6661,8 +6672,8 @@ export class BusStore {
           bearer_token: issued.bearer_token,
           expires_at: issued.session.expires_at,
         },
-        engine_tool_operation_ids: !issued ? [] : [...new Set(inspected.active_grants
-          .flatMap((grant) => grant.operation_ids).filter(isEngineToolOperation))].sort(),
+        engine_tool_operation_ids: !issued ? [] : !governance ? [...ALL_ENGINE_TOOL_OPERATION_IDS]
+          : [...new Set(inspected.active_grants.flatMap((grant) => grant.operation_ids).filter(isEngineToolOperation))].sort(),
       };
     });
     if (claimedFromPush) {
@@ -6957,7 +6968,9 @@ export class BusStore {
     }
     if (inputs.definition.actor_definition_revision_id !== tool.actor_definition_revision_id) return false;
     const current = this.evaluateToolFacts(inputs, evaluation.facts!.operation_id, tool);
-    if (!current.authority.allowed || !action.capability_grant_ids.includes(current.authority.grant_id)) return false;
+    if (!current.authority.allowed) return false;
+    const grantId = current.authority.grant_id;
+    if (grantId === null ? action.capability_grant_ids.length > 0 : !action.capability_grant_ids.includes(grantId)) return false;
     return current.evaluation.decision === "require_approval" && canonicalJson({
       evaluated_policy_revision_ids: current.evaluation.evaluated_policy_revision_ids,
       approval_requirements: current.evaluation.approval_requirements,

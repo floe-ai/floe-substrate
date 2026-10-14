@@ -80,6 +80,8 @@ describe("Scope creation through equivalent authority", () => {
   });
 
   it("requires the creation grant on both transports and rejects caller-authored Workspace authority", async () => {
+    // A narrow grant refuses only with governance on.
+    handle.store.workspaceAccessStore.setGovernance({ workspace_id: workspace, enabled: true, principal_id: "principal:test-governance" });
     const limited = connection("unattended", ["scope.list"]);
     const request = invocation("scope.create", "refused", { title: "Unapproved" });
     const refused = await handle.app.inject({ method: "POST", url: `${base()}/operations/invoke`, headers: limited.headers, payload: request });

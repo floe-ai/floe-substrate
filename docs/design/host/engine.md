@@ -68,7 +68,7 @@ If it can, the bundled CLI goes.
 ## Engine tools follow Workspace access
 
 _Resolution: settled_
-_Built: no_
+_Built: partly_
 _Authority: operator-confirmed (13 Oct governance calls; 14 Oct: governance frozen, not removed)_
 _Authored by: operator_
 _Priority: P1_
@@ -84,8 +84,9 @@ restricted it must allow every call. Whether it should skip asking the Bus when
 nothing is restricted depends on how much time it adds to a turn; measure it
 first.
 
-Still in code: the Bridge refuses the shell and folders outside the Workspace
-by default, which contradicts "unrestricted by default".
+Still in code: Floe does not hand the list to the engine. The engine is set
+to reach every folder, and the Bridge's per-call check applies the list
+instead. By default that check allows every call.
 
 ## One engine
 

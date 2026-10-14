@@ -50,6 +50,10 @@ describe("runtime tool policy", () => {
     handle.store.registerEndpoint({ endpoint_id: OPERATOR, workspace_id: WS, name: "Operator" }, noop);
     handle.store.registerEndpoint({ endpoint_id: ACTOR, workspace_id: WS, name: "Builder", bridge_id: BRIDGE, status: "idle" }, noop);
     registerExecutableActorFixture(handle.store, WS, ACTOR);
+    // Most proofs here are frozen governance: grants, scopes and approvals limit
+    // an Actor only with it on, and folders limit file tools only with System access off.
+    handle.store.workspaceAccessStore.setGovernance({ workspace_id: WS, enabled: true, principal_id: PRINCIPAL });
+    handle.store.workspaceAccessStore.setSystemAccess({ workspace_id: WS, enabled: false, principal_id: PRINCIPAL });
   });
 
   afterEach(async () => {
@@ -147,6 +151,50 @@ describe("runtime tool policy", () => {
       (type, payload) => pushed.push({ type, payload: payload as Record<string, unknown> }),
     );
   }
+
+  it("gives an Actor with no grants every operation and tool while governance is off", async () => {
+    const access = handle.store.workspaceAccessStore;
+    access.setGovernance({ workspace_id: WS, enabled: false, principal_id: PRINCIPAL });
+    access.setSystemAccess({ workspace_id: WS, enabled: true, principal_id: PRINCIPAL });
+    const store = handle.store.actorDefinitionStore;
+    for (const id of store.getRevision(store.getActor(ACTOR)!.current_definition_revision_id!)!.content.capability_grant_ids) {
+      handle.store.capabilityGrantStore.revokeGrant(id);
+    }
+    await emitViaRoute(handle, {
+      type: "message", workspace_id: WS, source_endpoint_id: OPERATOR,
+      destination: { kind: "endpoint", endpoint_id: ACTOR }, thread_id: "", correlation_id: null,
+      content: { text: "build" }, metadata: {}, idempotency_key: null,
+    });
+    const claimed = handle.store.claimDeliveries(BRIDGE, 1, noop)[0]!;
+    const prepared = handle.store.prepareRuntimeDelivery({ bridge_id: BRIDGE, delivery_id: claimed.delivery_id }, noop);
+    expect(prepared.operation_authority_session).not.toBeNull();
+    expect([...prepared.engine_tool_operation_ids].sort()).toEqual([
+      "engine.tool.filesystem.read", "engine.tool.filesystem.write", "engine.tool.network.fetch", "engine.tool.process.execute",
+    ]);
+    const verified = handle.store.operationAuthorityVerifier.verifyBearerToken(
+      prepared.operation_authority_session!.bearer_token, { boundary: { kind: "workspace", workspace_id: WS } });
+    if (!verified.verified) throw new Error("Expected the turn's authority to verify.");
+    expect([...verified.authority.grants]).toEqual(expect.arrayContaining(["context.list", "artefact.inspect", "context.inspect"]));
+    // Interactive-only operations, such as changing the Workspace's boundary, stay out of an Actor's turn.
+    expect(verified.authority.grants.has("workspace.governance.set")).toBe(false);
+    handle.store.reportDeliveryStatus({ bridge_id: BRIDGE, delivery_id: claimed.delivery_id, state: "injected_to_runtime" }, noop);
+
+    const elsewhere = join(realpathSync.native(tmp), "elsewhere");
+    const outcome = (request: Partial<RuntimeToolCallRequest>) => {
+      const result = evaluate(claimed.delivery_id, call(request));
+      return result.refusal?.rule_id ?? result.decision;
+    };
+    expect(outcome({ paths: [join(elsewhere, "x")] })).toBe("allow");
+    expect(outcome({ sandbox_bypass: true })).toBe("allow");
+    expect(outcome({ operation_id: "engine.tool.process.execute", native_tools: ["powershell"], paths: [], executables: ["git"] })).toBe("allow");
+    // System access off still keeps file tools inside the Workspace's folders.
+    access.setSystemAccess({ workspace_id: WS, enabled: false, principal_id: PRINCIPAL });
+    expect(outcome({ paths: [join(elsewhere, "x")] })).toBe("authority.tool_path_outside_workspace");
+    expect(outcome({ paths: ["src/app.ts"] })).toBe("allow");
+    // Turning governance on brings the grant limits back.
+    access.setGovernance({ workspace_id: WS, enabled: true, principal_id: PRINCIPAL });
+    expect(outcome({ paths: ["src/app.ts"] })).toBe("authority.tool_grant_missing");
+  });
 
   it("still gives a turn to an Actor that holds no live permissions, without operations or tools", async () => {
     const store = handle.store.actorDefinitionStore;
@@ -268,6 +316,7 @@ describe("runtime tool policy", () => {
     expect(outcome({ paths: [join(elsewhere, "x")] })).toBe("authority.tool_path_outside_workspace");
     expect(access.inspect(WS).records.map((record) => record.kind).filter((kind) => !kind.startsWith("actor_access_"))).toEqual([
       "system_access_turned_off", "system_access_turned_on", "folder_removed", "folder_added",
+      "system_access_turned_off", "governance_turned_on",
     ]);
     expect(access.inspect(WS).records.map((record) => record.kind)).toContain("actor_access_lapsing");
   });

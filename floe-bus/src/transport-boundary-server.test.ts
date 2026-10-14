@@ -775,7 +775,7 @@ describe("authenticated Bus transport boundary", () => {
     const caughtUp = await waitFor(late.messages, message => message.type === "caught_up");
     expect(caughtUp.payload.connected_bridge_ids).toEqual(["bridge:present"]);
     // The Workspace's folders and System access arrive with the same snapshot.
-    expect(caughtUp.payload.workspace_access).toMatchObject({ workspace_id: WORKSPACE_ONE, system_access: false,
+    expect(caughtUp.payload.workspace_access).toMatchObject({ workspace_id: WORKSPACE_ONE, system_access: true, governance: false,
       folders: [expect.objectContaining({ folder_id: "home", home: true })] });
 
     // R3: a Workspace bound while the Bridge is already connected is told at once.

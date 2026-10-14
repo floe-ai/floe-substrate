@@ -73,12 +73,13 @@ describe("BusStore portable Workspace integration", () => {
     expect(exported.bundle_directory).not.toContain(workspaceRoot);
   });
 
-  it("a copy on this machine keeps folders and System access; a package leaves them behind and says so", async () => {
+  it("a copy on this machine keeps folders, System access and governance; a package keeps governance only", async () => {
     const { store, workspaceRoot } = await makeServer();
     const shared = join(workspaceRoot, "..", "shared-library");
     mkdirSync(shared, { recursive: true });
     store.workspaceAccessStore.addFolder({ workspace_id: WORKSPACE_ID, path: shared, principal_id: "principal:chooser" });
-    store.workspaceAccessStore.setSystemAccess({ workspace_id: WORKSPACE_ID, enabled: true, principal_id: "principal:chooser" });
+    store.workspaceAccessStore.setSystemAccess({ workspace_id: WORKSPACE_ID, enabled: false, principal_id: "principal:chooser" });
+    store.workspaceAccessStore.setGovernance({ workspace_id: WORKSPACE_ID, enabled: true, principal_id: "principal:chooser" });
 
     const copyRoot = join(workspaceRoot, "..", "copy-on-host-a");
     mkdirSync(copyRoot, { recursive: true });
@@ -86,14 +87,15 @@ describe("BusStore portable Workspace integration", () => {
       source_workspace_id: WORKSPACE_ID, kind: "copied", name: "Copy", locator: copyRoot, principal_id: "principal:copier",
     }, () => {});
     const copied = store.workspaceAccessStore.inspect(copy.workspace_id);
-    expect(copied.system_access).toBe(true);
+    expect(copied.system_access).toBe(false);
+    expect(copied.governance).toBe(true);
     expect(copied.folders.filter((folder) => !folder.home).map((folder) => folder.path)).toEqual([shared]);
     expect(copied.records).toEqual([expect.objectContaining({ kind: "access_carried", principal_id: "principal:copier" })]);
     expect(copied.records[0]?.summary).toContain(shared);
-    expect(copied.records[0]?.summary).toContain("System access");
+    expect(copied.records[0]?.summary).toContain("System access off");
 
     const exported = store.workspacePortabilityService.exportWorkspace(WORKSPACE_ID);
-    expect(exported.manifest.host_access_left_behind).toEqual({ folder_names: ["shared-library"], system_access: true });
+    expect(exported.manifest.host_access_left_behind).toEqual({ folder_names: ["shared-library"], system_access: false });
     expect(readFileSync(join(exported.bundle_directory, "manifest.json"), "utf8")).not.toContain(shared);
 
     const target = await makeServer({ bare: true });
@@ -101,11 +103,12 @@ describe("BusStore portable Workspace integration", () => {
     const restoreRoot = join(target.workspaceRoot, "..", "restored-on-host-b");
     target.store.workspacePortabilityService.restoreWorkspace({ bundle_directory: exported.bundle_directory, workspace_locator: restoreRoot });
     const restored = target.store.workspaceAccessStore.inspect(WORKSPACE_ID);
-    expect(restored.system_access).toBe(false);
+    expect(restored.system_access).toBe(true);
+    expect(restored.governance).toBe(true);
     expect(restored.folders.map((folder) => folder.home)).toEqual([true]);
     expect(restored.records).toEqual([expect.objectContaining({ kind: "access_left_behind", seen_by: [] })]);
     expect(restored.records[0]?.summary).toContain("shared-library");
-    expect(restored.records[0]?.summary).toContain("System access");
+    expect(restored.records[0]?.summary).not.toContain("System access");
     expect(restored.records[0]?.summary).not.toContain(shared);
     expect(pushed).toHaveBeenCalledTimes(1);
 

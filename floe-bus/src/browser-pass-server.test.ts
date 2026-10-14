@@ -68,6 +68,8 @@ async function openSocket(address: string, headers: Record<string, string>, fram
 describe("durable browser pass (A2 live proof)", () => {
   it("pairs an unlisted loopback origin for approved operations only and survives a Bus restart", async () => {
     const { handle, directory } = await fixture();
+    // A pass limits operations only with governance on.
+    handle.store.workspaceAccessStore.setGovernance({ workspace_id: WORKSPACE, enabled: true, principal_id: "principal:test-governance" });
     const person = await admitPerson(handle, HOST_TOKEN, WORKSPACE);
     const { headers } = await pairBrowser(handle, person.token, WORKSPACE, ORIGIN, ["actor.list"]);
     expect(headers.cookie).toMatch(/^floe_browser_pass=/);
@@ -126,6 +128,7 @@ describe("durable browser pass (A2 live proof)", () => {
   it("saves a Scope's layout from a person's session and an allowed browser pass, without host control", async () => {
     const { handle } = await fixture();
     handle.store.createScope({ workspace_id: WORKSPACE, scope_id: "map", title: "Map" }, () => {});
+    handle.store.workspaceAccessStore.setGovernance({ workspace_id: WORKSPACE, enabled: true, principal_id: "principal:test-governance" });
     const person = await admitPerson(handle, HOST_TOKEN, WORKSPACE);
     const layout = (x: number) => ({ schema: "floe.scope-projection.layout.star-map.v1", scope_id: "map",
       viewport: { x, y: 0, zoom: 1 }, items: { "node:a": { x, y: 10 } } });

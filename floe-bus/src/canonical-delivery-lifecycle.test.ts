@@ -30,6 +30,8 @@ async function makeServer(): Promise<{ handle: ServerHandle; tmp: string; worksp
     payload: { locator, name: "canonical lifecycle" },
   });
   const workspaceId = registered.json().workspace.workspace_id as string;
+  // These proofs check that a turn carries exactly the Actor's grants, which holds only with governance on.
+  handle.store.workspaceAccessStore.setGovernance({ workspace_id: workspaceId, enabled: true, principal_id: "principal:test-governance" });
   const actorId = `actor:${workspaceId}:worker`;
   handle.store.createScope({ workspace_id: workspaceId, scope_id: "pipeline", title: "Pipeline" }, handle.broadcast);
   handle.store.registerEndpoint({

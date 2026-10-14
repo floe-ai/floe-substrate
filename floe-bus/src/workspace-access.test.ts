@@ -44,10 +44,10 @@ async function fixture() {
 }
 
 describe("Workspace folders and System access operations", () => {
-  it("lets a surface list, add and remove folders and turn System access on, recording and pushing each change", async () => {
+  it("lets a surface list, add and remove folders and turn System access off, recording and pushing each change", async () => {
     const f = await fixture();
     const shown = await f.invoke("workspace.access.inspect", {});
-    expect(shown.result).toMatchObject({ system_access: false, records: [],
+    expect(shown.result).toMatchObject({ system_access: true, governance: false, records: [],
       folders: [{ folder_id: "home", path: f.home, home: true, available: true }] });
 
     const added = await f.invoke("workspace.folder.add", { path: f.second });
@@ -57,14 +57,14 @@ describe("Workspace folders and System access operations", () => {
     expect(f.pushed.filter((item) => item.type === "workspace_access_changed")).toEqual([{ type: "workspace_access_changed",
       payload: { workspace_id: f.workspaceId, access: expect.objectContaining({ folders: added.result.folders }) } }]);
 
-    const turnedOn = await f.invoke("workspace.system_access.set", { enabled: true });
-    expect(turnedOn.result.system_access).toBe(true);
+    const turnedOff = await f.invoke("workspace.system_access.set", { enabled: false });
+    expect(turnedOff.result.system_access).toBe(false);
     const removed = await f.invoke("workspace.folder.remove", { folder_id: added.result.folders[1].folder_id });
     expect(removed.result.folders.map((folder: { path: string }) => folder.path)).toEqual([f.home]);
     expect(removed.result.records.map((record: { kind: string; summary: string }) => record.kind)).toEqual([
-      "folder_removed", "system_access_turned_on", "folder_added",
+      "folder_removed", "system_access_turned_off", "folder_added",
     ]);
-    expect(removed.result.records[1].summary).toMatch(/anywhere on this machine/);
+    expect(removed.result.records[1].summary).toMatch(/limited to this Workspace's folders/);
   });
 
   it("refuses folders that cannot be one, and never removes the Workspace's own folder", async () => {
@@ -80,8 +80,8 @@ describe("Workspace folders and System access operations", () => {
     expect(await code("workspace.folder.remove", { folder_id: "home" })).toBe("home_folder_fixed");
     expect(await code("workspace.folder.remove", { folder_id: "folder_unknown" })).toBe("folder_not_found");
     // Turning on what is already on changes and records nothing.
-    const off = await f.invoke("workspace.system_access.set", { enabled: false });
-    expect(off.result.records.map((record: { kind: string }) => record.kind)).toEqual(["folder_added"]);
+    const on = await f.invoke("workspace.system_access.set", { enabled: true });
+    expect(on.result.records.map((record: { kind: string }) => record.kind)).toEqual(["folder_added"]);
   });
 
   it("records a notice as seen per person, pushes it, and shows a changed notice as new again", async () => {
@@ -120,18 +120,33 @@ describe("Workspace folders and System access operations", () => {
     expect(f.pushed.at(-1)!.payload.access.records).toEqual([]);
   });
 
-  it("does not let an unattended session, such as an Actor's, widen the boundary", async () => {
+  it("turns governance on and off for the Workspace, recording and pushing each change", async () => {
+    const f = await fixture();
+    const on = await f.invoke("workspace.governance.set", { enabled: true });
+    expect(on.result).toMatchObject({ governance: true });
+    expect(f.handle.store.workspaceAccessStore.governance(f.workspaceId)).toBe(true);
+    await Promise.resolve();
+    expect(f.pushed.filter((item) => item.type === "workspace_access_changed").at(-1)!.payload.access.governance).toBe(true);
+    const again = await f.invoke("workspace.governance.set", { enabled: true });
+    expect(again.result.records.map((record: { kind: string }) => record.kind)).toEqual(["governance_turned_on"]);
+    const off = await f.invoke("workspace.governance.set", { enabled: false });
+    expect(off.result.governance).toBe(false);
+    expect(off.result.records.map((record: { kind: string }) => record.kind)).toEqual(["governance_turned_off", "governance_turned_on"]);
+  });
+
+  it("does not let an unattended session, such as an Actor's, change the boundary", async () => {
     const f = await fixture();
     const grant = f.handle.store.capabilityGrantStore.issueGrant({ principal_id: "actor:access:worker",
       boundary: { kind: "workspace", workspace_id: f.workspaceId },
-      operation_ids: ["workspace.access.inspect", "workspace.folder.add", "workspace.system_access.set"],
+      operation_ids: ["workspace.access.inspect", "workspace.folder.add", "workspace.system_access.set", "workspace.governance.set"],
       expires_at: "2099-01-01T00:00:00.000Z", issuer_id: "policy:test", evidence: [{ kind: "test_fixture", ref: "access" }] });
     const token = f.handle.store.operationAuthoritySessions.issueSession({ principal_id: "actor:access:worker",
       workspace_id: f.workspaceId, grant_ids: [grant.grant_id], interaction: { mode: "unattended", session_id: "test:unattended" },
       provenance, expires_at: "2099-01-01T00:00:00.000Z" }).bearer_token;
     expect((await f.invoke("workspace.access.inspect", {}, token)).state).toBe("completed");
     expect((await f.invoke("workspace.folder.add", { path: f.second }, token)).state).toBe("refused");
-    expect((await f.invoke("workspace.system_access.set", { enabled: true }, token)).state).toBe("refused");
-    expect(f.handle.store.workspaceAccessStore.inspect(f.workspaceId)).toMatchObject({ system_access: false, records: [] });
+    expect((await f.invoke("workspace.system_access.set", { enabled: false }, token)).state).toBe("refused");
+    expect((await f.invoke("workspace.governance.set", { enabled: true }, token)).state).toBe("refused");
+    expect(f.handle.store.workspaceAccessStore.inspect(f.workspaceId)).toMatchObject({ system_access: true, governance: false, records: [] });
   });
 });

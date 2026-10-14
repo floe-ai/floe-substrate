@@ -26,7 +26,8 @@ const FETCH_SCHEMES = new Set(["http", "https"]);
 export type ToolAuthorityGrant = Pick<CapabilityGrantRecord, "grant_id" | "operation_ids" | "targets">;
 
 export type ToolAuthorityDecision =
-  | Readonly<{ allowed: true; grant_id: string }>
+  /** grant_id is null when governance is off and no grant was needed. */
+  | Readonly<{ allowed: true; grant_id: string | null }>
   | Readonly<{ allowed: false; code: ToolAuthorityDenialCode; reason: string }>;
 
 export type ToolAuthorityDenialCode =
@@ -52,10 +53,13 @@ export type ToolWorkspaceBoundary = Readonly<{
   folders: readonly string[];
   /** When on, file tools may reach anywhere and a sandbox bypass may be allowed. */
   system_access: boolean;
+  /** When off, no grant, grant limit or Actor scope is needed or checked. */
+  governance: boolean;
 }>;
 
 /**
- * The authority half of a tool decision. File tools stay inside the
+ * The authority half of a tool decision. With governance off (the default)
+ * only the Workspace boundary applies. File tools stay inside the
  * Workspace's folders unless System access is on; shell commands are not
  * confined by that boundary, because no engine reports what they touch.
  * Beyond that, holding a grant for the operation is enough: an untargeted
@@ -79,6 +83,13 @@ export function decideToolAuthority(input: Readonly<{
   if (facts.sandbox_bypass && !workspace.system_access) {
     return deny("tool_sandbox_bypass", "The engine asked to bypass its sandbox, which needs this Workspace's System access"
       + " to be on.");
+  }
+  if (!workspace.governance) {
+    if (!workspace.system_access && isFileTool(operationId)) {
+      const refusal = workspaceRefusal(facts, workspace.folders);
+      if (refusal) return refusal;
+    }
+    return { allowed: true, grant_id: null };
   }
   const candidates = input.grants.filter((grant) => grant.operation_ids.includes(operationId));
   if (candidates.length === 0) {
