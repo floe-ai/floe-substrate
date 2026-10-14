@@ -115,22 +115,33 @@ describe("ensureProjectTemplate – default agent file (Issue 1)", () => {
 
     const content = readFileSync(join(workspace, ".floe", "agents", "floe.md"), "utf8");
 
-    expect(content).toContain("You are Floe, the operator's persistent interface");
-    expect(content).toContain("Treat the operator's words as outcomes and experience");
+    expect(content).toContain("You are Floe, the Workspace's default Actor");
+    expect(content).toContain("Treat their words as outcomes and experience");
     expect(content).toContain("compose existing mechanisms before assuming something new must be built");
-    expect(content).toContain("A generated script plus a command for the operator to run is not an automated Floe outcome");
-    expect(content).toContain("represent that responsibility as a Floe actor");
-    expect(content).toContain("must not replace the actor by invoking Codex or another model CLI");
+    expect(content).toContain("A generated script plus a command for someone to run is not an automated Floe outcome");
+    expect(content).toContain("represent that responsibility as a Floe Actor");
+    expect(content).toContain("must not replace the Actor by invoking Codex or another model CLI");
     expect(content).toContain("Do not treat a detached operating-system process as persistent Floe operation");
     expect(content).toContain("use the runtime's capability discovery for that concrete need");
     expect(content).toContain("Follow the Bus-owned operation description and schema");
     expect(content).not.toContain("compose_scope");
     expect(content).toContain("Do not describe a convention-only controller or file-backed state machine as substrate execution");
     expect(content).toContain("verify that every downstream capability needed to complete the outcome is actually available");
-    expect(content).toContain("floe.problem-report-draft.v1");
-    expect(content).toContain("The operator app turns this Event into a **Report ready — Review** action");
+    expect(content).toContain("Floe user guide");
     expect(content).not.toContain("runtime-backed endpoint");
     expect(content).not.toContain("source endpoint");
+  });
+
+  it("writes built-in instructions that speak of Actors only and carry no install path", () => {
+    const workspace = makeTmp();
+    ensureProjectTemplate(workspace, "Test Project");
+
+    for (const file of [join(".floe", "agents", "floe.md"), join(".floe", "skills", "substrate-build", "SKILL.md")]) {
+      const content = readFileSync(join(workspace, file), "utf8");
+      for (const stale of ["operator", "docs/design", "ADR-", "floe-app", "problem-report", "{{floe_guide}}"]) {
+        expect(content, `${file} contains ${stale}`).not.toContain(stale);
+      }
+    }
   });
 
   it("is idempotent — does not overwrite an existing .floe directory", () => {

@@ -1,6 +1,6 @@
 # Glossary
 
-Canonical terms used across the guide. `docs/design/` remains authoritative.
+The terms used across this guide. Each thing has one name.
 
 ## Actor
 
@@ -17,17 +17,12 @@ budgets, and capability grants.
 
 A stable logical input, output, collection, reference, or body of evidence.
 Floe owns identity and exact-version provenance; extensions own domain meaning
-and presentation. See [[Artifact|Artefact]].
+and presentation. See [[Artefact]].
 
 ## ArtefactVersion
 
 One immutable state of an Artefact or exact externally pinned observation.
 There is no universal mutable current version.
-
-## Binding
-
-A replaceable association between a resource and configuration such as a
-runtime profile. A binding is not the resource's identity. See [[Binding]].
 
 ## Bridge
 
@@ -43,8 +38,8 @@ projections. See [[Bus API]].
 ## Capability
 
 A discoverable semantic operation or reusable implementation available under
-authority. One Bus-owned definition serves app, Actor, CLI, SDK, API, and MCP
-clients.
+authority. One Bus-owned definition serves surfaces, Actors, the CLI, SDKs and
+the API.
 
 ## CapabilityGrant
 
@@ -124,15 +119,14 @@ another attempt without inventing another logical NodeExecution.
 
 ## Extension
 
-A versioned package that contributes Capabilities, Commands, Connectors,
-schemas, templates, Actor definitions, previews, or bounded product surfaces
-under declared permissions, isolation, approval, and rollback. See
-[[Extension]].
+A folder that adds to Floe: a small manifest and a code entry. Today it can add
+tools and Hooks for the Actors whose definition lists it. See [[Extension]].
 
 ## Hook
 
-An extension-supplied handler at a runtime lifecycle point. A Hook does not
-create another routing system. See [[Hook]].
+A point inside an Actor's runtime where an Extension can step in, such as
+before a tool call or a Turn. Anything that only reacts afterwards uses Events.
+See [[Hook]].
 
 ## NodePlacement
 
@@ -170,6 +164,11 @@ ledger.
 
 Bus-owned scheduled Event creation. A Pulse is scheduling, not liveness or a
 separate routing system.
+
+## Runtime binding
+
+The replaceable link between an Actor and a RuntimeProfile. It is not the
+Actor's identity. See [[Runtime binding]].
 
 ## Scope
 

@@ -20,7 +20,7 @@ activation policy, and Context policy.
 ## Ports and Edges
 
 Each placement exposes stable typed input and output Ports. A Port may carry a
-control [[Event]], exact [[Artifact|ArtefactVersion]] references, or both.
+control [[Event]], exact [[Artefact|ArtefactVersion]] references, or both.
 
 An Edge is an explicit stored connection from one output Port to one input Port
 in the same revision. Enabled Edges are the only routes that advance a canonical
@@ -53,16 +53,5 @@ Every NodeExecution references an inspectable writable Context. The placement's
 Context policy may create one, reuse one by a stable key, or enter a fixed
 persistent Context. A NodeExecution does not require a newly created Context,
 and a Context is never the connection between placements.
-
-## Implementation
-
-- `floe-bus/src/scope-compositions.ts` — immutable revisions, NodePlacements,
-  Ports, and Edges
-- `floe-bus/src/scope-executions.ts` — ScopeExecution, NodeExecution, and
-  ExecutionAttempt records
-- `floe-bus/src/scope-operations.ts` — canonical composition and execution
-  operations
-- `floe-bus/src/scope-graphs.ts` — legacy mutable graph import and inspection;
-  not the canonical authoring or execution model
 
 See [[Glossary]].

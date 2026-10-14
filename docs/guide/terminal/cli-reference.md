@@ -151,7 +151,7 @@ floe identity delete <id> [--revoke-admissions | --keep-admissions]
 
 Floe holds one identity per Floe home. Surfaces ask Floe's identity agent to act
 as you and never hold the key (see
-[Identity agent protocol](../../reference/identity-agent-protocol.md)).
+the identity agent protocol in the Floe repository's `docs/reference/`).
 
 - `create` asks for a passphrase. Leaving it empty protects the identity with
   this device instead: anyone who can use this computer as you can act as you,
@@ -214,12 +214,3 @@ npm run build -- bus cli
 
 Its current targets are `bus`, `bridge`, and `cli`. With no targets on a
 non-interactive terminal, it builds all three.
-
-## Implementation
-
-- `floe-cli/src/cli.ts` - launcher, setup, service, surface, and maintenance commands
-- `floe-cli/src/operations-command.ts` - semantic operation commands
-- `floe-cli/src/identity-command.ts` - identity admission commands
-- `floe-cli/src/identity/terminal-commands.ts` - your identity, through the agent
-- `floe-cli/src/surfaces.ts` - surface registry and process launch
-- `scripts/build.mjs` - repository build picker

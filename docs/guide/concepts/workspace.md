@@ -35,14 +35,4 @@ CapabilityGrants for that exact Workspace. A request body cannot claim another
 Workspace or principal. Host control manages host-owned locator lifecycle but
 cannot substitute for a Workspace session.
 
-## Implementation
-
-- `floe-bus/src/workspace-identities.ts` — portable identities, locator
-  bindings, and provenance
-- `floe-bus/src/workspace-operations.ts` — inspect, register, rebind, restore,
-  copy, and fork semantic operations
-- `floe-bus/src/operation-routes.ts` — host and Workspace operation transport
-- `floe-bridge/src/project.ts` — reads the current local `.floe/`
-  configuration surface
-
 See [[Glossary]].

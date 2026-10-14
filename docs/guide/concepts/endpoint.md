@@ -23,12 +23,4 @@ Endpoint watermarks are retained transport/runtime cursors where older adapters
 need them. Product push clients use the Workspace Event Cursor and resumable
 WebSocket contract.
 
-## Implementation
-
-- `floe-bus/src/store.ts` — Endpoint and Delivery transport records
-- `floe-bus/src/transport-auth.ts` — authenticated Bridge and Workspace
-  audiences
-- `floe-bus/src/server.ts` — authenticated Endpoint projections and legacy
-  Bridge transport routes
-
 See [[Glossary]].

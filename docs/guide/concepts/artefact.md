@@ -37,8 +37,8 @@ folders, reuses an identical existing file, and refuses to overwrite different
 content. The exported file is a mutable copy; the retained version and its
 history remain unchanged. This action does not publish on the internet.
 
-App, Actor and API callers use the same operation, grants and Policy checks.
-When Policy requires approval, Floe retains the exact version, destination-bound
+Surfaces, Actors and API callers use the same operation, grants and Policy checks.
+When a Workspace has turned on a Policy that requires approval, Floe retains the exact version, destination-bound
 input digest and a readable description before touching the destination. A
 changed destination or version requires its own decision. The local resolver
 currently supports Workspace-relative content up to 20 MiB; unresolved content
@@ -53,14 +53,5 @@ Extensions may own domain schemas, metadata, specialised statuses,
 invalidation and regeneration policy, and rich presentation. They do not own a
 parallel Artefact identity ledger. Existing extension lineage JSON is legacy
 import evidence or a projection over canonical Artefacts.
-
-## Implementation
-
-- `floe-bus/src/artefacts.ts` — canonical identity, versions, ContentRefs, and
-  lineage
-- `floe-bus/src/artefact-operations.ts` — create, publish-version, and inspect
-  semantic operations
-- `floe-bus/src/fs/` — one local content adapter; a path is never Artefact
-  identity
 
 See [[Glossary]].

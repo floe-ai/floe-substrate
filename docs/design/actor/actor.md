@@ -64,7 +64,7 @@ substrate (`floe-bridge/src/prompts/default-floe-agent.md`).
 ## Actors learn Floe from the install
 
 _Resolution: settled_
-_Built: no_
+_Built: partly_
 _Authority: operator-confirmed (14 Oct: "we only want floe related instructions installed so the Actors in floe can reference how to behave, the tools they have, how to work with scopes, etc. essentially all the Actor (User) Documentation")_
 _Authored by: operator_
 _Priority: P1_
@@ -79,10 +79,14 @@ documentation; there is no separate version for people.
 - An Actor reads it when the work needs it; it is never preloaded. Floe's
   built-in instructions stay short and point to it.
 
-Still in code: the install carries no documentation. Actors get only three
-built-in prompts (`floe-bridge/src/prompts/`). These still speak of an
-operator, approvals, floe-app and retired ADRs, and point to `docs/design/`,
-which is not installed.
+The install carries `docs/guide/` at the package root (`scripts/release.mjs`),
+and the Bridge's runtime guidance gives its absolute path
+(`floe-bridge/src/floe-guide.ts`).
+
+Still in code: the engine's file tools cannot read the installed guide unless
+its folder is added to the Workspace or System access is on, because
+`workspaceRefusal` (`floe-bus/src/tool-policy.ts`) refuses file-tool paths
+outside the Workspace's folders. Only the shell can read it by default.
 
 ## Direction: responsibilities route work
 

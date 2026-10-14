@@ -2,9 +2,9 @@
 
 **An Actor is an entity permitted to perceive, decide, communicate, and act within declared responsibility and authority.**
 
-A person, local model, hosted model, deterministic service, or future runtime
-backing does not change Actor identity or Scope semantics. The substrate does
-not encode a human/agent type distinction.
+What runs an Actor does not change its identity or Scope semantics. Floe does
+not distinguish one kind of Actor from another. How an Actor does its work is in
+[[Working in Floe]].
 
 ## Identity, definition, and runtime stay separate
 
@@ -13,7 +13,8 @@ trust policy, instructions, capability grants, and escalation rules belong to
 an immutable ActorDefinitionRevision. A draft may change; publication freezes
 the revision.
 
-Runtime embodiment is a separately replaceable binding to a RuntimeProfile. An
+Runtime embodiment is a separately replaceable [[Runtime binding]] to a
+RuntimeProfile. An
 ExecutionAttempt records the exact ActorDefinitionRevision and runtime binding
 it used, so later edits do not rewrite history.
 
@@ -60,15 +61,12 @@ messages are excluded. A missing or mismatched Event stays unavailable; the
 inspection does not substitute another result. Leave this option off when only
 execution status is needed.
 
-## Model image inspection
+## Reading saved content
 
-The Bridge's `read_image` tool supplies a preview at most 1,536 pixels on either
-side, without enlarging or changing the source. It supports PNG, JPEG, GIF and
-WebP sources up to 20 MiB and 64 megapixels, applies image orientation, and shows
-the first frame of an animation. The result identifies the source by its SHA-256
-and dimensions, alongside the preview dimensions. Unsupported, oversized or
-corrupt input returns a recoverable tool result instead of forwarding those
-bytes to the model. This is a runtime input bound, not an Artefact transformation.
+The `read_artefact` tool reads one exact ArtefactVersion shared into the
+Actor's work, under the active Delivery's authority, up to 20 MB. PNG, JPEG, GIF
+and WebP images enter the model input for visual inspection. Text returns a
+bounded page; follow `next_offset` to read the rest.
 
 ## Engine built-in tools
 
@@ -95,7 +93,7 @@ Every Actor may use every engine tool by default, without prompts. File tools
 folders; see [Workspace folders and System access](#workspace-folders-and-system-access).
 **Shell commands are not confined**: a command can read, change or delete any
 file the signed-in user can, inside or outside the Workspace's folders. Other
-restrictions are opt-in: a person chooses them for an Actor or a Workspace.
+restrictions are opt-in: an Actor chooses them for another Actor or a Workspace.
 Each call is decided before it runs, and checked against the Workspace's
 folders and the limits that were chosen:
 
@@ -107,7 +105,7 @@ folders and the limits that were chosen:
    resolve, after symlinks, inside those folders. Scope paths are relative to
    the Workspace's own folder, so a scope never reaches an added folder;
 3. the Approval Policy revision its definition pins, if any, and policies bound
-   to the Workspace. These can refuse a call or require a person's decision
+   to the Workspace. These can refuse a call or require a decision
    (`require_approval`), but never widen authority.
 
 Where a limit was chosen and the engine's evidence cannot show that a call
@@ -116,15 +114,15 @@ prompt. Every call is recorded as a decision, allowed or not.
 
 A refused call returns structured data to the model: `code`
 (`tool_policy_denied` or `tool_policy_cancelled`), `tool_call_id`,
-`operation_id`, `rule_id` and `reason`. A call that a chosen rule sends to a
-person waits for a pushed answer, bounded by the turn's authority and
+`operation_id`, `rule_id` and `reason`. A call that a chosen rule sends for a
+decision waits for a pushed answer, bounded by the turn's authority and
 cancellation. One approval covers one exact call; changed arguments need a new
 decision.
 
 ### Workspace folders and System access
 
 A Workspace has one or more folders. Its own folder, where `.floe` lives, is
-always one of them and cannot be removed. A person may add other folders on
+always one of them and cannot be removed. An Actor may add other folders on
 the same machine, by full path. File tools may use any path that resolves,
 after symlinks, inside one of those folders. A path outside them is refused
 with `tool_path_outside_workspace`, and the reason says to add the folder or
@@ -153,8 +151,8 @@ folders and setting, as `workspace_access`, with `caught_up`. A change that
 removes what a waiting approval needed ends that wait, and the call is refused
 with a reason.
 
-Seen is recorded per person in Floe, not in a surface, so every surface a
-person uses agrees. Each record lists `seen_by`, the people who have seen it as
+Seen is recorded per Actor in Floe, not in a surface, so every surface an
+Actor uses agrees. Each record lists `seen_by`, the Actors who have seen it as
 it now reads. A notice that changes, such as a lapse date moving, shows as new
 again. Marking a notice seen, and Floe recording, changing or removing a notice
 by itself, are pushed as `workspace_access_changed` too.
@@ -195,13 +193,13 @@ use now. An Actor with no published definition shows none. A folder or System
 access rule set on the Workspace applies on top of these grants; read it with
 `workspace.access.inspect`.
 
-When access behind a call that is waiting for a person is revoked, the wait
+When access behind a call that is waiting for a decision is revoked, the wait
 ends: the call is refused with the reason "The access this request depended on
 was revoked." and the Actor receives that refusal.
 
 The default Floe Actor of a Workspace made by an older Floe may have no tool
 access. When the Bus starts, it gives that Actor the same default access,
-unless a person already chose its tool access: any live grant for an engine
+unless an Actor already chose its tool access: any live grant for an engine
 tool, even a narrow one, is left as it is. Floe does not widen access silently,
 so the Workspace records a one-time notice, shown in
 `workspace.access.inspect` as a `tool_access_given` record: "Floe Actors in
@@ -210,7 +208,7 @@ this workspace can now use tools inside its folders."
 Early Floe templates wrote `scope.paths: [./]` into `.floe/agents/floe.md`.
 When a Bridge attaches a Workspace, it removes that scope only if the file's
 whole settings block is exactly what a Floe template wrote, so nothing in it
-was changed by a person. The normal re-import then makes the Actor
+was changed since. The normal re-import then makes the Actor
 unrestricted. Any other scope is kept. A `./` scope in a settings block that
 differs from every template is also kept, and the Bridge logs a warning naming
 the file. An Actor changed outside its import keeps its current state, because
@@ -242,16 +240,5 @@ Limits:
 Bridge and migration tooling. It must import or project into canonical Actor and
 ActorDefinitionRevision records; the file path and frontmatter are not the
 Actor's universal identity.
-
-## Implementation
-
-- `floe-bus/src/actor-definitions.ts` — canonical Actor identity and immutable
-  definitions
-- `floe-bus/src/actor-definition-operations.ts` — shared Actor lifecycle and
-  definition operations
-- `floe-bus/src/runtime-profiles.ts` — runtime profiles and Actor bindings
-- `floe-bridge/src/project.ts` — legacy `.floe/agents/*.md` loading boundary
-- `floe-bus/src/tool-policy.ts` — engine tool operations and authority
-- `floe-bridge/src/adapters/engine-tool-gate.ts` — the per-call gate
 
 See [[Glossary]].

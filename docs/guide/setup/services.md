@@ -7,7 +7,7 @@ client, not another substrate service.**
 |---|---|---|
 | bus | Owns canonical substrate state and exposes authenticated HTTP and WebSocket transport. | 5377 |
 | bridge | Claims deliveries and runs Actors through runtime adapters. | none |
-| identity agent | Holds the person's unlocked identity and gives surfaces bearers, over a local pipe or socket. | none |
+| identity agent | Holds the unlocked identity and gives surfaces bearers, over a local pipe or socket. | none |
 | floe-cli | Starts and manages the substrate, and launches registered surfaces. | none |
 
 ## Starting and stopping
@@ -76,12 +76,3 @@ Start on demand and start at login are separate:
   substrate.
 - Operating-system auto-start is installed state, queried with
   `floe service status`; it is not a configuration key.
-
-## Implementation
-
-- `floe-cli/src/cli.ts` - service and launcher commands
-- `floe-cli/src/startup.ts` - connect-first readiness and startup
-- `floe-cli/src/start-lock.ts` - one start at a time per Floe home
-- `floe-cli/src/process-manager.ts` - local process records, logs, and stopping
-- `floe-cli/src/staging.ts` - service snapshots under `<Floe home>/runtime/`
-- `floe-cli/src/service.ts` - operating-system auto-start

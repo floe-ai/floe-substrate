@@ -31,20 +31,6 @@ Command output advances a ScopeExecution only when it is published to a named
 output Port. Raw stdout, stderr, process telemetry, or natural runtime
 completion does not imply an Edge traversal.
 
-## Implementation
-
-- `floe-bus/src/command-definitions.ts` — stable Command identity and immutable
-  definition revisions
-- `floe-bus/src/command-runtime.ts` — authenticated worker binding and persisted
-  attempt processing contract
-- `floe-bus/src/isolated-command-host.ts` — isolated, version-pinned execution
-  boundary
-- `floe-bus/src/scope-compositions.ts` — Command placements and Port contracts
-- `floe-bus/src/scope-executions.ts` — NodeExecution and ExecutionAttempt
-  evidence
-- `floe-bus/src/scope-operations.ts` — output publication through canonical
-  Edges
-
 The Bridge does not discover or execute shell text from graphs. Legacy graph
 Command records are retained only as non-executable migration evidence.
 

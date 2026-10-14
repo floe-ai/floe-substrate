@@ -20,7 +20,7 @@ Context subscription does not imply a Scope Edge.
 
 ## Sources
 
-Human action, Actor communication, webhook, folder observation, schedule,
+Actor action and communication, webhook, folder observation, schedule,
 Connector, Command, and runtime output can all produce Events through their
 authorised adapters. A source describes where a fact originated; it does not
 create a separate routing system.
@@ -33,12 +33,5 @@ enters through a schedule Connector and explicit ingress Port.
 `emit` deliberately publishes non-graph communication or an explicitly
 attached Port publication. A natural runtime completion is recorded in the
 origin Context without automatically emitting or advancing work.
-
-## Implementation
-
-- `floe-bus/src/store.ts` — canonical Event and Delivery persistence
-- `floe-bus/src/scope-executions.ts` — Event references pinned to execution
-- `floe-bus/src/connectors.ts` — typed external sources and actions
-- `floe-bus/src/pulse-scheduler.ts` — scheduled Event creation without polling
 
 See [[Glossary]].

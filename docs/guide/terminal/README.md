@@ -27,11 +27,3 @@ rules or use a legacy raw mutation route as a shortcut.
 `GET /health` is public. Workspace projections, Context history, execution
 projections, and the WebSocket stream require authority for the exact boundary.
 The stream authenticates in its first frame and resumes from an opaque cursor.
-
-## Implementation
-
-- `floe-cli/src/cli.ts` - launcher, local services, surfaces, and maintenance
-- `floe-cli/src/operations-command.ts` - canonical semantic operations
-- `floe-cli/src/identity-command.ts` - client identities
-- `floe-bus/src/operation-routes.ts` - semantic-operation transport
-- `floe-bus/src/transport-auth.ts` - HTTP and WebSocket authority

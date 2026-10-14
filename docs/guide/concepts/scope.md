@@ -3,8 +3,8 @@
 **A Scope is the durable outcome, organisation, lifecycle, and governance boundary for organised work.**
 
 A Scope owns its exact designs, executions, related Contexts and Artefacts,
-policies, budgets, attention state, and history. It is the stable operator-facing
-identity even as its design changes.
+policies, budgets, attention state, and history. It keeps one stable identity even as
+its design changes.
 
 ## Composition revisions
 
@@ -35,11 +35,31 @@ visualisation of one ScopeCompositionRevision, not another source of truth.
 
 A ScopeExecution is one activation pinned to one published revision. Each
 NodeExecution records the exact placement, Port-bound inputs, Context, attempts,
-outputs, and state. This lets the operator inspect the current plan and the work
+outputs, and state. This lets any Actor inspect the current plan and the work
 that followed it without reconstructing either from Event traffic.
 
 Retiring a Scope makes it inert while preserving evidence. Removal is allowed
 only when no required history or active work would be destroyed.
+
+## Building connected work
+
+To build a Scope that runs connected work:
+
+1. discover the relevant Bus-owned operations;
+2. create a draft ScopeCompositionRevision containing NodePlacements, typed
+   Ports, and explicit Edges;
+3. publish that revision;
+4. start a ScopeExecution pinned to it;
+5. let each placement's activation run as a NodeExecution with an inspectable
+   Context;
+6. publish exact output Events and ArtefactVersion references to named output
+   Ports; and
+7. inspect operation receipts and execution records to verify the result.
+
+Direct Actor requests and Context pub/sub remain valid for other communication,
+but they do not advance a ScopeExecution. Input schemas, authority,
+confirmations, expected revisions, and result shapes come from operation
+discovery; see [[Bus API]].
 
 ## Legacy graphs
 
@@ -47,13 +67,5 @@ Legacy mutable Scope graphs and subscription-derived routing are migration
 input. They may be inspected as identified legacy revisions, but new and
 republished designs use explicit Edges. Legacy raw graph routes are
 compatibility/internal routes, not a second authoring contract.
-
-## Implementation
-
-- `floe-bus/src/scope-compositions.ts` — immutable composition revisions,
-  NodePlacements, Ports, and Edges
-- `floe-bus/src/scope-executions.ts` — canonical execution records
-- `floe-bus/src/scope-operations.ts` — canonical plan and execution operations
-- `floe-bus/src/scope-graphs.ts` — isolated legacy graph compatibility
 
 See [[Glossary]].

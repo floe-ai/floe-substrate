@@ -1,4 +1,7 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { FLOE_GUIDE_DIR } from "../floe-guide.js";
 import { SUBSTRATE_GUIDANCE, buildSystemPrompt, renderDestinationContext } from "./guidance.js";
 
 describe("SUBSTRATE_GUIDANCE", () => {
@@ -12,7 +15,6 @@ describe("SUBSTRATE_GUIDANCE", () => {
 
   it("keeps history addressable instead of mandatory", () => {
     expect(SUBSTRATE_GUIDANCE).toContain("not automatically inserted");
-    expect(SUBSTRATE_GUIDANCE).toContain("Use `context_history`");
     expect(SUBSTRATE_GUIDANCE).not.toContain("response_expected");
     expect(SUBSTRATE_GUIDANCE).not.toContain("current_context_participants");
   });
@@ -33,6 +35,22 @@ describe("SUBSTRATE_GUIDANCE", () => {
   });
 });
 
+describe("Floe user guide", () => {
+  it("points every Actor at the installed guide without preloading it", () => {
+    expect(SUBSTRATE_GUIDANCE).toContain(FLOE_GUIDE_DIR);
+    expect(SUBSTRATE_GUIDANCE).not.toContain("{{floe_guide}}");
+    expect(SUBSTRATE_GUIDANCE).toContain("Read only the page the current work needs");
+    expect(existsSync(join(FLOE_GUIDE_DIR, "README.md"))).toBe(true);
+    expect(existsSync(join(FLOE_GUIDE_DIR, "working-in-floe.md"))).toBe(true);
+  });
+
+  it("speaks of Actors only and names no design documents or retired mechanisms", () => {
+    for (const stale of ["operator", "docs/design", "ADR-", "floe-app", "context_history", "list_endpoints"]) {
+      expect(SUBSTRATE_GUIDANCE).not.toContain(stale);
+    }
+  });
+});
+
 describe("buildSystemPrompt", () => {
   it("appends substrate guidance after actor instructions", () => {
     const result = buildSystemPrompt("You are a helpful agent.");
@@ -47,7 +65,7 @@ describe("buildSystemPrompt", () => {
 });
 
 describe("renderDestinationContext", () => {
-  it("renders only compact causal orientation and history access", () => {
+  it("renders only compact causal orientation", () => {
     const result = renderDestinationContext({
       source_endpoint_id: "actor:ws:alice",
       current_context_id: "ctx_abc",
@@ -61,7 +79,7 @@ describe("renderDestinationContext", () => {
     expect(result).toContain("cause_type: request.result");
     expect(result).toContain("cause_event: evt_123");
     expect(result).toContain("reference: request evt_100");
-    expect(result).toContain("history: available on demand with context_history");
+    expect(result).not.toContain("context_history");
   });
 
   it("does not expose routing protocol or participant inventory", () => {

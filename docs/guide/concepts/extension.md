@@ -1,78 +1,99 @@
 # Extension
 
-**An Extension is a versioned package that contributes bounded capability under declared permissions, isolation, approval, and rollback.**
+**An Extension is a folder that adds tools and hooks to Floe: a small manifest and a code entry.**
 
-Canonical Extension source may live in an independent repository or package
-(ADR-0006). A Workspace-installed copy or pointer remains under
-`.floe/extensions/NAME/` so the Bridge can discover it. Source ownership and
-Workspace installation are different concerns.
+Any [[Actor]] can write one. Any Actor with the right permission can turn one on
+or off. Extension code is trusted like normal code: there is no sandbox and no
+per-Extension permission list. An Extension adds kinds inside the primitives; it
+never adds a new primitive.
 
-## What an extension contributes
+## What works today
 
-- **Tools** — functions an [[Actor]] can call. Names are auto-prefixed with the extension name to prevent collisions: an extension named `acme` exporting a tool `move` is exposed to the actor as `acme_move`.
-- **Pulses** — schedule declarations ([[Event]] sources) the extension wants registered.
-- **Views** — UI panels rendered as scope-detail tabs.
-- **HTTP handlers** — request handlers reachable through the bridge's extension relay.
-- **Hooks** — programmatic handlers for the runtime lifecycle (`SessionStart`, `BeforeTurn`, `Pulse`, and so on — see [[Hook]]).
-- **Bundled agents** — agent definitions the extension ships with, loaded in memory at workspace attach.
-- **Capabilities, Commands, and Connectors** — semantic operations and typed
-  external sources/actions exposed through the shared Bus contract.
-- **Schemas and presentation** — domain metadata, previews, renderers,
-  dashboards, and bounded product surfaces over canonical records.
+- **Tools** that an Actor can call.
+- **[[Hook]]s** that run at points in an Actor's turn.
 
-An Extension may own domain schemas, specialised statuses, invalidation and
-regeneration policy, and rich presentation. It does not own competing
-Workspace, Context, Scope topology, Artefact identity, authority, or operation
-ledgers.
+Skills, Commands, Event sources, Connector kinds, Actor definitions, record
+types and screens from an Extension are not built yet.
 
-## Manifest
+## Where the code lives
 
-Extensions live in `.floe/extensions/NAME/` and declare an `extension.json`:
+The code can live anywhere on the machine: its own repository, another folder,
+or inside `.floe/extensions/NAME/` itself. The Workspace records each installed
+Extension in `.floe/extensions/NAME/installed.json`:
 
 ```json
-{
-  "schema": "floe.extension.v1",
-  "name": "acme",
-  "entry": "./index.js",
-  "views": [
-    { "slot": "scope-detail-tab", "label": "Board", "component": "acme/Board" }
-  ],
-  "agents": [
-    { "agent_id": "acme-bot", "label": "Acme Bot", "instructions_path": "./agents/bot.md" }
-  ]
+{ "schema": "floe.extension-install.v1", "code": ".", "enabled": true, "accepted_version": "sha256:…" }
+```
+
+- `code` — the code folder, relative to the record's folder or absolute. `"."`
+  means the code sits beside the record.
+- `enabled` — the on/off switch. Turning an Extension on or off is an ordinary
+  file change.
+- `accepted_version` — the only version Floe will run.
+
+The folder name is the Extension's name. It must match `name` in the code
+folder's `extension.json`:
+
+```json
+{ "schema": "floe.extension.v1", "name": "todo", "description": "A shared todo list", "entry": "./index.js" }
+```
+
+Names use lowercase letters, digits and hyphens. The entry must stay inside the
+code folder.
+
+## Versions
+
+The version is a digest of every file in the code folder (`sha256:…`), leaving
+out `.git`, `node_modules` and the install record. When the folder is committed
+in git with no uncommitted changes, the commit and path are recorded beside it.
+
+A change to the code is a new version, never a silent change. Floe keeps the
+accepted version until an Actor accepts the new one by writing it into
+`accepted_version`. A first install also starts held. There is no Floe
+operation for accepting a version or turning an Extension on or off yet; edit
+`installed.json`.
+
+## Status
+
+Each installed Extension has one status, pushed whenever it changes:
+
+| Status | Meaning |
+|---|---|
+| `running` | Loaded at its accepted version; lists its tools and hooks |
+| `off` | `enabled` is false |
+| `new_version` | The code is not the accepted version; held until an Actor accepts it |
+| `failed` | The record, manifest or code could not be loaded; carries the reason |
+
+Floe watches `.floe/extensions` and every code folder outside it, and checks
+again shortly after files stop changing.
+
+All Extensions run together in one Extension process, separate from the Bus and
+the Bridge. A crash or hang in an Extension cannot take Floe down. The process
+restarts by itself after a crash, waiting a little longer each time.
+
+## Writing the entry
+
+The entry's default export receives `{ workspacePath, workspaceId,
+extensionName, hooks }` and returns a list of tools. Each tool has a `name`, a
+`description`, `parameters` (a JSON Schema object) and `execute(callId,
+params)`, which returns `{ content: [{ type: "text", text }], details? }`.
+
+```js
+export default function todo({ workspacePath, hooks }) {
+  return [{
+    name: "add",
+    description: "Add an item to the shared todo list.",
+    parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+    async execute(callId, params) {
+      return { content: [{ type: "text", text: `Added: ${params.text}` }] };
+    },
+  }];
 }
 ```
 
-`schema` must be exactly `floe.extension.v1`. `entry` resolves to a file that default-exports a factory `(ctx: ExtensionContext) => AgentTool[]`. An `extension.json` may also be a lightweight pointer (`{ "manifest_source": "..." }`) to a manifest that lives in the extension's own repository, so the installed copy never drifts from the source.
+Floe offers the tool as `EXTENSION_TOOL`, here `todo_add`. Only an Actor whose
+definition lists the Extension in `extensions` is offered its tools and runs its
+hooks. Tool calls run in the Extension process and are recorded like Floe's own
+tools.
 
-## Current loader boundary
-
-The current in-process Bridge loader reads bundled Actor definitions and
-handlers. That loader and its relay routes are legacy implementation beneath the
-accepted isolated Extension lifecycle. They do not grant arbitrary filesystem,
-network, secret, or action access.
-
-## HTTP relay
-
-An extension can register HTTP handlers via `ExtensionContext.registerHttpHandler(method, path, handler)`. The bridge runs a relay HTTP server (port 5378 by default, falling back to an OS-assigned port if taken) that dispatches to these handlers, with each extension's handlers namespaced under its own name in the URL path: `http://127.0.0.1:5378/{extName}/{handlerPath}`.
-
-The bridge reports its relay's base URL to the bus. The bus then proxies client
-requests: `GET|POST /v1/extensions/:name/*` forwards to that extension's
-`relay_url`. If an extension has registered no HTTP handlers, `relay_url` is
-`null` and the bus responds `503`.
-
-## Implementation
-
-- `floe-bus/src/extensions.ts` — canonical package/install lifecycle records
-- `floe-bus/src/extension-operations.ts` — shared inspect, install, upgrade,
-  disable, and rollback operations
-- `docs/design/host/extension/extension.md` — the Extension design: own repositories, manifest, tool prefixing, hooks
-- `floe-bridge/src/extension-loader.ts` — `loadExtensions`, `validateManifest` (schema `floe.extension.v1`), `loadBundledAgentsInMemory`, tool-name prefixing
-- `floe-bridge/src/extension-relay.ts` — `startExtensionRelayServer`, per-extension path namespacing
-- `GET /v1/extensions` — list registered extensions (`floe-bus/src/server.ts:1543`)
-- `POST /v1/extensions/report` — bridge reports its extensions + relay URL (`floe-bus/src/server.ts:1514`)
-- `GET|POST /v1/extensions/:name/*` — proxy to the extension's relay (`floe-bus/src/server.ts:1604`, `:1608`)
-
-External extension view components: Not built yet — a declared view renders `PlaceholderExtensionView`.
-
-See [[Glossary]] for term definitions.
+See [[Glossary]].

@@ -6,14 +6,17 @@
  * the actor/event/emit/turn model.
  */
 
+import { requireFloeGuide } from "../floe-guide.js";
 import { readPromptAsset } from "../prompt-assets.js";
 import { toNeutralRef } from "./neutral-ref.js";
 
 /**
  * Standard substrate guidance for runtime actors.
  * This is appended to agent instructions before the processing cycle begins.
+ * It names the installed user guide's folder; Actors read pages on demand.
  */
-export const SUBSTRATE_GUIDANCE = readPromptAsset("substrate-guidance.md");
+export const SUBSTRATE_GUIDANCE = readPromptAsset("substrate-guidance.md")
+  .replaceAll("{{floe_guide}}", requireFloeGuide());
 
 /**
  * Build the complete system prompt for a runtime actor.
@@ -48,6 +51,5 @@ export function renderDestinationContext(context: {
   if (context.cause_type) lines.push(`cause_type: ${context.cause_type}`);
   if (context.cause_event_id) lines.push(`cause_event: ${context.cause_event_id}`);
   if (context.cause_reference) lines.push(`reference: ${context.cause_reference}`);
-  lines.push("history: available on demand with context_history");
   return lines.join("\n");
 }

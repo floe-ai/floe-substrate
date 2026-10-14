@@ -1,56 +1,61 @@
 # Hook
 
-**A hook is an extension-supplied handler fired at a point in the runtime lifecycle.**
+**A hook is a point inside an Actor's runtime where an [[Extension]] can step in while something is happening.**
 
-An [[Extension]] registers a handler for a named hook via `ExtensionContext.hooks.on(...)`.
-The bridge fires that hook at the matching lifecycle point. Handlers run sequentially
-in registration order; a handler that throws is caught and logged — it never crashes
-the run.
+For example, before a tool call runs (allow it, block it or change it), or
+before a [[Delivery and Turn|Turn]] starts (add text to its input).
 
-## SDK runtime hooks
+An Extension's hooks run only for [[Actor]]s whose definition lists that
+Extension, the same rule as its tools. To apply a hook to every Actor, list the
+Extension on every Actor.
 
-| Hook | Fires on | Payload carries |
+A hook steps in; an [[Event]] records something that happened and can wake or
+start work. Anything that only reacts afterwards should use Events.
+
+Handlers run in registration order. A failing handler is caught and logged and
+never crashes the turn. A handler that has not finished after 30 seconds is
+treated as failed.
+
+## Hooks an Extension can register
+
+Inside its entry function: `hooks.on(NAME, handler)`. Any other name stops the
+Extension loading, with the reason in its status.
+
+| Hook | When | Can |
 |---|---|---|
-| `SessionStart` | A new SDK session is created for an (actor, context) pair | `provider`, `model_id`, endpoint/workspace/delivery ids, `reason: "session_created"` |
-| `BeforeTurn` | Just before a [[Delivery and Turn|Turn]] runs | endpoint/delivery ids and the delivery's origin; `kind: "thread"` is legacy storage compatibility, while new contracts use Context |
-| `TurnEnd` | A turn finishes | `visible_output`, `tool_activity`, `emitted_events` |
-| `Error` | An unhandled error occurs in a turn | `error` |
+| `SessionStart` | A new runtime session starts for the Actor | React |
+| `BeforeTurn` | Before a Turn starts | Return `{ inject: { source, content } }` to add text to the Turn's input |
+| `TurnEnd` | After a Turn finishes | React |
+| `BeforeToolUse` | A tool call that Workspace access allows is about to run. The handler gets `tool_call_id`, `tool_name`, `source` (`builtin` or `custom`), `args` and `cwd` | Return nothing or `{ decision: "allow" }`, `{ decision: "block", reason }`, or `{ decision: "change", args }` |
+| `Error` | A Turn fails | React |
 
-The current SDK runtime path fires only these four hooks. Direct tool activity
-is retained in the turn work log, not exposed as an extension hook.
-`WebhookReceived` is a Bridge ingress hook, not an SDK runtime hook. Other
-names in the registry are not promises that the SDK path fires them.
+## BeforeToolUse
+
+A hook can block a tool call that Workspace access allows, but never allow one
+it blocks. Workspace access is applied first; then the call passes to the
+`BeforeToolUse` handlers of the Actor's listed Extensions, in order, each seeing
+the input as changed by the one before. The first block wins. When a handler
+changes a built-in tool's input, Workspace access is applied again to the new
+input.
+
+Unlike other hooks, a check that fails, times out, answers something unknown,
+or cannot run because the Extension process is restarting blocks the call.
 
 ## BeforeTurn injection
 
-A `BeforeTurn` handler can return `{ inject: { source, content } }`. The bridge
-renders this into the turn's prompt alongside the [[Event]] that triggered it — a way
-for an extension to add context the model wouldn't otherwise see (a memory recall, a
-todo list, a policy reminder).
+Injected content is added once and resolved live. Floe keeps a hash of the last
+content injected per Context and `source`:
 
-**Injection is inject-once / resolve-live.** The bridge keeps a hash of the last
-content injected per `(context_id, source)`:
+- the same content as last time is skipped, because the model already has it;
+- changed content is injected, and the hash updates;
+- a Delivery with no Context is always injected.
 
-- Same resolved content as last time → skipped. The model already has it in its
-  running context; injecting it again every turn would be noise.
-- Content changed → injected, and the baseline hash updates.
-- No `context_id` on the delivery → always injected (there's nothing to key the
-  dedup on).
+Clearing or compacting a Context resets its hashes, so the next turn injects
+everything again.
 
-Clearing or compacting a context resets that context's baseline, so the next turn
-re-injects everything fresh — matching the fact that the model's visible history was
-just reset too.
+## Seeing which hooks are registered
 
-## Hooks cannot be listed
-
-There is no read endpoint for hook registrations. A workspace's registered hooks are
-only visible in code, at the extension that registers them.
-
-## Implementation
-
-- `floe-bridge/src/hooks.ts` — `HookName`, `HookPayloadByName`, `HookRegistry.fire`
-- `floe-bridge/src/adapters/floe-runtime-adapter.ts` — SDK session and turn hook dispatch
-- `floe-bridge/src/adapters/floe-direct-tools.ts` — direct tool activity is recorded in the turn work log, not emitted as an extension hook
-- Hook listing / read endpoint — Not built yet.
+A running Extension's status lists the hooks it registered. There is no
+separate operation for listing hooks.
 
 See [[Glossary]].

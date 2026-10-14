@@ -1,7 +1,7 @@
 # Install and first run
 
 **Floe is a substrate. Install its command-line launcher, then install a surface
-that a person can interact with.**
+to work with it.**
 
 ## Install
 
@@ -84,9 +84,9 @@ Nothing runs at install time: installing the package globally is enough for
 }
 ```
 
-- `name` — what a person types (`floe my-surface`): lowercase letters, digits
+- `name` — what you type (`floe my-surface`): lowercase letters, digits
   and hyphens.
-- `label` — what a person sees in the menu.
+- `label` — what you see in the menu.
 - `bin` — which of the package's own `bin` entries launches it. The surface
   stays launchable by that command on its own.
 
@@ -129,7 +129,7 @@ surface's command with its own arguments, then appends exactly one argument:
 - Floe passes nothing else about the launch: no environment variables.
 
 A surface uses it to choose where to work: without it, the folder it was started
-in decides; with it, the surface can offer the person's workspaces (identity
+in decides; with it, the surface can offer the identity's workspaces (identity
 `listWorkspaces()`, most recent first). A surface must accept this argument even
 if it ignores it.
 
@@ -215,20 +215,3 @@ floe identity status
 "forgot passphrase" and revoking a surface's session.
 
 See [[CLI reference]] for the complete command list.
-
-## Implementation
-
-- `scripts/install-cli.mjs` - builds, packs, and globally installs `floe` from a checkout
-- `scripts/release.mjs` - builds, verifies, tags, and publishes the `floe-ai/floe` artifact from a fresh clone of the released commit, installed with `npm ci`
-- `scripts/pinned-dependencies.mjs` - refuses a release whose git-pinned dependencies (floe-runtime) are not exactly their pinned commit
-- `floe-cli/src/cli.ts` - launcher and command definitions
-- `floe-cli/src/surface-manifests.ts` - detects surfaces declared by installed packages
-- `floe-cli/src/surface-catalog.ts` - merges detected and registered surfaces
-- `floe-cli/src/surfaces.ts` - on-disk surface registry and launching
-- `floe-cli/src/prompt-state.ts` - records one-time questions already asked
-- `floe-cli/src/installation.ts` - this copy's version and whether it is a dependency
-- `floe-cli/src/staging.ts` - runs the services from a snapshot, so npm can upgrade under them
-- `floe-bus/src/version.ts` - the version the bus reports at `/health`
-- `floe-cli/src/startup.ts` - connect-first substrate startup
-- `floe-cli/src/service.ts` - operating-system auto-start
-- `floe-cli/src/identity/` - the identity agent and the `floe/identity` client

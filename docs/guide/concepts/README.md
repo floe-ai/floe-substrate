@@ -17,9 +17,10 @@ ScopeExecution.
 | [[Context]] | The durable place where participants understand, discuss, and record work. |
 | [[Event]] | An immutable fact, signal, communication, observation, or decision. |
 | [[Command]] | A deterministic operation with declared inputs, outputs, effects, and authority. |
-| [[Artifact|Artefact]] | A stable logical input, output, collection, reference, or body of evidence. |
+| [[Artefact]] | A stable logical input, output, collection, reference, or body of evidence. |
 | [[Endpoint]] | An addressable delivery interface; not an Actor identity. |
-| [[Extension]] | A versioned package that contributes bounded capability under declared authority. |
+| [[Extension]] | A folder that adds tools and hooks to Floe: a small manifest and a code entry. |
+| [[Runtime binding]] | The replaceable link between an Actor and the runtime configuration it uses. |
 
 ## Scope design and execution records
 
@@ -37,7 +38,7 @@ ScopeExecution.
 ## Shared operation contract
 
 A Capability is a discoverable semantic operation. Its Bus-owned definition is
-the one contract used by the app, Actors, CLI, SDK, API, and MCP clients. An
+the one contract used by surfaces, Actors, the CLI, SDKs and the API. An
 authenticated principal invokes it through a CapabilityGrant and receives a
 stable operation receipt. Clients do not restate validation, authority, or
 lifecycle rules.
@@ -52,14 +53,5 @@ lifecycle rules.
   topology.
 - Presentation state may arrange canonical records; it cannot change topology
   or authority.
-
-## Implementation
-
-- `docs/design/` — canonical terminology, rules and intent
-- `floe-bus/src/operations.ts` — shared semantic operation contract
-- `floe-bus/src/scope-compositions.ts` — Scope design records
-- `floe-bus/src/scope-executions.ts` — execution records
-- `floe-bus/src/contexts/store.ts` — Context records
-- `floe-bus/src/artefacts.ts` — Artefact identity and provenance
 
 See [[Glossary]].

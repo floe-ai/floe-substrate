@@ -79,13 +79,4 @@ Clients discover and invoke these definitions instead of maintaining their own
 Context rules. Older raw Context mutation routes are compatibility or internal
 adapters and must delegate to the same semantics where they remain reachable.
 
-## Implementation
-
-- `floe-bus/src/contexts/store.ts` — Context records and lifecycle metadata
-- `floe-bus/src/context-operations.ts` — canonical definitions and handlers
-- `floe-bus/src/context-operation-backend.ts` — integration with Event delivery
-  and retained-reference checks
-- `floe-bus/src/operation-routes.ts` — shared discovery, invocation, and receipt
-  transport
-
 See [[Glossary]].

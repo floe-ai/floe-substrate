@@ -40,7 +40,7 @@ so each Actor can run its own model on one shared RuntimeProfile. Set it with
 `actor.setup`. On replace, omitting `model` keeps the current one and `null`
 returns the Actor to the profile's model. Choose from the engine's own list:
 `models(engine)` on the engines channel (see the
-[engine control protocol](../../reference/engine-control-protocol.md)).
+engine control protocol in the Floe repository's `docs/reference/`).
 A model the engine does not offer is refused before any model call, naming
 the requested and the available models.
 
@@ -73,12 +73,3 @@ operations. Authorised clients and Actors consume the same definitions. Legacy
 `/v1/runtime/bindings` routes are compatibility/internal adapters.
 
 See [[Glossary]] for term definitions.
-
-## Implementation
-
-- `floe-bus/src/runtime-profiles.ts` — profiles, immutable revisions, and Actor
-  bindings
-- `floe-bus/src/runtime-profile-operations.ts` — canonical lifecycle and
-  binding operations
-- `floe-bridge/src/bus-client.ts` — effective runtime resolution for execution
-- `floe-bus/src/credential-broker.ts` — SecretRef resolution boundary

@@ -1,6 +1,6 @@
 # Workspace config
 
-**`.floe/` is a committed, human-authored configuration surface for a [[Workspace]].**
+**`.floe/` is a committed, hand-authored configuration surface for a [[Workspace]].**
 
 The Workspace's stable identity, authority, Contexts, Scope designs and
 executions, Artefacts, Events, Deliveries, and receipts live in canonical Bus
@@ -95,7 +95,7 @@ Workspaces require explicit per-Actor operation authority. Runtime capability
 requirements never create operation authority by implication.
 
 Actors may form runtime organisation through the Bus without hand-editing this
-file. The app and Actors discover the same Bus-owned semantic operations.
+file. Surfaces and Actors discover the same Bus-owned semantic operations.
 Creating a draft ScopeCompositionRevision, publishing it, and starting a pinned
 ScopeExecution use one source of validation, authority, refusal, and receipts.
 The revision contains explicit NodePlacements, Ports, and Edges; it does not use
@@ -114,18 +114,6 @@ authority. It does not create Actor Markdown files as a second authoring API.
 Workspace files remain import sources and may be maintained deliberately through
 ordinary file tools. Committing those file changes is a workspace choice, not an
 automatic consequence of creating or changing a canonical Actor.
-
-## Implementation
-
-- `floe-bridge/src/project.ts` — `ensureProjectTemplate`, `loadProject`, `.floe/floe.yaml` and `.floe/agents/*.md` parsing, `computeConfigSurface`
-- `floe-bus/src/actor-definition-operations.ts` — canonical Actor definition
-  lifecycle
-- `floe-bus/src/workspace-config-import.ts` — canonical, receipt-producing
-  configuration import and compatibility policy boundary
-- `floe-bridge/src/workspace-config-inventory.ts` — deterministic secret-free
-  inventory construction
-- `floe-bridge/src/daemon.ts` — imports file-backed configuration and separately
-  attaches current canonical Actor runtimes
 
 Git-behaviour-on-write as a workspace setting ("leave it / show it / commit it"): Not built yet.
 

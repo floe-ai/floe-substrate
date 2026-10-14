@@ -49,7 +49,7 @@ name, status (`started`, `completed` or `failed`), time, and the route run
 (`scope_execution_id`) when the Turn is a step. Only the name is
 pushed: tool arguments and results are not public Context content.
 
-A person can read a finished or running Turn afterwards with
+Any Actor with access can read a finished or running Turn afterwards with
 `runtime.delivery.inspect`, targeting its `runtime_delivery` (the
 `delivery_id` in the Turn's result Event). It returns `model`, the model the
 Turn actually ran on as the engine's own usage record names it (`null` until
@@ -72,15 +72,5 @@ references and are delivered to the requested Actor. The accepted Event confirms
 the references. Omission means no attached input; unrelated versions are never
 inherited automatically. Recipients can inspect saved content with `read_artefact`
 and continue a long text using its `next_offset`.
-
-## Implementation
-
-- `floe-bus/src/transport-push-stream.ts` — durable cursor and filtered replay
-- `floe-bus/src/store.ts` — Delivery queue, lease, and cancellation
-- `floe-bus/src/scope-executions.ts` — logical execution references
-- `floe-bridge/src/daemon.ts` — authenticated Bridge stream and runtime
-  processing
-- `floe-bridge/src/runtime-processing-contract.ts` — runtime input/output
-  boundary
 
 See [[Glossary]].

@@ -311,6 +311,20 @@ function bundle() {
   return pinned;
 }
 
+// Actors are Floe's users, so the install carries the user guide (docs/guide)
+// and nothing for changing Floe itself (docs/design, docs/contributing). The
+// Bridge finds it two levels above its dist, so it sits at the package root.
+function shipUserGuide() {
+  const guide = join(repoRoot, "docs", "guide");
+  if (!existsSync(join(guide, "README.md"))) fail("the user guide docs/guide/README.md is missing.");
+  cpSync(guide, join(outDir, "docs", "guide"), { recursive: true });
+  const shippedDocs = readdirSync(join(outDir, "docs"));
+  if (shippedDocs.length !== 1 || shippedDocs[0] !== "guide") {
+    fail(`the package may carry only docs/guide, but docs/ holds: ${shippedDocs.join(", ")}`);
+  }
+  log("assemble", "shipped the user guide at docs/guide");
+}
+
 function assemble(version) {
   log("assemble", `staging the single \`${PACKAGE_NAME}\` package at ${outDir}`);
   rmSync(outDir, { recursive: true, force: true });
@@ -338,6 +352,7 @@ function assemble(version) {
       });
     }
   }
+  shipUserGuide();
   const external = bundle();
 
   // The bin lives inside the bin package's shipped dist. Point the generated
@@ -391,6 +406,7 @@ function assemble(version) {
     join(outDir, "README.md"),
     `# Floe\n\nGenerated distribution artifact — do not edit by hand.\n\n` +
       `Install:\n\n    npm install -g github:floe-ai/floe\n\nThen open a new shell and run \`floe\`.\n\n` +
+      `The user guide is in \`docs/guide/\`; start at \`docs/guide/README.md\`.\n\n` +
       `This package is produced by \`npm run release\` in floe-ai/floe-substrate; ` +
       `its source lives there, not here.\n`,
     "utf8",

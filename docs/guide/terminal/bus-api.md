@@ -20,7 +20,7 @@ Floe uses non-interchangeable bearer audiences:
 | Audience | Boundary | Used by |
 |---|---|---|
 | `host_control` | One trusted host | Native host lifecycle and host semantic operations |
-| `workspace_operation` | One Workspace and current CapabilityGrants | Operator, Actor, CLI, SDK, API, or MCP semantic operations and projections |
+| `workspace_operation` | One Workspace and current CapabilityGrants | Surface, Actor, CLI, SDK, or API semantic operations and projections |
 | `bridge_service` | One Bridge service on one host | Delivery/runtime transport |
 
 Send HTTP credentials only as:
@@ -252,7 +252,7 @@ PUT /v1/workspaces/:workspace_id/scopes/:scope_id/projection/layout/:renderer
 These routes are shorthand for the Workspace operations
 `scope.projection.layout.get` and `scope.projection.layout.save`
 (`{scope_id, renderer, layout}`). Any session that may act in the Workspace,
-including a person's session or a browser pass allowed those operations, can
+including an identity's session or a browser pass allowed those operations, can
 use them; no host control is needed. Each renderer keeps its own layout, and a
 save pushes `scope_projection.layout.upserted` to the Workspace.
 
@@ -349,7 +349,7 @@ with no arguments. See [Delivery and Turn](../concepts/delivery-and-turn.md).
 ### Direct communication ingress (emit)
 
 `POST /v1/events/emit` is a **supported, first-class communication ingress**,
-not a legacy compatibility route. It is how an Actor, the operator, or an
+not a legacy compatibility route. It is how an Actor or an
 unprivileged client emits a direct (non-graph) Event — to say something in a
 Context, to start a new Context, or to reach outside the one it is in. It is
 accepted for `workspace_operation` and `bridge_service` bearers (`bridge_service`
@@ -363,7 +363,7 @@ object and the message text lives in `content.text`:
 {
   "type": "message",
   "workspace_id": "workspace_123",
-  "source_endpoint_id": "actor:workspace_123:operator",
+  "source_endpoint_id": "actor:workspace_123:reviewer",
   "destination": { "kind": "endpoint", "endpoint_id": "<endpoint_id>" },
   "content": { "text": "Deploy started." }
 }
@@ -380,7 +380,8 @@ Answering is that Actor's turn ending, reported with
 `POST /v1/runtime/turn-result` by delivery id alone — no assembled event, no
 correlation id, no context. The substrate resumes the asking Actor in its own
 context, correlated by the delivery. See
-[Client identity protocol → Answering as a client-executed Actor](../../reference/client-identity-protocol.md#answering-as-a-client-executed-actor).
+"Answering as a client-executed Actor" in the client identity protocol, in the
+Floe repository's `docs/reference/`.
 
 ### Engine tool decisions
 
@@ -415,7 +416,7 @@ These are pushed on the stream to the Workspace's connections:
   no longer applying;
 - `policy_decision_resolved` — how a call that needed a decision ended.
 - `workspace_access_changed` — the Workspace's folders, System access or
-  notices changed, or a person marked a notice seen; carries the current
+  notices changed, or an Actor marked a notice seen; carries the current
   `access`.
 
 ## Resumable WebSocket stream
@@ -493,7 +494,7 @@ migration, and older clients. In particular:
 - raw Context create/delete/participant/subscription routes are compatibility or
   internal adapters;
 - raw Scope, runtime-binding, provider, pulse, Endpoint, Delivery, and Extension
-  mutations are not an alternate operator contract;
+  mutations are not an alternate product contract;
 - the older `/v1/.../capabilities` catalogue routes have been removed; actors
   use the same `/operations` discovery and invocation contract as other clients,
   with authority issued for the active Delivery.
@@ -501,22 +502,10 @@ migration, and older clients. In particular:
 Product clients must discover and invoke semantic operations for state-changing
 intent. Two named routes are **not** in this legacy set and are supported
 product surfaces: the identity routes (`/v1/identity/*`, `/v1/identities`,
-`/v1/clients`) documented in the [Client identity protocol](../../reference/client-identity-protocol.md),
+`/v1/clients`) documented in the client identity protocol (Floe repository, `docs/reference/`),
 and the direct communication ingress `POST /v1/events/emit` described above. A
 remaining raw *mutation* is acceptable only when it delegates to the same
 operation handler or is an authenticated internal transport that is not exposed
 as normal product capability.
-
-## Implementation
-
-- `floe-bus/src/operations.ts` — operation definition, invocation, authority,
-  refusal, and receipt contracts
-- `floe-bus/src/operation-routes.ts` — Workspace and host discovery,
-  invocation, and receipt routes
-- `floe-bus/src/transport-auth.ts` — non-interchangeable transport audiences
-- `floe-bus/src/transport-push-stream.ts` — filtered cursor-based replay and
-  catch-up
-- `floe-bus/src/server.ts` — authenticated HTTP/WebSocket adapters and legacy
-  boundaries
 
 See [[Glossary]].

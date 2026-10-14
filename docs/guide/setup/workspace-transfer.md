@@ -77,7 +77,7 @@ Only these Workspace recovery operations may run under the hold:
 
 Endpoint and Command-worker attachment are host registration. Missing content
 uses the host-only `workspace.package.supply_content` operation, which accepts
-an operator-selected file only when its bytes match the retained digest.
+a chosen file only when its bytes match the retained digest.
 
 `workspace.package.reconcile_restore` resolves dependencies only from new exact
 target-host evidence: a protected credential binding, a live Bridge and
@@ -89,7 +89,7 @@ dependency remains unresolved and always requires explicit confirmation.
 
 ## Shared operation contract
 
-The app, an Actor, the CLI, and direct API clients discover and invoke the same
+A surface, an Actor, the CLI, and direct API clients discover and invoke the same
 Bus-owned semantic operations. Current package operations are:
 
 - Workspace authority: `workspace.package.export`,
@@ -103,13 +103,3 @@ Bus-owned semantic operations. Current package operations are:
 Use `floe operations list` or the authenticated operation-discovery endpoints
 described in [[Bus API]]. Host paths appear only in host-authority operation
 input or output; they are not canonical Workspace records.
-
-## Implementation
-
-- `floe-bus/src/workspace-portability.ts` — package, validation, restore,
-  dependency reconciliation, and restore hold.
-- `floe-bus/src/workspace-portability-operations.ts` — shared semantic
-  operation definitions.
-- `floe-bus/src/operation-governance-control-plane.ts` — fail-closed hold
-  enforcement for governed Workspace effects.
-
