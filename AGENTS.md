@@ -42,14 +42,17 @@ If you are building a surface, you do not edit this repository. You report gaps.
 11. **One name per thing.** Every Floe term has one name, defined in its
     [design document](docs/design/README.md#naming). Use that name in code, docs
     and conversation; never a synonym, and never one name for two things.
+12. **Design is the plan.** Everything to build or fix is written in the
+    design, next to the feature it changes. No other document, issue or list
+    is a source of truth ([design](docs/design/README.md#design-is-the-plan-d5)).
 
 ## Where truth lives
 
 - [docs/README.md](docs/README.md) — how documentation works: where knowledge
   goes and how the docs improve. Read it before adding or moving a document.
 - [docs/design/](docs/design/README.md) — what Floe is and is meant to be:
-  goals, the operator experience, terms, rules and the decisions behind them.
-  `Built: no` is the roadmap.
+  goals, the operator experience, terms, rules and the decisions behind them,
+  and everything still to build or fix.
 - [docs/reference/](docs/reference/) — the published contracts surfaces build against.
 
 Current code says what happens today; design says what should happen.

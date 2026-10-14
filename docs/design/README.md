@@ -48,11 +48,20 @@ Resolution is not approval. Only the operator makes something
 `operator-confirmed`; an agent never does. `agent-provisional` content is the
 operator's review list.
 
-## Design before code (D5)
+## Design is the plan (D5)
 
-Every Floe change names the design document it serves. If none exists, write it
-first as `question` or `direction` and bring it to the operator. A change that
-is `Built: no` in design is the roadmap; nothing else is.
+Design is the one source of truth for what Floe is and for everything that will
+be built or fixed. There is no other plan: no issue list, backlog or separate
+document.
+
+- Every Floe change names the design section it serves. If none exists, write
+  it first as `question` or `direction` and bring it to the operator.
+- Something to build is written in the section of the feature it changes, and
+  that section says `Built: no` or `partly`.
+- Something to fix, where Floe does not do what its design says, is a
+  `Still in code:` line under the section it breaks, naming the file.
+- When the change ships, the section's Built fact is updated and its
+  `Still in code:` line deleted.
 
 ## Open questions (D6)
 
