@@ -146,18 +146,20 @@ Ask the operator only questions whose answers are genuinely subjective or requir
 
 Do not ask the operator to choose between internal architecture alternatives that can be resolved through code, tests, prototypes, or first principles.
 
-## Issue discipline
+## Adding work
 
-Do not create issue trees from speculative consequences.
+Work is added to the design ([design is the plan](../design/README.md#design-is-the-plan-d5)),
+never as issues or separate lists. Do not add work from speculative consequences.
 
-Create work when it:
+Add work when it:
 
 - blocks the current real operation;
 - represents an observed recurring failure;
 - is a regression;
 - is necessary to preserve an already-proven invariant.
 
-Unproven ideas belong in observations/hypotheses without roadmap weight.
+Unproven ideas go under `## Open` in the design document they concern, as
+questions, not as work.
 
 ## Surface needs
 

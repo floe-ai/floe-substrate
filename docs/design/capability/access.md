@@ -70,19 +70,55 @@ What happened is recorded as [Events](../event/event.md), operation
 ## Joining a Workspace
 
 _Resolution: settled_
-_Built: yes_
+_Built: partly_
 _Authority: operator-confirmed (14 Oct, D28, red-team finding RT1)_
 _Authored by: operator_
 
-Equal access starts after someone is let in. Only the Workspace's owner, or the
-machine owner's own Floe, admits a new identity to a Workspace. Knowing a
-Workspace's folder never admits anyone. Joining again never undoes a removal;
-only the owner can readmit a removed identity.
+Equal access starts after someone is let in. Only a member allowed to answer
+[requests to join](#asking-to-join), or the machine owner's own Floe, admits a
+new identity to a Workspace. Knowing a Workspace's folder never admits anyone.
+Joining again never undoes a removal; only they can readmit a removed identity.
 
 The first identity to choose a new folder becomes its first member. A folder
 Floe opened while nobody was signed in has no member yet, so the first identity
-to join it does the same. Anyone else is admitted by the owner with
-`floe identity add`.
+to join it does the same. Anyone else [asks to join](#asking-to-join), or the
+machine owner's own Floe admits them directly with `floe identity add`.
+
+Still in code: only the machine owner's own Floe can admit; members cannot yet
+([asking to join](#asking-to-join) is not built).
+
+## Asking to join
+
+_Resolution: settled_
+_Built: no_
+_Authority: operator-confirmed (14 Oct: "a new user should be able to 'request' access to a listed workspace, and the owner should able to see pending requests"; on who answers: "O64 and O65, and it is a workspace setting")_
+_Authored by: operator_
+
+Letting someone in works from any surface, not only the terminal.
+
+- A signed-in identity sees the Workspaces on this machine, including ones it
+  is not in, and asks to join one.
+- Who may answer is a Workspace setting: any member, or only the first member.
+- Those who may answer see waiting requests as they arrive, with who is asking
+  (display name and public key). Requests are pushed, never polled.
+- They accept or decline. Accepting admits the identity, as
+  `floe identity add` does. The asker is told the answer.
+- A surface does all of this as an ordinary client, with the person's own
+  sign-in, never with the machine's host credential
+  ([surfaces](../../surfaces/README.md)).
+- Each request and answer is an [Event](../event/event.md).
+
+### Expiry, withdrawal and asking again
+
+_Resolution: settled_
+_Built: no_
+_Authority: operator-confirmed (14 Oct: "Yes, low priority, not required for release")_
+_Authored by: operator_
+_Priority: P3_
+_Release: 1.0_
+
+A request expires if nobody answers it, and the asker can withdraw it. A
+removed identity may ask again.
 
 ## One trust level per machine
 
@@ -134,6 +170,9 @@ becomes open by default.
 
 ## Open
 
+- **Who answers by default.** Who may answer requests is a Workspace setting
+  (any member, or only the first member). Which does a new Workspace start
+  with?
 - **Where the list lives.** Workspace configuration (`.floe/floe.yaml`) is
   committed and portable, but extra folders are paths on one machine
   ([folder binding](../workspace/folder-binding.md)). Which file holds which

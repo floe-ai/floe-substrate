@@ -9,8 +9,9 @@ How a need found while building a surface becomes Floe work.
 2. The surface's agent applies the **delete test**: would this still make sense
    in Floe if the surface were deleted? If not, it stays in the surface.
 3. The operator decides whether it becomes Floe work.
-4. Only approved gaps become a GitHub issue on this repository, labelled
-   `surface-gap`, quoting the surface's gap number.
+4. Only approved gaps become Floe work. Each is written into the design section
+   of the feature it changes ([design is the plan](../design/README.md#design-is-the-plan-d5)),
+   quoting the surface's gap number.
 
 ## Triage, when picking one up
 
