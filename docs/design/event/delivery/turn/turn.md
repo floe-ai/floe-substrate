@@ -57,7 +57,7 @@ with `required_output_not_handed_on` if it is still missing.
 ## What would settle it
 
 Real Scope runs showing whether the automatic hand-on and single reminder help
-or surprise the operator.
+or surprise the Actor who started the run.
 
 ## Work log
 

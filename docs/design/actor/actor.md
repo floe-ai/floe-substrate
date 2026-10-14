@@ -56,7 +56,7 @@ The Floe Actor that comes with every Workspace follows the same Actor,
 Delivery, runtime and operation contracts as any other Actor. It
 differs only in its definition and assignment, never by a privileged path. Its
 coordinating behaviour (understand outcomes, discover capabilities, organise
-work, verify results, keep the operator informed) belongs to the Actor, not the
+work, verify results, keep the Actor who asked informed) belongs to the Actor, not the
 substrate (`floe-bridge/src/prompts/default-floe-agent.md`).
 
 ## Direction: responsibilities route work

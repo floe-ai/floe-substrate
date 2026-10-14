@@ -70,8 +70,9 @@ Release is the version as major.minor (`1.0`). Fixes shipped later in that line
 are patch versions (`1.0.1`, `1.0.2`) and keep the same Release. Work planned
 for no release yet says `_Release: later_`.
 
-Only the operator sets priority and release; an agent may propose them in its
-pull request. Unmarked work is not yet prioritised. To find work, search the
+Only the operator sets priority and release. An agent may propose them; they
+stand once the operator approves the change. Unmarked work is not yet
+prioritised. To find work, search the
 markers, for example `rg "Priority: P1" docs/design` or
 `rg "Release: 1.0" docs/design`.
 
@@ -132,3 +133,8 @@ only; new contracts use **Context**.
 Each term is defined once, in its own document. Never use a synonym for a
 defined term (for example "source type" for ConnectorDefinition), and never
 reuse one name for two things.
+
+**Operator** is not a Floe term. It names the person who approves changes to
+Floe's own design and code, and appears only in rules for working on Floe.
+Inside Floe there is no operator: everyone is an Actor. Design for Floe's
+behaviour says "an Actor" or "the Actor who asked".

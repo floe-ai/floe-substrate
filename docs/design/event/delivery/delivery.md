@@ -31,7 +31,7 @@ a runtime as bundles at safe boundaries.
 
 ## Stopping
 
-The operator stops one exact active response through the shared
+Any Actor stops one exact active response through the shared
 `runtime.delivery.cancel` operation. Cancellation is terminal: it interrupts the
 exact runtime or Command process, revokes that Delivery's operation authority
 and ignores late acknowledgements. Partial text from a stopped or failed

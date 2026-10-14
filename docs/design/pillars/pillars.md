@@ -19,13 +19,13 @@ authority, context, coordination, history, and continuity. Actors choose and
 evolve the work within it. A company, pipeline, or management structure is
 something they may build, never the identity of Floe.
 
-The operator can work alongside other Actors or delegate an outcome and steer by
+Any Actor can work alongside other Actors or delegate an outcome and steer by
 exception, without needing to understand or design the substrate.
 
 ## The proving experience
 
-**operator expresses an outcome → Floe forms what it needs → Actors work → Floe
-remains legible → operator steers by exception**
+**an Actor expresses an outcome → Floe forms what it needs → Actors work → Floe
+remains legible → the Actor who asked steers by exception**
 
 Every product or substrate change must make that loop materially more possible,
 reliable, legible, or autonomous. A change that only makes Floe more
@@ -45,10 +45,10 @@ A primitive is earned only when real operations repeatedly show the behaviour
 cannot be composed safely and generally from what exists. One use case shows a
 need; two may show a pattern; only repeated evidence creates a primitive.
 
-## Operator leverage
+## Leverage
 
-Normal work continues without supervision. Interrupting the operator is
-justified only for judgement, permission, real-world action they alone can take,
+Normal work continues without supervision. Interrupting the Actor who asked is
+justified only for judgement, permission, real-world action it alone can take,
 or meaningful redirection.
 
 Progress means: useful work continuing unsupervised; fewer low-value
@@ -136,7 +136,7 @@ _Authored by: operator_
 Floe carries no code that upgrades data layouts that were never released: no
 column patching, backfills, table rebuilds, old-shape imports or compatibility
 routes. A changed layout replaces the old one. A Floe home in an older layout,
-including the operator's own, is archived, renamed or deleted; none of its data
+including one in daily use, is archived, renamed or deleted; none of its data
 is carried forward.
 
 Still in code (operator decision, 14 Jun: collapse the schema to one
@@ -167,7 +167,7 @@ not migration.
   mechanism; a surface owns its domain, rules, formats and state.
   _Authority: operator-confirmed (30 Sep ruling)._ The same holds for aids built
   while Floe builds itself: they belong in Floe only if still valuable when the
-  Workspace, the Actor, the operator and the workflow are all different.
+  Workspace, the Actors and the workflow are all different.
 - **Redundancy test.** If models become 10× more capable, does this become
   unnecessary (leave it to models, instructions, tools or an Extension) or more
   valuable (durable identity, coordination, history, permissions, continuity,
@@ -184,7 +184,7 @@ of architecture patterns waiting to be implemented. Not a memory system: memory
 belongs in a separate Extension that works in any harness, on by default and
 removable (direction, not built; operator thought log, June).
 
-The goal is for the operator to say:
+The goal is for the Actor who asked to say:
 
 > I gave Floe something important to achieve. It formed what it needed, kept
 > working, and made the result easy to understand and steer. I could join the
@@ -217,7 +217,7 @@ _Built: no_
 _Authority: agent-provisional_
 _Authored by: operator (thought log, June)_
 
-- **North star.** An AI-first company: the operator discusses a multi-year
+- **North star.** An AI-first company: a founding Actor discusses a multi-year
   vision with a co-founding Actor, then steps back, stepping in only for testing
   and real-world actions such as payments and sign-in.
 - **Proof.** A colleague of any discipline installs Floe, describes an outcome
@@ -225,9 +225,9 @@ _Authored by: operator (thought log, June)_
   Floe designs the whole system itself: stages, Actors, webhooks, pulses
   watching a folder, and its own Extensions, without the person explaining any
   system design.
-- **The world keeps moving.** The operator can step in at any time to watch,
-  comment or redirect, but work continues whether or not they are there.
-- **Keystone.** Thirty seconds of the operator's reaction must be worth hours of
+- **The world keeps moving.** The Actor who asked can step in at any time to
+  watch, comment or redirect, but work continues whether or not it is there.
+- **Keystone.** Thirty seconds of that Actor's reaction must be worth hours of
   Actor work. Feedback must feel like conversation, not review.
 - **Trust gate for full autonomy.** An Actor can hold a one-to-three-year
   mission, break it into small pieces, stay profitable along the way, run its

@@ -18,4 +18,4 @@ infers topology from activity.
 Surfaces project and invoke the same Bus-owned operations
 ([Capability](../../capability/capability.md)); they do not own parallel
 validation or policy. Developer diagnostics may expose raw evidence, but normal
-operator work never depends on developer tools.
+work never depends on developer tools.

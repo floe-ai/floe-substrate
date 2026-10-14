@@ -41,7 +41,7 @@ _Authored by: operator_
 | **Actor** | Uses judgement: reads, decides, acts, and brings results back. Who or what backs it never matters. |
 | **Command** | A fixed, repeatable step. A script plus a description Floe can read: what goes in, what comes out, what it changes outside Floe, what it may touch, how long it may run, and whether it is safe to retry. |
 | **Context** | A shared room. Actors join it, post in it and read its history; that history is what an Actor reads before it acts. Each member says which kinds of Event wake it. A Context can sit inside another, like a thread inside a channel. |
-| **Event** | Something that happened. It fires; it does not travel. It has a source: a schedule (a Pulse), a folder change, a webhook, or a person pressing go. It may carry a payload, including pointers to things kept elsewhere. |
+| **Event** | Something that happened. It fires; it does not travel. It has a source: a schedule (a Pulse), a folder change, a webhook, or an Actor pressing go. It may carry a payload, including pointers to things kept elsewhere. |
 | **Scope** | Holds nodes and the connections between them. One Scope can hold several separate chains of nodes, and other Scopes as nodes. Saved versions mean a running job keeps the version it started with. |
 | **Artefact** | A real output that can leave Floe: an image, a document, a build deployed somewhere else. |
 

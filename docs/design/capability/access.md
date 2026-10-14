@@ -33,7 +33,7 @@ _Authority: operator-confirmed (29 Sep ruling; 13 Oct: restrictions are per Work
 _Authored by: operator_
 
 A new Workspace starts unrestricted: every tool and every folder. Narrowing the
-list is opt-in, for the whole Workspace. "Ask a person first" is never a
+list is opt-in, for the whole Workspace. "Ask before acting" is never a
 default. One Actor asking another before acting is an ordinary message in a
 [Context](../context/context.md); it needs no approval mechanism.
 
