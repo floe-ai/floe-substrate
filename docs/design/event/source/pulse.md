@@ -25,3 +25,19 @@ _Authored by: operator_
   system Actor is invented.
 - A firing on its own is not a message to an Actor. It wakes an Actor only when
   delivered to one.
+
+## When a Pulse's Context is gone
+
+_Resolution: direction_
+_Built: no_
+_Authority: agent-provisional_
+_Authored by: operator (issue #66, Jun)_
+_Priority: P2_
+_Release: 1.0_
+
+A Pulse can outlive the Context it delivers to, for example when the Context is
+deleted. The next firing then pauses the Pulse and records an Event saying why,
+so any Actor can see it and repair or remove the Pulse.
+
+Still in code: the firing fails, the reason is written only to the Bus log, and
+the Pulse keeps firing and failing (`floe-bus/src/server.ts`, `firePulse`).

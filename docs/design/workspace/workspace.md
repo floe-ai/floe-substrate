@@ -55,6 +55,29 @@ Still in code: on Windows, deleting the folder while Floe still holds it open
 fails with an unexplained server error (`floe-bus/src/store.ts`,
 `deleteWorkspaceLocator`).
 
+## Reading and changing the Workspace file
+
+_Resolution: direction_
+_Built: partly_
+_Authority: agent-provisional_
+_Authored by: operator (issue #180, Aug)_
+_Priority: P2_
+_Release: 1.0_
+
+What a Workspace is lives in its committed `.floe/floe.yaml`: Actors, Pulses,
+folder sources, webhook routes, Extensions and settings. Any Actor or surface
+can read each of these and change one through the Bus, without handling the
+file's text.
+
+- A change keeps the file's comments, order and formatting: saving one change
+  alters only that change.
+- Floe writes the file only when asked. Starting Floe never changes it, so the
+  repository stays clean.
+
+Still in code: the file can be written only whole, as raw text
+(`PUT /v1/workspaces/:id/fs/file`), and folder sources, hooks and webhook
+routes cannot be read back once loaded. Pulses can (`GET /v1/pulses`).
+
 ## Open
 
 - Safe file editing from a remote surface is unsolved (ADR-0005).

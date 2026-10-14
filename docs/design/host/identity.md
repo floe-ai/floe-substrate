@@ -49,3 +49,7 @@ of it.
 
 - **Remote sign-in** (passkeys and similar). Parked by the operator, 8 Oct;
   follows the Local-first law in [pillars](../pillars/pillars.md).
+- **The same identity on another machine.** How does an identity reach a second
+  machine its owner uses? What happens when both use it at once, and what is
+  lost if the key is lost? Local-first: no account system or sync service
+  (issue #133, Aug).

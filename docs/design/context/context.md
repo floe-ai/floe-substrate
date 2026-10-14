@@ -53,8 +53,38 @@ stored Events and Command runs ([primitives](../pillars/primitives.md), Open).
 
 Avoid: channel as topology, room as routing table, Thread in new contracts.
 
+## Direction: a Context lives where it was made
+
+_Resolution: direction_
+_Built: no_
+_Authority: agent-provisional_
+_Authored by: operator (issue #185, Aug: "Contexts will never really end, they are just abandoned")_
+_Priority: P3_
+_Release: later_
+
+A Context never really ends; it is abandoned. So a long list is not solved by
+marking Contexts finished, but by where each one belongs:
+
+- A Context made inside a Scope node belongs to that node. It is reached
+  through that node's history and never listed with the Workspace's Contexts.
+- A Context made at the Workspace, such as talking to Floe about the Workspace
+  itself, is the list Actors normally see.
+
+Where a Context belongs is a fact recorded when it is made, not a status anyone
+keeps up to date.
+
 ## Legacy
 
 The Thread primitive is removed. The Event and pending-response stores still
 carry `thread_id` columns, read by the event filter and response matching; they
 go with the schema collapse in [pillars](../pillars/pillars.md) (Pre-release).
+
+## Open
+
+- **A node's Context that needs someone.** When a Context inside a node is stuck
+  or asking a question, where does it show?
+- **How long a node's history is kept.**
+- **An Actor's own list.** Seeing every Context an Actor took part in spans
+  both levels. Does that bring node Contexts back into view?
+- **Contexts between two Actors** outside any node: listed with the
+  Workspace's, or seen only by the two of them?
