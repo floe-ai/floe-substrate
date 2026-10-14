@@ -182,6 +182,10 @@ function joinInvalidMessage(error: string, detail: unknown): string {
       return "That path is not usable. Choose a folder by its full location on this machine.";
     case "workspace_directory_not_found":
       return "That folder does not exist. Choose an existing folder, or ask to create it.";
+    case "workspace_admission_requires_owner":
+      return "This folder is already a Workspace someone else owns. Ask its owner to run `floe identity add` with your public key.";
+    case "identity_revoked":
+      return "This identity was removed. Only the Workspace owner can let it back in, with `floe identity add`.";
     default:
       return typeof detail === "string" && detail ? detail : `The folder could not be registered (${error}).`;
   }

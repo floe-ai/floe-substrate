@@ -125,6 +125,15 @@ describe("identity agent", () => {
     await expect(agent.handle(conn, "workspace_for_folder", { locator: "C:/work/alpha" })).rejects.toMatchObject({ code: "locked" });
   });
 
+  it("cannot join a folder another identity owns, and says who can let it in", async () => {
+    const { agent, conn, bus } = setup();
+    bus.admit("f".repeat(64), "Owner", { workspace_id: "workspace:C:/work/owned", name: "owned" });
+    await agent.handle(conn, "create", { display_name: "Ada", passphrase: "p" });
+    const outcome = await agent.handle(conn, "join_folder", { locator: "C:/work/owned" }) as Record<string, string>;
+    expect(outcome).toMatchObject({ kind: "invalid", error: "workspace_admission_requires_owner" });
+    expect(outcome.message).toMatch(/floe identity add/);
+  });
+
   it("lists the identity's workspaces without a session or a bearer", async () => {
     const { agent, conn, bus } = setup();
     await agent.handle(conn, "create", { display_name: "Ada", passphrase: "p" });
