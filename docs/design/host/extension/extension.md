@@ -130,12 +130,12 @@ The 8 and 9 Oct rulings keep that shape and widen what an Extension can add.
   off; an Actor edits `installed.json`. Whether Floe should offer one is open.
 - The September package system (sandboxing, permission lists, a seven-stage
   lifecycle) was removed on branch `extensions/redesign` (9 Oct, Q27).
-- The permission, approval and spending-limit systems that still had places for
+- The permission, approval and spending-limit systems that still have places for
   "an Extension" and "a Connector action" (`policies.ts`, `budgets.ts`,
-  `approvals.ts`, `approval-operations.ts`) are removed, not repointed
-  (13 Oct governance calls, [Workspace access](../../capability/access.md)).
-  This replaces the 9 Oct ruling to keep them. `artefacts.ts` and the Command
-  owner and implementation kinds still need the same review.
+  `approvals.ts`, `approval-operations.ts`) are frozen, not repointed
+  ([frozen governance](../../capability/access.md#frozen-governance), 14 Oct).
+  `artefacts.ts` and the Command owner and implementation kinds still need the
+  same review.
 - Proof of done: an Actor repairs `examples/extensions/todo` against these
   documents and it works live (9 Oct, Q29).
 - Code may live outside the Workspace, so an export can lack it. Export should

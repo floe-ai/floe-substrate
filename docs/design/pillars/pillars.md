@@ -154,6 +154,12 @@ authoritative set of tables and recreate local databases instead of migrating):
 - `server.ts` compatibility routes that mint `legacy-http:` idempotency keys.
 - The old `auth.json` import ([SecretRef](../capability/secret.md)).
 
+Order matters (red-team finding RT8, 14 Oct): some of this code also builds
+parts of every fresh database. First make one complete fresh layout and prove a
+new Floe home starts and restarts, then delete the upgrade code. Keep the check
+that refuses a database in a layout this build does not know; it is validation,
+not migration.
+
 ## Tests every change must pass
 
 - **Delete test.** If deleting one surface would leave something in Floe that

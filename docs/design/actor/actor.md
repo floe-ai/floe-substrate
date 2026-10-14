@@ -24,8 +24,8 @@ _Authored by: operator_
 Nothing in code or docs distinguishes a person from a model: no human backing
 kind, no "waiting for a human" state. An Actor waits on another Actor's
 response; who backs it does not matter. Every Actor in a Workspace has the same
-access ([Workspace access](../capability/access.md)), so backing never confers
-privilege or prohibition. Responsibilities may differ.
+access by default ([Workspace access](../capability/access.md)), and backing
+never confers privilege or prohibition. Responsibilities may differ.
 
 Still in code: the Bus treats a single person differently from other Actors
 (local product policy, the approvals `local_operator`, a `backing_kind` model
