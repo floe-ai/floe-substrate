@@ -132,10 +132,15 @@ declareLive("Extensions on a real runtime [live-copilot]", () => {
     expect(log).toContainEqual({ hook: "BeforeToolUse", tool_name: "probe_stamp", source: "custom", args: { text: "hello" }, endpoint_id: agentEndpointId });
     expect(log).toContainEqual({ hook: "BeforeToolUse", tool_name: "probe_stamp", source: "custom", args: { text: "forbidden" }, endpoint_id: agentEndpointId });
     // The change reached the tool; the block stopped it.
-    // The model may retry a call, so check what ran rather than how often.
+    // The model may retry a call or vary its input, so compare each run with
+    // the call the hook saw rather than with fixed text.
     const runs = log.filter(entry => entry.tool);
-    expect(runs.length).toBeGreaterThan(0);
-    expect(runs.every(entry => entry.tool === "probe_stamp" && entry.text === "hello-checked")).toBe(true);
+    const allowed = log
+      .filter(entry => entry.hook === "BeforeToolUse" && entry.tool_name === "probe_stamp" && entry.args?.text !== "forbidden")
+      .map(entry => `${entry.args.text}-checked`);
+    expect(runs.every(entry => entry.tool === "probe_stamp")).toBe(true);
+    expect(runs.map(entry => entry.text).sort()).toEqual(allowed.sort());
+    expect(runs.map(entry => entry.text)).toContain("hello-checked");
     expect(reply.toUpperCase()).toContain("PELICAN");
 
     await h.post(`/v1/workspaces/${encodeURIComponent(workspaceId)}/delete`, { delete_locator: true });

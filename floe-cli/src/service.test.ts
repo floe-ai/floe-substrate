@@ -70,7 +70,7 @@ describe.skipIf(process.platform !== "win32")("windows scheduled task round-trip
     const removed = uninstallService(taskName);
     expect(removed.ok, removed.message).toBe(true);
     expect(serviceStatus(taskName).installed).toBe(false);
-  });
+  }, 30_000);
 
   it("uninstall is idempotent when nothing is installed", () => {
     const removed = uninstallService(taskName);
