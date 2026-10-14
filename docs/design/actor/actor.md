@@ -61,6 +61,29 @@ coordinating behaviour (understand outcomes, discover capabilities, organise
 work, verify results, keep the Actor who asked informed) belongs to the Actor, not the
 substrate (`floe-bridge/src/prompts/default-floe-agent.md`).
 
+## Actors learn Floe from the install
+
+_Resolution: settled_
+_Built: no_
+_Authority: operator-confirmed (14 Oct: "we only want floe related instructions installed so the Actors in floe can reference how to behave, the tools they have, how to work with scopes, etc. essentially all the Actor (User) Documentation")_
+_Authored by: operator_
+_Priority: P1_
+_Release: 1.0_
+
+The Floe install carries the documentation for using Floe: how an Actor works
+in Floe, the tools it has, and how to work with Contexts, Events, Commands,
+Scopes and Extensions. Actors are Floe's users, so this is the user
+documentation; there is no separate version for people.
+
+- It carries nothing for changing Floe itself: no design, no contributor rules.
+- An Actor reads it when the work needs it; it is never preloaded. Floe's
+  built-in instructions stay short and point to it.
+
+Still in code: the install carries no documentation. Actors get only three
+built-in prompts (`floe-bridge/src/prompts/`). These still speak of an
+operator, approvals, floe-app and retired ADRs, and point to `docs/design/`,
+which is not installed.
+
 ## Direction: responsibilities route work
 
 _Resolution: question_
