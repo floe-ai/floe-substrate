@@ -538,6 +538,7 @@ async function guard(version) {
     guardReusedBridgePid({ floeBin, configPath, neutralCwd, home });
     log("guard", "PASS — with the Bridge's recorded pid reused by an unrelated live program, `floe start` brought the Bridge back and left that program untouched");
     guardSurface({ workRoot, tarball: join(workRoot, tarball), configPath, port, neutralCwd, home, account, floeBin });
+    requireActorsFindGuide({ prefix, home });
     log("guard", `PASS — a surface depending on the artifact used the identity agent, a real turn completed as ${account.label} and left git status clean, an Actor recalled its Context after a Bridge restart, an Actor created at runtime completed its own real turn and its next stop ran on its own model, a person read each Actor's tools and access, a failing step was pushed as failed with a safe reason, a step's reply was handed on as its one required output, a step missing output got one reminder then completed or failed, a judge's reply matched its Port's schema, a route with a misspelt schema was refused, a real turn paused mid-command and resumed with its tool call pushed live and its model and tools readable afterwards, and a version switch saw the running turn`);
     guardUpgradeWhileRunning({ tarball: join(workRoot, tarball), prefix, port, neutralCwd, home });
     requireBridgeRunning({ floeBin, configPath, neutralCwd, home, when: "after npm removed and reinstalled the package" });
@@ -579,6 +580,40 @@ function dumpLog(home, service) {
   const log = join(home, "logs", service, `${service}.log`);
   console.error(`\n[release:guard] ${service} log (${log}):`);
   console.error(existsSync(log) ? readFileSync(log, "utf8") : `(no ${service} log written)`);
+}
+
+/**
+ * The install carries the user guide and nothing for changing Floe, and the
+ * real turns' system messages gave Actors a guide folder that exists. The
+ * Bridge runs from its stage, so the path is read from what the engine was
+ * given rather than assumed.
+ */
+function requireActorsFindGuide({ prefix, home }) {
+  const installed = isWindows ? join(prefix, "node_modules", PACKAGE_NAME) : join(prefix, "lib", "node_modules", PACKAGE_NAME);
+  const docs = readdirSync(join(installed, "docs"));
+  if (docs.length !== 1 || docs[0] !== "guide" || !existsSync(join(installed, "docs", "guide", "README.md"))) {
+    throw new Error(`the installed package must carry only docs/guide with its README.md, but docs/ holds: ${docs.join(", ")}`);
+  }
+  const sessions = join(home, "bridge");
+  const given = new Set();
+  for (const file of readdirSync(sessions, { recursive: true })) {
+    if (!String(file).endsWith("events.jsonl")) continue;
+    for (const line of readFileSync(join(sessions, String(file)), "utf8").split("\n")) {
+      if (!line.includes('"system.message"')) continue;
+      const match = /Floe user guide installed at:\s*\n\s*\n(.+?)\s*\n/.exec(JSON.parse(line).data?.content ?? "");
+      if (match) given.add(match[1]);
+    }
+  }
+  if (given.size === 0) throw new Error("no real turn's system message told the Actor where the Floe user guide is.");
+  for (const guide of given) {
+    if (!existsSync(join(guide, "README.md")) || !existsSync(join(guide, "working-in-floe.md"))) {
+      throw new Error(`Actors were told the Floe user guide is at ${guide}, but it is not there.`);
+    }
+    if (existsSync(join(guide, "..", "design")) || existsSync(join(guide, "..", "contributing"))) {
+      throw new Error(`the guide Actors were given at ${guide} sits beside documentation for changing Floe.`);
+    }
+    log("guard", `an Actor was told the Floe user guide is at ${guide}, and its README.md is there`);
+  }
 }
 
 /**
