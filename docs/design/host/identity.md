@@ -13,7 +13,8 @@ back state and short-lived bearers.
 Clients authenticate as themselves and receive an unprivileged Workspace
 credential. It says who is acting and in which Workspace; access comes from
 [Workspace access](../capability/access.md), never from being a particular
-client.
+client. A credential is issued only to an identity the Workspace's owner has
+admitted ([joining a Workspace](../capability/access.md#joining-a-workspace)).
 
 ## Connection credentials
 

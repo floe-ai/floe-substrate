@@ -65,17 +65,21 @@ If it can, the bundled CLI goes.
 
 _Resolution: settled_
 _Built: no_
-_Authority: operator-confirmed (13 Oct governance calls; replaces the D13 per-call gate)_
+_Authority: operator-confirmed (13 Oct governance calls; 14 Oct: governance frozen, not removed)_
 _Authored by: operator_
 
 When a turn starts, Floe hands the engine the Workspace's
-[access list](../capability/access.md). The engine applies it to every tool call
-itself; the Bus does not decide tool calls one by one. Floe is unrestricted by
-default. The vendor's own agent-spawning tools are off.
+[access list](../capability/access.md). The engine applies it to every tool call.
+Floe is unrestricted by default. The vendor's own agent-spawning tools are off.
 
-Still in code: the Bridge asks the Bus before each engine tool call
-(`floe-bridge` engine tool gate, Bus tool policy), and refuses the shell and
-outside folders by default. Both contradict "unrestricted by default".
+The Bridge's per-call check with the Bus stays, as part of
+[frozen governance](../capability/access.md#frozen-governance). With nothing
+restricted it must allow every call. Whether it should skip asking the Bus when
+nothing is restricted depends on how much time it adds to a turn; measure it
+first.
+
+Still in code: the Bridge refuses the shell and folders outside the Workspace
+by default, which contradicts "unrestricted by default".
 
 ## One engine
 

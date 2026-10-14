@@ -7,9 +7,9 @@ _Authored by: operator_
 
 Floe works like an agent harness. Every [Actor](../actor/actor.md) in a
 [Workspace](../workspace/workspace.md) gets the same tools, permissions and
-access. Only its instructions, the Extensions it chooses to use and its
-Workspace differ. Nothing is granted per Actor, so a newly formed Actor can
-start work straight away.
+access by default. Only its instructions, the Extensions it chooses to use and
+its Workspace differ. Nothing has to be granted per Actor, so a newly formed
+Actor can start work straight away.
 
 **Workspace access** is the one list that says what Actors can do in a
 Workspace: which tools they may use and which folders they may reach. Every
@@ -18,12 +18,12 @@ Actor uses the same list, whoever or whatever backs it.
 - The list belongs to the Workspace and is set in configuration, never by
   environment variables ([pillars](../pillars/pillars.md)).
 - When an Actor's turn starts, Floe hands the list to the
-  [engine](../host/engine.md), which applies it to every tool call. The Bus does
-  not judge tool calls one by one.
+  [engine](../host/engine.md), which applies it to every tool call.
 - [Hooks](../host/extension/hook.md) can still block or change a tool call the
   list allows.
-- Every operation in the Workspace is open to every Actor in it. Floe keeps no
-  per-Actor grants, roles, approval rules or spending limits.
+- Every operation in the Workspace is open to every Actor in it. Per-Actor
+  grants, roles, approval rules and spending limits exist only as
+  [frozen governance](#frozen-governance), off unless someone turns them on.
 
 ## Unrestricted by default
 
@@ -66,12 +66,56 @@ _Authored by: operator_
 
 What happened is recorded as [Events](../event/event.md), operation
 [receipts](receipt.md) and each turn's [work log](../event/delivery/turn/turn.md#work-log).
-There is no separate audit store.
 
-## Still in code
+## Joining a Workspace
 
-The Bus still carries the September governance system, which this design
-removes:
+_Resolution: settled_
+_Built: no_
+_Authority: operator-confirmed (14 Oct, D28, red-team finding RT1)_
+_Authored by: operator_
+
+Equal access starts after someone is let in. Only the Workspace's owner, or the
+machine owner's own Floe, admits a new identity to a Workspace. Knowing a
+Workspace's folder never admits anyone. Joining again never undoes a removal;
+only the owner can readmit a removed identity.
+
+Still in code: the public registration route admits any new identity that
+names an existing Workspace's folder, and readmission clears a removal
+(`floe-bus/src/server.ts`, `client-identity-store.ts`).
+
+## One trust level per machine
+
+_Resolution: settled_
+_Built: partly_
+_Authority: operator-confirmed (14 Oct, D27, red-team finding RT2)_
+_Authored by: operator_
+
+An unrestricted Workspace reaches every folder the machine's user can reach,
+so its Actors can read another Workspace's files directly. Workspaces on one
+machine share that user's trust; they are not walled off from each other.
+A Workspace keeps its own records, and Floe's own routes never serve one
+Workspace's records to another. Keep work that must be separated on separate
+machines or user accounts.
+
+[Extensions](../host/extension/extension.md) are trusted code that runs with the
+machine user's rights. An Extension never receives Floe's own service
+credentials, so it cannot act as Floe.
+
+Still in code: an Extension's process inherits the Bridge's environment,
+including its service credential (`floe-bridge/src/extensions/extension-host.ts`).
+
+## Frozen governance
+
+_Resolution: settled_
+_Built: partly_
+_Authority: operator-confirmed (14 Oct: "MY gut feel is to literally keep all the goverenence", freeze option O63 approved)_
+_Authored by: operator_
+
+The September governance system stays in the code, frozen. It is open by
+default, kept working and tested, and nothing new is built on it. A team that
+needs per-Actor control later can turn parts of it on for a Workspace. It
+replaces the 13 Oct call to remove it.
+
 - capability grants and their delegation
 - Policies (operation, approval, budget, trust, data, emergency stop) and their
   lifecycle
@@ -79,11 +123,15 @@ removes:
 - approvals and tool approvals
 - budgets
 - engine tool policy and the Bridge's per-call tool gate
-- the "new Actors copy their creator's access" rule
-- authority adoption
 - the separate audit record
-- the limit on writes outside the Workspace's folders
-  ([Workspace](../workspace/workspace.md#files))
+- the operation authority that ends with each Delivery
+
+Not built: open defaults. Today an Actor needs grants for each operation; new
+Actors copy their creator's access, or get a default list only in a Workspace
+with exactly one person; Floe-issued Actor access lapses on a set date unless a
+person adopts the Actor; and the Bridge refuses the shell and folders outside
+the Workspace ([Workspace](../workspace/workspace.md#files)). Each of these
+becomes open by default.
 
 ## Open
 

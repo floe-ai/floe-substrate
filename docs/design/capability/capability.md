@@ -11,8 +11,8 @@ Its Bus-owned definition is one versioned contract for every caller: surfaces,
 Actors, the CLI, SDKs and the API. Surfaces project and invoke the same
 operations; they never own parallel validation or policy.
 
-Each call returns a [receipt](receipt.md). Every Actor in a Workspace may call
-every operation in it; what Actors can do is set once for the Workspace
+Each call returns a [receipt](receipt.md). By default every Actor in a Workspace
+may call every operation in it; what Actors can do is set once for the Workspace
 ([Workspace access](access.md)).
 
 Principal, Workspace or host boundary, interaction mode and causal origin come

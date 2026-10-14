@@ -11,7 +11,8 @@ resolution and an opaque broker binding, never reusable secret bytes.
 
 A SecretRef belongs to a Workspace, usually through a
 [Connector](../workspace/connector.md). Any Actor in that Workspace may use it
-there, within the credential's own purpose limits; there is no per-Actor grant
+there, within the credential's own purpose limits; by default there is no
+per-Actor grant
 ([Workspace access](access.md), 13 Oct). Export carries only unresolved
 SecretRef metadata. Missing credentials stay unresolved.
 

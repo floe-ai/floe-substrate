@@ -5,8 +5,10 @@ _Built: yes_
 _Authority: agent-provisional_
 _Authored by: unknown_
 
-The top-level portable identity and isolation boundary for an organisation's
-Actors, Contexts, Scopes, Artefacts, access and history.
+The top-level portable identity and record boundary for an organisation's
+Actors, Contexts, Scopes, Artefacts, access and history. Workspaces on one
+machine share that machine user's trust
+([Workspace access](../capability/access.md#one-trust-level-per-machine)).
 
 A Workspace has a stable opaque `workspace_id`. A folder path is never its
 identity; it is a host-local [folder binding](folder-binding.md). Moving or

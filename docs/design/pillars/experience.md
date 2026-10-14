@@ -72,9 +72,25 @@ Stopping: while connected work is active, the operator can stop it from the
 same place. Stopping is durable: queued work, active turns, folder sources and
 scheduled pulses for that operation do not resume on restart. History remains.
 
-Stopping spend: to stop model spend, the operator pauses or stops Scope runs.
-Pausing an Actor, or every Actor in a Workspace, is deferred until a real need
-shows (operator, 13 Oct).
+Stopping spend: one switch stops all work in a Workspace
+([below](#stop-all-work-in-a-workspace)). The operator can still pause or stop
+a single Scope run. Pausing one Actor is deferred until a real need shows
+(operator, 13 Oct).
+
+### Stop all work in a Workspace
+
+_Resolution: settled_
+_Built: no_
+_Authority: operator-confirmed (14 Oct, D29, red-team findings RT4 and RT5)_
+_Authored by: operator_
+
+One switch holds all work in a Workspace until the operator lifts it: waiting
+work, running turns, direct requests between Actors and scheduled
+[Pulses](../event/source/pulse.md). Stopping work also ends that work's
+operation access, so a stopped turn cannot act late.
+
+Built today: Scope run pause and stop, Pulse pause, and stopping a single
+response. None of these stops work outside its own run.
 
 ## Spend
 
@@ -86,7 +102,8 @@ _Authored by: operator_
 The operator can see what work is costing: tokens for every engine, and AI
 credits (AIC) for Copilot, by Actor and by Workspace. Seeing spend is how they
 judge whether it is turning into progress ([pillars](pillars.md), efficient
-intelligence). Floe sets no spending limits.
+intelligence). Floe sets no spending limits by default; budgets are
+[frozen governance](../capability/access.md#frozen-governance).
 
 Built: each turn records its token use
 ([Turn](../event/delivery/turn/turn.md#usage)). Not built: AIC, and any view of
