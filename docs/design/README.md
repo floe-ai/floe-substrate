@@ -9,16 +9,16 @@ unless a technical property is itself part of the design.
 
 ## Where a document goes
 
-- **P1. The top level is fixed.** `pillars/` (goals and laws for all of Floe),
+- **L1. The top level is fixed.** `pillars/` (goals and laws for all of Floe),
   `host/` (Floe on one machine), the seven building blocks (`workspace/`,
   `actor/`, `context/`, `event/`, `scope/`, `command/`, `artefact/`) and
   `capability/` (who may do what). Changing the top level needs operator
   approval.
-- **P2. Below that, a thing lives inside the one thing it cannot exist without.**
-- **P3. A file becomes a folder only when a part of it needs its own document.**
+- **L2. Below that, a thing lives inside the one thing it cannot exist without.**
+- **L3. A file becomes a folder only when a part of it needs its own document.**
   `extension.md` became `host/extension/` because hooks needed their own
   document.
-- **P4. If a document could fit in two places, the structure is wrong.**
+- **L4. If a document could fit in two places, the structure is wrong.**
   Restructure and ask the operator; never just pick one.
 - **D1. One owner.** A rule has exactly one home. Every other document links to
   it and says only how it differs. No `shared/` or `common/` folders.
@@ -47,6 +47,33 @@ own four lines under its heading.
 Resolution is not approval. Only the operator makes something
 `operator-confirmed`; an agent never does. `agent-provisional` content is the
 operator's review list.
+
+## Priority and release
+
+Work not yet built carries two more markers: how much it matters and which
+release it is for. A section puts them under its four facts; a single item, such
+as a `Still in code:` line or a list entry, ends with them.
+
+```markdown
+_Priority: P1_
+_Release: 1.0_
+```
+
+| Priority | Meaning |
+|---|---|
+| `P0` | Critical: Floe is failing. Fix and release now; nothing waits. |
+| `P1` | Must be done for its release. |
+| `P2` | Should ship in its release: without it quality drops, but nothing breaks. |
+| `P3` | Could be done, only if there is time. |
+
+Release is the version as major.minor (`1.0`). Fixes shipped later in that line
+are patch versions (`1.0.1`, `1.0.2`) and keep the same Release. Work planned
+for no release yet says `_Release: later_`.
+
+Only the operator sets priority and release; an agent may propose them in its
+pull request. Unmarked work is not yet prioritised. To find work, search the
+markers, for example `rg "Priority: P1" docs/design` or
+`rg "Release: 1.0" docs/design`.
 
 ## Design is the plan (D5)
 

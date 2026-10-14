@@ -20,7 +20,7 @@ Read this before adding, moving or deleting any document in this repository.
 1. **One home.** Each rule or fact is written once, in the one place it belongs.
    Everywhere else links to it. If a document could fit in two places, the
    structure is wrong: restructure and ask the operator. The design rules
-   (P1–P4, D1, D3) are in [design](design/README.md#where-a-document-goes).
+   (L1–L4, D1, D3) are in [design](design/README.md#where-a-document-goes).
 2. **Design is the plan.** Everything to build or fix is written in the design,
    next to the feature it changes. No other document, issue or list is a source
    of truth. See [design](design/README.md#design-is-the-plan-d5).

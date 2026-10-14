@@ -114,9 +114,11 @@ _Resolution: settled_
 _Built: no_
 _Authority: operator-confirmed (14 Oct: "Yes, low priority, not required for release")_
 _Authored by: operator_
+_Priority: P3_
+_Release: 1.0_
 
 A request expires if nobody answers it, and the asker can withdraw it. A
-removed identity may ask again. Low priority; not needed for the first release.
+removed identity may ask again.
 
 ## One trust level per machine
 
