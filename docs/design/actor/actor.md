@@ -83,6 +83,10 @@ The install carries `docs/guide/` at the package root (`scripts/release.mjs`),
 and the Bridge's runtime guidance gives its absolute path
 (`floe-bridge/src/floe-guide.ts`).
 
+Open: the published contracts (`docs/reference/`) are not in the install. The
+guide sends readers to the Floe repository for them. Whether the install
+should carry them is undecided.
+
 ## Direction: responsibilities route work
 
 _Resolution: question_

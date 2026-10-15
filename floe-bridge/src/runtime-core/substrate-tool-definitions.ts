@@ -47,7 +47,7 @@ export const FLOE_RUNTIME_TOOL_IDENTITY: SubstrateToolIdentity = {
 
 export const EMIT_INPUT_SCHEMA = z.object({
   type: z.string(),
-  destination: z.string().describe("A neutral actor ref from list_endpoints, or 'current_context'."),
+  destination: z.string().describe("An Actor's name or full ID from the actor.list operation, or 'current_context'."),
   text: z.string(),
   references: z.array(z.object({
     name: z.string().min(1).describe("Useful name shown on the Open button, such as Local preview approval."),
@@ -67,7 +67,7 @@ export const EMIT_INPUT_SCHEMA = z.object({
 export type EmitInput = z.infer<typeof EMIT_INPUT_SCHEMA>;
 
 export const REQUEST_INPUT_SCHEMA = z.object({
-  actor: z.string().describe("A neutral actor ref from list_endpoints."),
+  actor: z.string().describe("An Actor's name or full ID from the actor.list operation."),
   work: z.string().describe("The bounded work or question for that actor."),
   artefact_version_ids: z.array(z.string().min(1)).optional().describe("Exact published input versions for the actor to inspect with read_artefact."),
 });

@@ -105,7 +105,7 @@ export async function executeEmit(
       if (!resolved) {
         return {
           result: {
-            content: [{ type: "text", text: `emit: destination '${ref}' did not resolve to a known actor. Use list_endpoints when actor discovery is needed.` }],
+            content: [{ type: "text", text: `emit: destination '${ref}' did not resolve to a known Actor. Use the actor.list operation to find Actors.` }],
             details: { ok: false, error: "unknown_destination", ref },
           },
         };
@@ -203,7 +203,7 @@ export async function executeRequest(
     if (!resolved) {
       return {
         result: {
-          content: [{ type: "text", text: `request: actor '${actorRef}' did not resolve. Use list_endpoints when actor discovery is needed.` }],
+          content: [{ type: "text", text: `request: actor '${actorRef}' did not resolve to a known Actor. Use the actor.list operation to find Actors.` }],
           details: { ok: false, error: "unknown_actor", actor: actorRef },
         },
         dependencyRequested: false,

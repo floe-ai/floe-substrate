@@ -1,7 +1,7 @@
 # Turn input
 
 _Resolution: settled_
-_Built: yes_
+_Built: partly_
 _Authority: agent-provisional_
 _Authored by: unknown_
 
@@ -26,6 +26,11 @@ it.
 Not injected by default: Context history, the participant list, the Workspace
 Actor directory, implementation documentation and unrelated histories. Actors
 retrieve bounded history or discover Actors when the work needs it.
+
+- Actors discover each other with the `actor.list` operation.
+- Still in code: no operation reads a Context's earlier Events in bounded
+  portions. An Actor sees only a short summary of them, and only when its
+  engine session starts fresh.
 
 A skill file or a declared `skills` field does not prove automatic injection.
 A reference skill is read through tools when relevant, unless a verified runtime

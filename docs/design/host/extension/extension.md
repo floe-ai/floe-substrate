@@ -141,8 +141,8 @@ The 8 and 9 Oct rulings keep that shape and widen what an Extension can add.
 - Code may live outside the Workspace, so an export can lack it. Export should
   name each Extension, where it came from and its version, so restoring can
   fetch it.
-- The Floe Actor template and build skill
-  (`floe-bridge/src/prompts/default-floe-agent.md`,
-  `floe-bridge/src/prompts/substrate-build-skill.md` and their copies under
-  `.floe/`) still cite ADR-0002 and ADR-0006, which are retired, and describe
-  the snapshot's package model. Rewrite them with this design.
+- Floe writes its built-in Actor instructions and build skill into a
+  Workspace's `.floe/` folder once and never overwrites them. Workspaces made
+  before 15 Oct keep the old copies, which cite retired ADRs and the old
+  package model. How Floe updates its own files in a Workspace without losing
+  someone's edits is open.
