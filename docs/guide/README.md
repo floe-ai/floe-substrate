@@ -36,7 +36,6 @@ below gives each page's file.
 | Context | [concepts/context.md](concepts/context.md) |
 | Event | [concepts/event.md](concepts/event.md) |
 | Delivery and Turn | [concepts/delivery-and-turn.md](concepts/delivery-and-turn.md) |
-| Endpoint | [concepts/endpoint.md](concepts/endpoint.md) |
 | Command | [concepts/command.md](concepts/command.md) |
 | Artefact | [concepts/artefact.md](concepts/artefact.md) |
 | Extension | [concepts/extension.md](concepts/extension.md) |

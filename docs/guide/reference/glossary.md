@@ -81,7 +81,7 @@ subscription.
 ## Delivery
 
 Floe's durable obligation to transfer an Event and exact ArtefactVersion
-references to an Endpoint or input Port. It is transport, not logical execution.
+references to an Actor, a Command or an input Port. It is transport, not logical execution.
 See [[Delivery and Turn]].
 
 ## Edge
@@ -98,8 +98,9 @@ automatically route downstream.
 
 ## Endpoint
 
-An addressable delivery interface used by an Actor, Command, Connector, service,
-or another runtime. Endpoint is not a type of identity. See [[Endpoint]].
+The address Floe delivers work to. Actors, Command workers and services each
+have one. Actors never need it: Floe's tools name Actors directly. It appears
+only in the terminal API and when moving a Workspace.
 
 ## Event
 
@@ -198,7 +199,7 @@ not the Context and is not persisted as collaboration history.
 
 ## Turn
 
-An Endpoint processing cycle for one Delivery, built from one origin Context.
+One Actor's processing of one Delivery, built from one origin Context.
 Its natural completion is recorded in that Context and does not advance a
 ScopeExecution. See [[Delivery and Turn]].
 

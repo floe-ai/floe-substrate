@@ -1,11 +1,11 @@
 # Delivery and Turn
 
-**Delivery is durable transport. A Turn is one Endpoint processing cycle. Neither replaces logical Scope execution.**
+**Delivery is durable transport. A Turn is one Actor processing one Delivery. Neither replaces logical Scope execution.**
 
 ## Delivery
 
 A Delivery is Floe's obligation to transfer an [[Event]] and exact
-ArtefactVersion references to an [[Endpoint]] or input Port. It owns queue,
+ArtefactVersion references to an [[Actor]], a [[Command]] or an input Port. It owns queue,
 lease, acknowledgement, transport attempt, expiry, and cancellation state.
 
 A graph-routed Delivery pins its ScopeExecution, ScopeCompositionRevision,

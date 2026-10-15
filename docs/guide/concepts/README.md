@@ -18,7 +18,6 @@ ScopeExecution.
 | [[Event]] | An immutable fact, signal, communication, observation, or decision. |
 | [[Command]] | A deterministic operation with declared inputs, outputs, effects, and authority. |
 | [[Artefact]] | A stable logical input, output, collection, reference, or body of evidence. |
-| [[Endpoint]] | An addressable delivery interface; not an Actor identity. |
 | [[Extension]] | A folder that adds tools and hooks to Floe: a small manifest and a code entry. |
 | [[Runtime binding]] | The replaceable link between an Actor and the runtime configuration it uses. |
 
